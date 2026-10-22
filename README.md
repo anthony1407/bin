@@ -31,7 +31,9 @@ serves two ports:
 
 ### With Docker Compose
 
-1. Create a `.env` file next to `docker-compose.yml`:
+1. Create a `.env` file next to `docker-compose.yml` (it is ignored by git).
+   Without it bin has no credentials, refuses to start and keeps restarting;
+   `docker compose logs` shows why:
 
    ```env
    BIN_ROOT_USER=admin
@@ -48,6 +50,24 @@ serves two ports:
    `.env`. Point S3 clients at <http://localhost:9000>.
 
 To publish other host ports, add `BIN_S3_PORT` and `BIN_CONSOLE_PORT` to `.env`.
+
+Day-to-day commands, run next to `docker-compose.yml`:
+
+| Command | What it does |
+|---|---|
+| `docker compose up -d --build` | Build the image from the current code and start (or update) bin |
+| `docker compose up -d` | Start bin again with the image already built |
+| `docker compose down` | Stop and remove the container; your data is kept in the `bin-data` volume |
+| `docker compose restart` | Restart without rebuilding (e.g. after editing `.env`) |
+| `docker compose logs -f` | Follow the server log |
+| `docker compose ps` | Show the container and its health |
+| `docker compose down -v` | Stop **and delete all data** (the `bin-data` volume): buckets, objects and keys |
+
+To apply code changes, run `docker compose up -d --build` again: it rebuilds
+the image and replaces the container, keeping the data. If a container from a
+plain `docker run` named `bin` already uses ports 9000/9001, remove it first
+with `docker rm -f bin`. Both setups store data in the same `bin-data` volume,
+so switching from one to the other keeps your buckets.
 
 ### With docker run
 
@@ -173,16 +193,34 @@ admin API and logs a warning at startup.
 
 ### Developing the console
 
-Run a bin server, then start the Vite dev server, which proxies `/api` to it:
+You do not need to rebuild the image for every change to the panel. Keep any
+bin server running (for example the `bin` container on ports 9000/9001), then
+start the Vite dev server, which proxies `/api` to it:
 
 ```sh
 cd web
 npm install
-npm run css:watch   # Tailwind, in one terminal
-npm run dev         # Vite on http://localhost:5173, in another
+npm run dev
 ```
 
-Set `BIN_CONSOLE_URL` if the console is not at `http://localhost:9001`.
+Open <http://localhost:5173> and sign in as usual. Every save to `web/src`
+shows up in the browser at once; `npm run dev` also keeps the Tailwind CSS up
+to date. If the console is not at `http://localhost:9001`, set
+`BIN_CONSOLE_URL` first (`BIN_CONSOLE_URL=http://localhost:19001 npm run dev`
+in bash, `$env:BIN_CONSOLE_URL="http://localhost:19001"` in PowerShell, or
+`set BIN_CONSOLE_URL=http://localhost:19001` in `cmd`).
+
+Rebuild the image (`docker build -t bin:dev .`) only when you want the
+finished panel inside the binary, or when you change the Go server. For server
+changes you can also skip Docker and run it directly:
+
+```sh
+go run ./cmd/bin server ./data --address :9100 --console-address :9101
+```
+
+(with `BIN_ROOT_USER` and `BIN_ROOT_PASSWORD` set in the environment or in a
+`bin.env` file), and point the dev server at it with
+`BIN_CONSOLE_URL=http://localhost:9101`.
 
 ### Tests
 

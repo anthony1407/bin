@@ -78,13 +78,19 @@ function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Dra
 }
 
 function Created({ k }: { k: AccessKey }) {
-  const [endpoint, setEndpoint] = useState(`${location.protocol}//${location.hostname}:9000`);
+  const [server, setServer] = useState({ endpoint: `${location.protocol}//${location.hostname}:9000`, region: "us-east-1" });
   useEffect(() => {
-    api.info().then((i) => i.s3Endpoint && setEndpoint(i.s3Endpoint)).catch(() => {});
+    api
+      .info()
+      .then((i) => setServer({ endpoint: i.s3Endpoint, region: i.region }))
+      .catch(() => {});
   }, []);
-  const snippet = `aws configure set aws_access_key_id ${k.accessKey}
-aws configure set aws_secret_access_key ${k.secretKey}
-aws --endpoint-url ${endpoint} s3 ls`;
+  // A named profile keeps the commands the same in bash, PowerShell and cmd.
+  const snippet = `aws configure set aws_access_key_id ${k.accessKey} --profile bin
+aws configure set aws_secret_access_key ${k.secretKey} --profile bin
+aws configure set region ${server.region} --profile bin
+aws configure set endpoint_url ${server.endpoint} --profile bin
+aws --profile bin s3 ls`;
   return (
     <div className="space-y-4">
       <div className="flex gap-2.5 rounded-md border border-warn/30 bg-warn-soft px-3.5 py-2.5 text-sm text-warn">
@@ -108,7 +114,7 @@ aws --endpoint-url ${endpoint} s3 ls`;
           Try it with the AWS CLI
           <CopyButton text={snippet} label="Copy commands" />
         </div>
-        <pre className="overflow-x-auto rounded-md border border-transparent bg-night p-3 font-mono text-xs leading-relaxed text-slate-200 dark:border-line-strong">{snippet}</pre>
+        <pre className="rounded-md break-all whitespace-pre-wrap border border-transparent bg-night p-3 font-mono text-xs leading-relaxed text-slate-200 dark:border-line-strong">{snippet}</pre>
       </div>
     </div>
   );
@@ -126,6 +132,7 @@ export function AccessKeysPage() {
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [created, setCreated] = useState<AccessKey | null>(null);
   const [deleting, setDeleting] = useState<AccessKey | null>(null);
+  const [removing, setRemoving] = useState(false);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
 
@@ -186,6 +193,7 @@ export function AccessKeysPage() {
 
   async function remove() {
     if (!deleting) return;
+    setRemoving(true);
     try {
       await api.deleteAccessKey(deleting.accessKey);
       toast("ok", `Access key ${deleting.accessKey} deleted.`);
@@ -193,6 +201,8 @@ export function AccessKeysPage() {
       load();
     } catch (e) {
       toast("error", errorText(e));
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -293,6 +303,7 @@ export function AccessKeysPage() {
         open={formOpen}
         onClose={() => setFormOpen(false)}
         title={created ? "Access key created" : editing ? "Edit access key" : "Create access key"}
+        wide={!!created}
         footer={
           created ? (
             <Button variant="primary" onClick={() => setFormOpen(false)}>
@@ -313,13 +324,15 @@ export function AccessKeysPage() {
 
       <Modal
         open={!!deleting}
-        onClose={() => setDeleting(null)}
+        onClose={() => !removing && setDeleting(null)}
         title="Delete access key"
         footer={
           <>
-            <Button onClick={() => setDeleting(null)}>Cancel</Button>
-            <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={remove}>
-              Delete key
+            <Button disabled={removing} onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={removing} onClick={remove}>
+              {removing ? "Deleting…" : "Delete key"}
             </Button>
           </>
         }

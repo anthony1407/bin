@@ -226,6 +226,8 @@ export function Modal({
   wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -235,7 +237,20 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      // Esc asks the owner instead of closing on its own, so a dialog with an
+      // operation in progress can stay open.
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      onClose={() => {
+        onClose();
+        // Browsers may close it anyway (a repeated Esc); reopen if the owner
+        // still wants it open, so the state and the screen agree.
+        setTimeout(() => {
+          if (openRef.current && ref.current && !ref.current.open) ref.current.showModal();
+        });
+      }}
       onClick={(e) => e.target === ref.current && onClose()}
       className={cx(
         "m-auto w-[calc(100%-2rem)] rounded-card border border-line bg-surface p-0 text-ink shadow-xl backdrop:bg-black/40",

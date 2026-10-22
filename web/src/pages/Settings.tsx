@@ -79,6 +79,7 @@ function ShareSettings({ settings, onSaved }: { settings: Settings; onSaved: (s:
   const [hours, setHours] = useState(String(Math.round(settings.shareMaxExpirySeconds / HOUR)));
   const [busy, setBusy] = useState(false);
   const [revoking, setRevoking] = useState(false);
+  const [revokeBusy, setRevokeBusy] = useState(false);
   const toast = useToast();
   const n = Number(hours);
   const invalid = !Number.isInteger(n) || n < 1 || n > 168;
@@ -96,12 +97,15 @@ function ShareSettings({ settings, onSaved }: { settings: Settings; onSaved: (s:
   }
 
   async function revoke() {
+    setRevokeBusy(true);
     try {
       await api.revokeShareLinks();
       setRevoking(false);
       toast("ok", "Every share link issued so far has stopped working.");
     } catch (e) {
       toast("error", errorText(e));
+    } finally {
+      setRevokeBusy(false);
     }
   }
 
@@ -128,13 +132,15 @@ function ShareSettings({ settings, onSaved }: { settings: Settings; onSaved: (s:
       </div>
       <Modal
         open={revoking}
-        onClose={() => setRevoking(false)}
+        onClose={() => !revokeBusy && setRevoking(false)}
         title="Revoke all share links"
         footer={
           <>
-            <Button onClick={() => setRevoking(false)}>Cancel</Button>
-            <Button variant="danger" onClick={revoke}>
-              Revoke all
+            <Button disabled={revokeBusy} onClick={() => setRevoking(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" busy={revokeBusy} onClick={revoke}>
+              {revokeBusy ? "Revoking…" : "Revoke all"}
             </Button>
           </>
         }

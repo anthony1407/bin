@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import {
   ChevronRight,
@@ -21,7 +21,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, uploadFile, type Bucket, type ObjectInfo } from "../api";
+import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo } from "../api";
 import { baseName, bytes, count, dateTime, relative } from "../lib/format";
 import { Badge, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { accessLabel } from "./Buckets";
@@ -268,7 +268,32 @@ function Detail({
 }) {
   const [info, setInfo] = useState<ObjectInfo | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [downloaded, setDownloaded] = useState<number | null>(null); // bytes so far; null when idle
   const toast = useToast();
+
+  async function download(o: ObjectInfo) {
+    setDownloaded(0);
+    try {
+      await downloadObject(bucket, o, setDownloaded);
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setDownloaded(null);
+    }
+  }
+
+  async function remove() {
+    setDeleting(true);
+    try {
+      await api.deleteObjects(bucket, [objectKey], []);
+      toast("ok", `${baseName(objectKey)} deleted.`);
+      onDeleted();
+    } catch (e) {
+      toast("error", errorText(e));
+      setDeleting(false);
+    }
+  }
   useEffect(() => {
     setInfo(null);
     api.stat(bucket, objectKey).then(setInfo).catch((e) => toast("error", errorText(e)));
@@ -306,15 +331,13 @@ function Detail({
           <>
             <Preview bucket={bucket} object={info} />
             <div className="grid grid-cols-3 gap-2">
-              <a href={api.downloadURL(bucket, info.key)} className="contents">
-                <Button icon={<Download className="size-4" />} className="w-full">
-                  Download
-                </Button>
-              </a>
-              <Button icon={<Share2 className="size-4" />} onClick={() => onShare(info)}>
+              <Button icon={<Download className="size-4" />} busy={downloaded !== null} disabled={deleting} onClick={() => download(info)}>
+                {downloaded === null ? "Download" : info.size ? `${Math.floor((downloaded / info.size) * 100)}%` : "Download"}
+              </Button>
+              <Button icon={<Share2 className="size-4" />} disabled={deleting} onClick={() => onShare(info)}>
                 Share
               </Button>
-              <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={() => setConfirm(true)}>
+              <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={() => setConfirm(true)}>
                 Delete
               </Button>
             </div>
@@ -334,25 +357,15 @@ function Detail({
       </div>
       <Modal
         open={confirm}
-        onClose={() => setConfirm(false)}
+        onClose={() => !deleting && setConfirm(false)}
         title="Delete object"
         footer={
           <>
-            <Button onClick={() => setConfirm(false)}>Cancel</Button>
-            <Button
-              variant="danger"
-              icon={<Trash2 className="size-4" />}
-              onClick={async () => {
-                try {
-                  await api.deleteObjects(bucket, [objectKey], []);
-                  toast("ok", `${baseName(objectKey)} deleted.`);
-                  onDeleted();
-                } catch (e) {
-                  toast("error", errorText(e));
-                }
-              }}
-            >
-              Delete
+            <Button disabled={deleting} onClick={() => setConfirm(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={remove}>
+              {deleting ? "Deleting…" : "Delete"}
             </Button>
           </>
         }
@@ -383,6 +396,7 @@ export function ExplorerPage() {
   const [folderOpen, setFolderOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deletingSelected, setDeletingSelected] = useState(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -446,11 +460,47 @@ export function ExplorerPage() {
     }
   }
 
-  function onDrop(e: DragEvent) {
-    e.preventDefault();
-    setDragging(false);
-    if (e.dataTransfer.files.length) upload(e.dataTransfer.files);
-  }
+  // Drag and drop of files onto the whole window. dragenter/dragleave fire for
+  // every child element and not at all in some cases (leaving the window,
+  // Esc), so the overlay instead stays up while dragover keeps arriving: the
+  // browser repeats it at least every ~550 ms while a drag is over the page.
+  const uploadRef = useRef(upload);
+  uploadRef.current = upload;
+  useEffect(() => {
+    let hide: ReturnType<typeof setTimeout> | undefined;
+    const hasFiles = (e: globalThis.DragEvent) => !!e.dataTransfer?.types.includes("Files");
+    const stop = () => {
+      clearTimeout(hide);
+      setDragging(false);
+    };
+    const onOver = (e: globalThis.DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); // allows the drop
+      setDragging(true);
+      clearTimeout(hide);
+      hide = setTimeout(stop, 800);
+    };
+    const onLeave = (e: globalThis.DragEvent) => {
+      if (!e.relatedTarget) stop(); // left the window
+    };
+    const onDrop = (e: globalThis.DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); // keeps the browser from opening the file
+      stop();
+      if (e.dataTransfer?.files.length) uploadRef.current(e.dataTransfer.files);
+    };
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("dragend", stop);
+    return () => {
+      stop();
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("dragend", stop);
+    };
+  }, []);
 
   const crumbs = useMemo(() => {
     const parts = prefix.split("/").filter(Boolean);
@@ -475,6 +525,7 @@ export function ExplorerPage() {
     const keys = [...selected].filter((k) => !k.endsWith("/"));
     const folders = [...selected].filter((k) => k.endsWith("/"));
     try {
+      setDeletingSelected(true);
       const { deleted } = await api.deleteObjects(bucket, keys, folders);
       toast("ok", `${count(deleted)} object${deleted === 1 ? "" : "s"} deleted.`);
       setConfirmDelete(false);
@@ -482,6 +533,8 @@ export function ExplorerPage() {
       load();
     } catch (e) {
       toast("error", errorText(e));
+    } finally {
+      setDeletingSelected(false);
     }
   }
 
@@ -502,15 +555,7 @@ export function ExplorerPage() {
   const empty = !loading && objects.length === 0 && prefixes.length === 0;
 
   return (
-    <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={(e) => e.currentTarget === e.target && setDragging(false)}
-      onDrop={onDrop}
-      className="relative"
-    >
+    <div className="relative">
       {/* Header */}
       <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="min-w-0">
@@ -588,7 +633,7 @@ export function ExplorerPage() {
             <Button variant="ghost" onClick={() => setSelected(new Set())}>
               Clear
             </Button>
-            <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={() => setConfirmDelete(true)}>
+            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={() => setConfirmDelete(true)}>
               Delete
             </Button>
           </div>
@@ -733,13 +778,15 @@ export function ExplorerPage() {
 
       <Modal
         open={confirmDelete}
-        onClose={() => setConfirmDelete(false)}
+        onClose={() => !deletingSelected && setConfirmDelete(false)}
         title="Delete objects"
         footer={
           <>
-            <Button onClick={() => setConfirmDelete(false)}>Cancel</Button>
-            <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={deleteSelected}>
-              Delete {count(selected.size)}
+            <Button disabled={deletingSelected} onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={deleteSelected}>
+              {deletingSelected ? "Deleting…" : `Delete ${count(selected.size)}`}
             </Button>
           </>
         }

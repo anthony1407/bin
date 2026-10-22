@@ -1,0 +1,69 @@
+# Development stack: edit files and see the result without rebuilding by hand.
+#
+#   docker compose -f docker-compose.dev.yml up --build --watch
+#
+#   Panel (live):  http://localhost:5173   every save in web/ shows up at once
+#   Console:       http://localhost:9001   the panel embedded in the binary
+#   S3 API:        http://localhost:9000
+#
+# Changes to the Go code (cmd/, internal/) rebuild and restart the server
+# automatically. Changes to web/package.json reinstall the panel's packages.
+#
+# Sign in with BIN_ROOT_USER / BIN_ROOT_PASSWORD (defaults below, for local
+# development only). Ports: BIN_S3_PORT, BIN_CONSOLE_PORT, BIN_WEB_PORT.
+name: bin-dev
+
+services:
+  bin:
+    build: .
+    image: bin:dev
+    command: server /data --address ":9000" --console-address ":9001"
+    ports:
+      - "${BIN_S3_PORT:-9000}:9000"
+      - "${BIN_CONSOLE_PORT:-9001}:9001"
+    environment:
+      BIN_ROOT_USER: ${BIN_ROOT_USER:-admin}
+      BIN_ROOT_PASSWORD: ${BIN_ROOT_PASSWORD:-dev-password-change-me}
+      BIN_LOG_LEVEL: debug
+    volumes:
+      - bin-dev-data:/data
+    develop:
+      watch:
+        - path: ./cmd
+          action: rebuild
+        - path: ./internal
+          action: rebuild
+          ignore:
+            - webui/dist/
+        - path: ./go.mod
+          action: rebuild
+
+  web:
+    build:
+      context: .
+      target: web-dev
+    ports:
+      - "${BIN_WEB_PORT:-5173}:5173"
+    environment:
+      BIN_CONSOLE_URL: http://bin:9001
+    depends_on:
+      - bin
+    develop:
+      watch:
+        # Saved files are copied into the container, where Vite and Tailwind
+        # pick them up (file events from Windows bind mounts are unreliable).
+        - path: ./web
+          target: /src/web
+          action: sync
+          ignore:
+            - node_modules/
+            - src/generated/
+            - package.json
+            - package-lock.json
+        - path: ./web/package.json
+          action: rebuild
+        - path: ./web/package-lock.json
+          action: rebuild
+
+volumes:
+  bin-dev-data:

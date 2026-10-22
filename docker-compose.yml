@@ -24,9 +24,16 @@ services:
     ports:
       - "${BIN_S3_PORT:-9000}:9000"      # S3 API
       - "${BIN_CONSOLE_PORT:-9001}:9001" # web console
+    # Every accepted name is passed through; bin uses whichever is set (empty
+    # means unset) and refuses to start, saying so in its log, if none is.
+    # No ":?" guards here: they would also break "docker compose down/logs".
     environment:
-      BIN_ROOT_ACCESS_KEY: ${BIN_ROOT_ACCESS_KEY:?set BIN_ROOT_ACCESS_KEY in .env}
-      BIN_ROOT_SECRET_KEY: ${BIN_ROOT_SECRET_KEY:?set BIN_ROOT_SECRET_KEY in .env}
+      BIN_ROOT_ACCESS_KEY: ${BIN_ROOT_ACCESS_KEY:-}
+      BIN_ROOT_USER: ${BIN_ROOT_USER:-}
+      BIN_ACCESS_KEY: ${BIN_ACCESS_KEY:-}
+      BIN_ROOT_SECRET_KEY: ${BIN_ROOT_SECRET_KEY:-}
+      BIN_ROOT_PASSWORD: ${BIN_ROOT_PASSWORD:-}
+      BIN_SECRET_KEY: ${BIN_SECRET_KEY:-}
       BIN_REGION: us-east-1
     volumes:
       - bin-data:/data
@@ -44,4 +51,7 @@ services:
 
 volumes:
   bin-data:
+    # A fixed name (no project prefix), so this is the same volume that
+    # `docker run -v bin-data:/data` uses: switching between the two keeps the data.
+    name: bin-data
     driver: local

@@ -188,6 +188,56 @@ export const api = {
   startScrub: (bucket = "") => request<ScrubStatus>("POST", "/scrub", { bucket }),
 };
 
+// --- downloads ------------------------------------------------------------------------
+
+// Up to this size a download goes through fetch, which reports progress and
+// errors (an integrity failure aborts the body). Bigger files use the
+// browser's own download, which streams to disk instead of into memory.
+const FETCH_DOWNLOAD_MAX = 256 * 1024 * 1024;
+
+function saveAs(href: string, name: string) {
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+/** Downloads an object to the user's disk, reporting the bytes received. */
+export async function downloadObject(bucket: string, object: ObjectInfo, onProgress: (received: number) => void): Promise<void> {
+  const url = api.downloadURL(bucket, object.key);
+  const name = object.key.slice(object.key.lastIndexOf("/") + 1) || "download";
+  if (object.size > FETCH_DOWNLOAD_MAX) {
+    saveAs(url, name);
+    return;
+  }
+  const res = await fetch(url, { credentials: "same-origin" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) onUnauthorized();
+    throw new ApiError(res.status, data.error ?? "error", data.message ?? "Download failed.");
+  }
+  const reader = res.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    let step: ReadableStreamReadResult<Uint8Array>;
+    try {
+      step = await reader.read();
+    } catch {
+      throw new ApiError(0, "interrupted", "The download was interrupted; the object may be damaged. Run an integrity scan in Settings.");
+    }
+    if (step.done) break;
+    chunks.push(step.value);
+    received += step.value.length;
+    onProgress(received);
+  }
+  const href = URL.createObjectURL(new Blob(chunks as BlobPart[], { type: object.contentType || "application/octet-stream" }));
+  saveAs(href, name);
+  setTimeout(() => URL.revokeObjectURL(href), 60_000);
+}
+
 // --- uploads --------------------------------------------------------------------------
 
 const PART_SIZE = 16 * 1024 * 1024;

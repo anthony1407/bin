@@ -6,7 +6,7 @@
   "scripts": {
     "css": "tailwindcss -i src/styles.css -o src/generated/tailwind.css",
     "css:watch": "tailwindcss -i src/styles.css -o src/generated/tailwind.css --watch",
-    "dev": "vite",
+    "dev": "tailwindcss -i src/styles.css -o src/generated/tailwind.css && vite",
     "typecheck": "tsc --noEmit",
     "build": "tailwindcss -i src/styles.css -o src/generated/tailwind.css --minify && tsc --noEmit && vite build && node -e \"require('fs').writeFileSync('../internal/webui/dist/.gitkeep', '')\""
   },
