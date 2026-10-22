@@ -63,6 +63,8 @@ func newHandler(opts Options) *Handler {
 		OpHeadObject:          h.headObject,
 		OpDeleteObject:        h.deleteObject,
 		OpCopyObject:          h.copyObject,
+		OpListObjectsV2:       h.listObjectsV2,
+		OpListObjects:         h.listObjectsV1,
 	}
 	return h
 }
