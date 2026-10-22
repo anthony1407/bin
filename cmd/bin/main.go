@@ -54,7 +54,7 @@ func run() error {
 	log := newLogger(cfg)
 	log.Info("starting bin", "version", buildinfo.Version, "data_dir", cfg.DataDir, "region", cfg.Region)
 
-	store, err := storage.Open(cfg.DataDir)
+	store, err := storage.Open(cfg.DataDir, log.With("component", "storage"))
 	if err != nil {
 		return fmt.Errorf("opening data directory %s: %w", cfg.DataDir, err)
 	}

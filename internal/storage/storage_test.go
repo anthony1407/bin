@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,9 +13,11 @@ import (
 	"time"
 )
 
+var testLog = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 func openTest(t *testing.T, dir string) *Store {
 	t.Helper()
-	s, err := Open(dir)
+	s, err := Open(dir, testLog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +112,7 @@ func TestBucketTags(t *testing.T) {
 func TestPersistenceAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	s, err := Open(dir)
+	s, err := Open(dir, testLog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +128,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 func TestDirectoryLock(t *testing.T) {
 	dir := t.TempDir()
 	openTest(t, dir)
-	if _, err := Open(dir); !errors.Is(err, ErrDirLocked) {
+	if _, err := Open(dir, testLog); !errors.Is(err, ErrDirLocked) {
 		t.Fatalf("second Open = %v, want ErrDirLocked", err)
 	}
 }

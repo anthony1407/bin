@@ -31,7 +31,11 @@ func newTestHandler(t *testing.T, ops map[Op]opFunc) http.Handler {
 		Log:    log,
 	})
 	for op, fn := range ops {
-		h.ops[op] = fn
+		if fn == nil {
+			delete(h.ops, op) // simulate an operation that is not implemented
+		} else {
+			h.ops[op] = fn
+		}
 	}
 	return h.withMiddleware()
 }
@@ -61,7 +65,7 @@ func send(h http.Handler, r *http.Request) (*httptest.ResponseRecorder, errBody)
 }
 
 func TestUnimplementedOperation(t *testing.T) {
-	h := newTestHandler(t, nil)
+	h := newTestHandler(t, map[Op]opFunc{OpGetObject: nil})
 	rec, body := doRequest(h, "GET", "/b/k.txt")
 	if rec.Code != http.StatusNotImplemented || body.Code != "NotImplemented" {
 		t.Fatalf("got %d %+v", rec.Code, body)

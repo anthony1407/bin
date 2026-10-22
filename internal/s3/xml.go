@@ -82,7 +82,21 @@ func bodyError(err error) error {
 // storageError maps storage errors to S3 errors; unknown errors pass through
 // and become InternalError.
 func storageError(err error) error {
+	var apiErr *s3err.Error
+	if errors.As(err, &apiErr) {
+		return err // raised while reading the request body (signature, digest...)
+	}
 	switch {
+	case errors.Is(err, storage.ErrNoSuchKey):
+		return s3err.ErrNoSuchKey
+	case errors.Is(err, storage.ErrKeyTooLong):
+		return s3err.ErrKeyTooLong
+	case errors.Is(err, storage.ErrInvalidKey):
+		return s3err.ErrInvalidArgument.WithMessage("Object keys must be valid UTF-8.")
+	case errors.Is(err, storage.ErrPrecondition):
+		return s3err.ErrPreconditionFailed
+	case errors.Is(err, storage.ErrIncompleteBody), errors.Is(err, io.ErrUnexpectedEOF):
+		return s3err.ErrIncompleteBody
 	case errors.Is(err, storage.ErrNoSuchBucket):
 		return s3err.ErrNoSuchBucket
 	case errors.Is(err, storage.ErrBucketExists):

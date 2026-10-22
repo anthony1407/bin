@@ -58,6 +58,11 @@ func newHandler(opts Options) *Handler {
 		OpGetBucketTagging:    h.getBucketTagging,
 		OpPutBucketTagging:    h.putBucketTagging,
 		OpDeleteBucketTagging: h.deleteBucketTagging,
+		OpPutObject:           h.putObject,
+		OpGetObject:           h.getObject,
+		OpHeadObject:          h.headObject,
+		OpDeleteObject:        h.deleteObject,
+		OpCopyObject:          h.copyObject,
 	}
 	return h
 }

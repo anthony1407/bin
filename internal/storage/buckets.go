@@ -100,11 +100,23 @@ func (s *Store) ListBuckets(ctx context.Context) ([]Bucket, error) {
 	return out, rows.Err()
 }
 
-// DeleteBucket removes an empty bucket.
+// DeleteBucket removes an empty bucket. Any object version, including delete
+// markers, makes it non-empty.
 func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		id, err := bucketID(ctx, tx, name)
 		if err != nil {
+			return err
+		}
+		var one int
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM objects WHERE bucket_id = ? LIMIT 1`, id).Scan(&one)
+		if err == nil {
+			return ErrBucketNotEmpty
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_tags WHERE bucket_id = ?`, id); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM buckets WHERE id = ?`, id)

@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,20 +31,28 @@ var (
 	ErrBucketNotEmpty    = errors.New("bucket not empty")
 	ErrNoTags            = errors.New("no tags")
 	ErrDirLocked         = errors.New("data directory is in use by another process")
+	ErrNoSuchKey         = errors.New("no such key")
+	ErrKeyTooLong        = errors.New("key too long")
+	ErrInvalidKey        = errors.New("invalid key")
+	ErrPrecondition      = errors.New("precondition failed")
+	ErrIncompleteBody    = errors.New("incomplete body")
+	// ErrCorrupt means stored data no longer matches its SHA-256.
+	ErrCorrupt = errors.New("stored data is corrupt")
 )
 
 // Store is an open data directory.
 type Store struct {
-	dir   string
-	lock  *os.File
-	write *sql.DB // single connection: SQLite allows one writer at a time
-	read  *sql.DB
-	now   func() time.Time
+	dir    string
+	lock   *os.File
+	write  *sql.DB // single connection: SQLite allows one writer at a time
+	read   *sql.DB
+	now    func() time.Time
+	stopGC context.CancelFunc
 }
 
-// Open takes exclusive ownership of dir, creating it if needed, and brings
-// the metadata schema up to date.
-func Open(dir string) (*Store, error) {
+// Open takes exclusive ownership of dir, creating it if needed, brings the
+// metadata schema up to date and repairs anything an unclean shutdown left.
+func Open(dir string, log *slog.Logger) (*Store, error) {
 	for _, d := range []string{filepath.Join(dir, ".bin", "tmp"), filepath.Join(dir, "blobs")} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			return nil, err
@@ -63,6 +72,13 @@ func Open(dir string) (*Store, error) {
 		s.Close()
 		return nil, err
 	}
+	if err := s.recover(context.Background(), log); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("recovering data directory: %w", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.stopGC = cancel
+	go s.gcLoop(ctx)
 	return s, nil
 }
 
@@ -95,6 +111,9 @@ func (s *Store) openDB() error {
 
 // Close releases the database and the directory lock.
 func (s *Store) Close() error {
+	if s.stopGC != nil {
+		s.stopGC()
+	}
 	var errs []error
 	for _, db := range []*sql.DB{s.read, s.write} {
 		if db != nil {

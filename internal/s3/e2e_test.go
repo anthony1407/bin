@@ -22,8 +22,16 @@ import (
 // newE2E starts bin's S3 API on a real HTTP server backed by a temporary data
 // directory and returns an AWS SDK client pointed at it.
 func newE2E(t *testing.T) *awss3.Client {
+	c, _ := newE2EWithDir(t)
+	return c
+}
+
+// newE2EWithDir also returns the data directory, for tests that inspect or
+// damage what is on disk.
+func newE2EWithDir(t *testing.T) (*awss3.Client, string) {
 	t.Helper()
-	store, err := storage.Open(t.TempDir())
+	dir := t.TempDir()
+	store, err := storage.Open(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +50,7 @@ func newE2E(t *testing.T) *awss3.Client {
 		Region:       "us-east-1",
 		UsePathStyle: true,
 		Credentials:  credentials.NewStaticCredentialsProvider(testAK, testSecret, ""),
-	})
+	}), dir
 }
 
 // apiCode returns the S3 error code carried by err, or "".
