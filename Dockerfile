@@ -1,11 +1,21 @@
 # syntax=docker/dockerfile:1
 
+# --- Web panel -----------------------------------------------------------------
+# Node is only needed here; the result is embedded in the Go binary.
+FROM node:24-alpine AS web
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
 # --- Go build ------------------------------------------------------------------
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
+COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 # Stamped into "bin --version"; the Makefile passes them from git.
 ARG VERSION=dev
 ARG COMMIT=

@@ -19,6 +19,11 @@ api() {
     ${body:+--data "$body"} "${@:4}" "$API$path"
 }
 
+PANEL="http://$HOST:$CONSOLE_PORT"
+check "panel served from the binary" '<div id="root">' "$(curl_ -s "$PANEL/")"
+check "panel routes fall back to index.html" "frame-ancestors 'none'" "$(curl_ -s -D - -o /dev/null "$PANEL/buckets/photos/settings")"
+check "panel assets are gzip-compressed" "content-encoding: gzip" \
+  "$(curl_ -s -D - -o /dev/null -H 'Accept-Encoding: gzip' "$PANEL$(curl_ -s "$PANEL/" | grep -o '/assets/index-[^"]*\.js' | head -1)" | tr 'A-Z' 'a-z')"
 check "API without a session" "status=401" "$(api GET /buckets)"
 check "wrong password" "status=401" "$(api POST /login '{"accessKey":"'"$AK"'","secretKey":"wrong"}')"
 LOGIN=$(api POST /login '{"accessKey":"'"$AK"'","secretKey":"'"$SK"'"}')

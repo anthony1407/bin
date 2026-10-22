@@ -1,5 +1,5 @@
 // Package admin implements the console listener: the JSON admin API under
-// /api/v1 used by the web panel, and (from the next stage) the panel itself.
+// /api/v1 used by the web panel, and the panel itself (Options.Panel).
 //
 // Every endpoint except health and login needs a session cookie; requests
 // that change state also need the session's CSRF token in X-CSRF-Token and,
@@ -37,6 +37,8 @@ type Options struct {
 	Log        *slog.Logger
 	// LogRequests logs one line per request; health probes only at debug level.
 	LogRequests bool
+	// Panel serves everything outside /api/ (the embedded web panel).
+	Panel http.Handler
 }
 
 // Handler serves the console.
@@ -100,7 +102,11 @@ func NewHandler(opts Options) http.Handler {
 	public("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Unknown API endpoint.")
 	})
-	public("/", placeholder)
+	if opts.Panel != nil {
+		mux.Handle("/", opts.Panel)
+	} else {
+		public("/", http.NotFound)
+	}
 
 	var next http.Handler = mux
 	next = server.Recover(opts.Log, func(w http.ResponseWriter, r *http.Request) {
@@ -115,12 +121,6 @@ func NewHandler(opts Options) http.Handler {
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": buildinfo.Version, "commit": buildinfo.Commit})
-}
-
-// placeholder stands in for the web panel until it is built.
-func placeholder(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte("<!doctype html><title>bin</title><p>bin console: the panel is not built yet.</p>"))
 }
 
 // --- JSON helpers -------------------------------------------------------------

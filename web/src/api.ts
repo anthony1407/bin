@@ -1,0 +1,261 @@
+// Client for bin's admin API (docs/admin-api.md). Session cookies travel
+// automatically; state-changing requests add the CSRF token from the session.
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+let csrfToken = "";
+let onUnauthorized: () => void = () => {};
+
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn;
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = csrfToken;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch("/api/v1" + path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: "same-origin",
+  });
+  if (res.status === 204) return undefined as T;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401 && path !== "/login") onUnauthorized();
+    throw new ApiError(res.status, data.error ?? "error", data.message ?? res.statusText);
+  }
+  return data as T;
+}
+
+// --- types ----------------------------------------------------------------------
+
+export interface Session {
+  user: string;
+  csrfToken: string;
+  expiresAt: string;
+}
+
+export type Access = "readonly" | "writeonly" | "readwrite";
+export interface Rule {
+  prefix: string;
+  access: Access;
+}
+export interface Policy {
+  mode: "private" | "public" | "custom";
+  rules?: Rule[];
+}
+
+export interface Bucket {
+  name: string;
+  createdAt: string;
+  objects: number;
+  size: number;
+  quotaBytes: number;
+  policy: Policy;
+  tags: Record<string, string>;
+  versioning: string;
+}
+
+export interface ObjectInfo {
+  key: string;
+  size: number;
+  etag: string;
+  lastModified: string;
+  contentType?: string;
+  headers?: Record<string, string>;
+  metadata?: Record<string, string>;
+  checksums?: Record<string, string>;
+  partsCount?: number;
+}
+
+export interface ObjectPage {
+  objects: ObjectInfo[];
+  prefixes: string[];
+  truncated: boolean;
+  nextAfter?: string;
+}
+
+export interface Info {
+  version: string;
+  commit: string;
+  build: string;
+  region: string;
+  dataDir: string;
+  s3Endpoint: string;
+  startedAt: string;
+  uptime: number;
+  buckets: number;
+  objects: number;
+  bytes: number;
+  disk: { total?: number; free?: number };
+}
+
+export interface AccessKey {
+  accessKey: string;
+  secretKey?: string;
+  name: string;
+  enabled: boolean;
+  createdAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  expired: boolean;
+  buckets: string[];
+  readOnly: boolean;
+}
+
+export interface Settings {
+  shareMaxExpirySeconds: number;
+  publicUrl: string;
+  region: string;
+}
+
+export interface ScrubStatus {
+  state: "idle" | "running" | "done" | "failed";
+  bucket?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  objects: number;
+  bytes: number;
+  corrupt: { bucket: string; key: string }[];
+  error?: string;
+}
+
+// --- endpoints --------------------------------------------------------------------
+
+const enc = encodeURIComponent;
+
+export const api = {
+  async login(accessKey: string, secretKey: string) {
+    const s = await request<Session>("POST", "/login", { accessKey, secretKey });
+    csrfToken = s.csrfToken;
+    return s;
+  },
+  async session() {
+    const s = await request<Session>("GET", "/session");
+    csrfToken = s.csrfToken;
+    return s;
+  },
+  logout: () => request<void>("POST", "/logout"),
+  info: () => request<Info>("GET", "/info"),
+
+  buckets: () => request<{ buckets: Bucket[] }>("GET", "/buckets").then((r) => r.buckets),
+  bucket: (name: string) => request<Bucket>("GET", `/buckets/${enc(name)}`),
+  createBucket: (name: string) => request<Bucket>("POST", "/buckets", { name }),
+  deleteBucket: (name: string, force: boolean) =>
+    request<void>("DELETE", `/buckets/${enc(name)}${force ? "?force=true" : ""}`),
+  setTags: (name: string, tags: Record<string, string>) => request<Bucket>("PUT", `/buckets/${enc(name)}/tags`, { tags }),
+  setQuota: (name: string, bytes: number) => request<Bucket>("PUT", `/buckets/${enc(name)}/quota`, { bytes }),
+  setPolicy: (name: string, policy: Policy) => request<Bucket>("PUT", `/buckets/${enc(name)}/policy`, policy),
+
+  objects: (bucket: string, opts: { prefix?: string; after?: string; search?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts.prefix) q.set("prefix", opts.prefix);
+    if (opts.after) q.set("after", opts.after);
+    if (opts.search) q.set("search", opts.search);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    return request<ObjectPage>("GET", `/buckets/${enc(bucket)}/objects?${q}`);
+  },
+  stat: (bucket: string, key: string) => request<ObjectInfo>("GET", `/buckets/${enc(bucket)}/object?key=${enc(key)}`),
+  deleteObjects: (bucket: string, keys: string[], prefixes: string[]) =>
+    request<{ deleted: number }>("DELETE", `/buckets/${enc(bucket)}/objects`, { keys, prefixes }),
+  createFolder: (bucket: string, prefix: string) => request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/folders`, { prefix }),
+  share: (bucket: string, key: string, expiresIn: number, download: boolean) =>
+    request<{ url: string; expiresAt: string }>("POST", `/buckets/${enc(bucket)}/share`, { key, expiresIn, download }),
+  downloadURL: (bucket: string, key: string, inline = false) =>
+    `/api/v1/buckets/${enc(bucket)}/download?key=${enc(key)}${inline ? "&inline=1" : ""}`,
+
+  accessKeys: () => request<{ accessKeys: AccessKey[] }>("GET", "/access-keys").then((r) => r.accessKeys),
+  createAccessKey: (body: { name: string; expiresAt?: string; buckets?: string[]; readOnly?: boolean }) =>
+    request<AccessKey>("POST", "/access-keys", body),
+  updateAccessKey: (key: string, body: Partial<{ name: string; enabled: boolean; expiresAt: string; noExpiry: boolean; buckets: string[]; readOnly: boolean }>) =>
+    request<AccessKey>("PATCH", `/access-keys/${enc(key)}`, body),
+  deleteAccessKey: (key: string) => request<void>("DELETE", `/access-keys/${enc(key)}`),
+
+  settings: () => request<Settings>("GET", "/settings"),
+  saveSettings: (shareMaxExpirySeconds: number) => request<Settings>("PUT", "/settings", { shareMaxExpirySeconds }),
+  revokeShareLinks: () => request<void>("POST", "/settings/revoke-share-links"),
+  scrub: () => request<ScrubStatus>("GET", "/scrub"),
+  startScrub: (bucket = "") => request<ScrubStatus>("POST", "/scrub", { bucket }),
+};
+
+// --- uploads --------------------------------------------------------------------------
+
+const PART_SIZE = 16 * 1024 * 1024;
+const SINGLE_MAX = 64 * 1024 * 1024;
+
+/** Sends one body with upload progress (fetch cannot report it). */
+function put(url: string, body: Blob, contentType: string, onProgress: (sent: number) => void, signal: AbortSignal): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("X-CSRF-Token", csrfToken);
+    if (contentType) xhr.setRequestHeader("Content-Type", contentType);
+    xhr.upload.onprogress = (e) => onProgress(e.loaded);
+    xhr.onload = () => {
+      const data = (() => {
+        try {
+          return JSON.parse(xhr.responseText);
+        } catch {
+          return {};
+        }
+      })();
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new ApiError(xhr.status, data.error ?? "error", data.message ?? "Upload failed"));
+    };
+    xhr.onerror = () => reject(new ApiError(0, "network", "The connection was lost during the upload."));
+    xhr.onabort = () => reject(new ApiError(0, "aborted", "Upload cancelled."));
+    signal.addEventListener("abort", () => xhr.abort());
+    xhr.send(body);
+  });
+}
+
+/**
+ * Uploads a file: one request up to 64 MiB, otherwise 16 MiB parts sent four
+ * at a time through the multipart endpoints (needed beyond 5 GiB).
+ */
+export async function uploadFile(
+  bucket: string,
+  key: string,
+  file: File,
+  onProgress: (sent: number) => void,
+  signal: AbortSignal,
+): Promise<ObjectInfo> {
+  const base = `/api/v1/buckets/${enc(bucket)}`;
+  if (file.size <= SINGLE_MAX) {
+    return put(`${base}/upload?key=${enc(key)}`, file, file.type, onProgress, signal);
+  }
+  const { uploadId } = await request<{ uploadId: string }>("POST", `/buckets/${enc(bucket)}/uploads?key=${enc(key)}`);
+  const count = Math.ceil(file.size / PART_SIZE);
+  const sent = new Array(count).fill(0);
+  const etags: { number: number; etag: string }[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < count && !signal.aborted) {
+      const i = next++;
+      const blob = file.slice(i * PART_SIZE, Math.min(file.size, (i + 1) * PART_SIZE));
+      const res = await put(`${base}/uploads/${enc(uploadId)}/parts/${i + 1}?key=${enc(key)}`, blob, "", (n) => {
+        sent[i] = n;
+        onProgress(sent.reduce((a, b) => a + b, 0));
+      }, signal);
+      etags[i] = { number: i + 1, etag: res.etag };
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, count) }, worker));
+    if (signal.aborted) throw new ApiError(0, "aborted", "Upload cancelled.");
+    return await request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/uploads/${enc(uploadId)}/complete?key=${enc(key)}`, { parts: etags });
+  } catch (e) {
+    request("DELETE", `/buckets/${enc(bucket)}/uploads/${enc(uploadId)}?key=${enc(key)}`).catch(() => {});
+    throw e;
+  }
+}

@@ -6,9 +6,13 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X bin/internal/buildinfo.Version=$(VERSION) \
            -X bin/internal/buildinfo.Commit=$(COMMIT) -X bin/internal/buildinfo.Date=$(DATE)
 
-.PHONY: build test vet image integration crash check
+.PHONY: web build test vet image integration crash check
 
-## build: compile the server into dist/
+## web: build the panel into internal/webui/dist (needs Node; embedded by build)
+web:
+	cd web && npm ci --no-audit --no-fund && npm run build
+
+## build: compile the server into dist/ (run make web first to include the panel)
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o dist/bin$(shell $(GO) env GOEXE) ./cmd/bin
 

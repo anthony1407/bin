@@ -33,6 +33,7 @@ import (
 	"bin/internal/secrets"
 	"bin/internal/server"
 	"bin/internal/storage"
+	"bin/internal/webui"
 )
 
 func main() {
@@ -175,6 +176,11 @@ func runServer(args []string) error {
 		return err
 	}
 
+	panel := webui.New()
+	if !panel.Built() {
+		log.Warn("this binary was built without the web panel; the console serves only the admin API (run make web, then rebuild)")
+	}
+
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	go stopOnSignal(log, cancel)
@@ -209,6 +215,7 @@ func runServer(args []string) error {
 			PublicURL:   cfg.PublicURL,
 			Log:         log.With("api", "console"),
 			LogRequests: cfg.LogRequests,
+			Panel:       panel,
 		})},
 	)
 	if err == nil {

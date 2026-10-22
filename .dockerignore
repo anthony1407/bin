@@ -4,5 +4,7 @@ dist
 docs
 test
 web/node_modules
+web/src/generated
+internal/webui/dist
 *.env
 .env

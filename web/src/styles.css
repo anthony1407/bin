@@ -1,0 +1,135 @@
+/* Compiled by the Tailwind CLI into src/generated/tailwind.css. */
+@import "tailwindcss";
+
+/* Dark mode follows the .dark class set by public/theme.js (system default,
+   overridable from the UI). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic colour tokens from the brand pair: indigo #4F46E5 and night
+   #0F172A, on slate neutrals. Status colours only appear when they mean
+   something. */
+:root {
+  --night: #0f172a;
+  --paper: #f8fafc;
+  --surface: #ffffff;
+  --sunken: #f1f5f9;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --ink: #0f172a;
+  --muted: #475569;
+  --faint: #94a3b8;
+  --accent: #4f46e5;
+  --accent-ink: #4338ca;
+  --accent-soft: #eef2ff;
+  --on-accent: #ffffff;
+  --ok: #15803d;
+  --ok-soft: #e9f7ee;
+  --warn: #b45309;
+  --warn-soft: #fef5e7;
+  --danger: #dc2626;
+  --danger-soft: #fef0f0;
+  --focus: #4f46e566;
+}
+
+/* Dark mode sits on the brand night colour; indigo stays the accent, with a
+   lighter tint where it is used as text. */
+.dark {
+  --paper: #0f172a;
+  --surface: #151f35;
+  --sunken: #0b1222;
+  --line: #1e293b;
+  --line-strong: #334155;
+  --ink: #f1f5f9;
+  --muted: #94a3b8;
+  --faint: #64748b;
+  --accent: #4f46e5;
+  --accent-ink: #a5b4fc;
+  --accent-soft: #1e1b4b;
+  --on-accent: #ffffff;
+  --ok: #4ade80;
+  --ok-soft: #10261b;
+  --warn: #fbbf24;
+  --warn-soft: #2a2110;
+  --danger: #f87171;
+  --danger-soft: #2d1418;
+  --focus: #818cf8aa;
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --color-night: var(--night);
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --radius-card: 0.5rem;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01";
+  }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
+
+@layer components {
+  /* Numbers and machine data line up in columns. */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The "inventory label" strip used on bucket cards and detail headers. */
+  .label-strip {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  /* Loading indicators for fast requests: invisible for the first 300 ms,
+     so a quick response never flashes a spinner. */
+  .appear-late {
+    animation: appear 0.2s ease-out 0.3s both;
+  }
+  /* A faint grid behind the brand panel of the sign-in screen. */
+  .grid-paper {
+    background-image:
+      linear-gradient(rgb(255 255 255 / 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 0.05) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+}
