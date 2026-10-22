@@ -4,6 +4,7 @@ import { Globe, Lock, Plus, Save, SlidersHorizontal, Trash2, X } from "lucide-re
 import { api, type Access, type Bucket, type Policy, type Rule } from "../api";
 import { bytes, count, dateTime } from "../lib/format";
 import { Badge, Button, Card, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+import { Select } from "../components/Select";
 import { accessLabel } from "./Buckets";
 
 const GiB = 1024 ** 3;
@@ -96,18 +97,12 @@ function PolicyEditor({ bucket, onSaved }: { bucket: Bucket; onSaved: (b: Bucket
           {rules.map((r, i) => (
             <div key={i} className="grid grid-cols-[1fr_9rem_2.25rem] items-center gap-2 border-b border-line px-3 py-2 last:border-b-0">
               <Input mono value={r.prefix} onChange={(e) => update(i, { prefix: e.target.value })} placeholder="shared/" aria-label="Folder prefix" />
-              <select
+              <Select
+                aria-label="Anonymous access"
                 value={r.access}
-                onChange={(e) => update(i, { access: e.target.value as Access })}
-                aria-label="Access"
-                className="h-9 rounded-md border border-line-strong bg-surface px-2 text-sm focus:border-accent focus:outline-none"
-              >
-                {(Object.keys(ACCESS_TEXT) as Access[]).map((a) => (
-                  <option key={a} value={a}>
-                    {ACCESS_TEXT[a]}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => update(i, { access: v as Access })}
+                options={(Object.keys(ACCESS_TEXT) as Access[]).map((a) => ({ value: a, label: ACCESS_TEXT[a] }))}
+              />
               <IconButton label="Remove rule" onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))} disabled={rules.length === 1}>
                 <X className="size-4" />
               </IconButton>

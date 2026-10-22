@@ -4,6 +4,7 @@ import { CircleAlert, CircleCheck, Link2Off, Play, Save, ShieldCheck } from "luc
 import { api, type Bucket, type Info, type ScrubStatus, type Settings } from "../api";
 import { bytes, count, dateTime, duration } from "../lib/format";
 import { Button, Card, Field, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
+import { Select } from "../components/Select";
 
 function Stat({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
@@ -182,20 +183,21 @@ function ScrubCard({ buckets }: { buckets: Bucket[] }) {
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 p-5">
-        <select
-          value={bucket}
-          onChange={(e) => setBucket(e.target.value)}
-          disabled={running}
+        <Select
+          searchable
+          mono
           aria-label="Bucket to scan"
-          className="h-9 min-w-48 rounded-md border border-line-strong bg-surface px-2 font-mono text-sm focus:border-accent focus:outline-none"
-        >
-          <option value="">All buckets</option>
-          {buckets.map((b) => (
-            <option key={b.name} value={b.name}>
-              {b.name}
-            </option>
-          ))}
-        </select>
+          value={bucket}
+          onChange={setBucket}
+          disabled={running}
+          placeholder="Search buckets"
+          emptyText="No bucket matches"
+          className="w-full sm:w-72"
+          options={[
+            { value: "", label: "All buckets", mono: false, hint: `${count(buckets.length)} buckets` },
+            ...buckets.map((b) => ({ value: b.name, label: b.name, hint: bytes(b.size) })),
+          ]}
+        />
         <Button variant="primary" busy={running} icon={<Play className="size-4" />} onClick={start}>
           {running ? "Scanning…" : "Start scan"}
         </Button>
