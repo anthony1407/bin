@@ -2,18 +2,21 @@
 package s3
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"bin/internal/s3/s3err"
+	"bin/internal/s3/sigv4"
 	"bin/internal/server"
 )
 
 // Options configures the S3 handler.
 type Options struct {
-	Domain string // virtual-host domain; empty = path style only
-	HostID string // stable instance identifier, sent as x-amz-id-2 and <HostId>
+	Domain string          // virtual-host domain; empty = path style only
+	HostID string          // stable instance identifier, sent as x-amz-id-2 and <HostId>
+	Auth   *sigv4.Verifier // authenticates every request
 	Log    *slog.Logger
 }
 
@@ -44,11 +47,30 @@ func (h *Handler) withMiddleware() http.Handler {
 	return server.WithRequestID("X-Amz-Request-Id", next)
 }
 
+type authKey struct{}
+
+// AccessKey returns the access key that signed the request, or "" if anonymous.
+func AccessKey(ctx context.Context) string {
+	key, _ := ctx.Value(authKey{}).(string)
+	return key
+}
+
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", "bin")
 	w.Header().Set("X-Amz-Id-2", h.opts.HostID)
 
-	req, err := Resolve(r, h.opts.Domain)
+	// Authenticate before routing, so unauthenticated callers only ever see
+	// authentication errors.
+	bucket, key := parseTarget(r, h.opts.Domain)
+	req := Request{Bucket: bucket, Key: key}
+	auth, err := h.opts.Auth.Verify(r)
+	if err == nil && auth.Anonymous() {
+		err = s3err.ErrAccessDenied // anonymous access rules arrive with bucket policies
+	}
+	if err == nil {
+		r = r.WithContext(context.WithValue(r.Context(), authKey{}, auth.AccessKey))
+		req, err = Resolve(r, h.opts.Domain)
+	}
 	if err == nil {
 		if fn := h.ops[req.Op]; fn != nil {
 			err = fn(w, r, req)

@@ -103,6 +103,20 @@ func TestMiddlewareChain(t *testing.T) {
 	}
 }
 
+func TestRedactQuery(t *testing.T) {
+	cases := map[string]string{
+		"":                        "",
+		"list-type=2&prefix=a%2F": "list-type=2&prefix=a%2F",
+		"X-Amz-Credential=ak%2F20261022&X-Amz-Signature=abc123&X-Amz-Expires=300": "X-Amz-Credential=ak%2F20261022&X-Amz-Signature=REDACTED&X-Amz-Expires=300",
+		"x-amz-signature=abc&X-Amz-Security-Token=tok":                            "x-amz-signature=REDACTED&X-Amz-Security-Token=REDACTED",
+	}
+	for in, want := range cases {
+		if got := redactQuery(in); got != want {
+			t.Errorf("redactQuery(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNewRequestIDShape(t *testing.T) {
 	a, b := NewRequestID(), NewRequestID()
 	if len(a) != 16 || strings.ToUpper(a) != a || a == b {

@@ -76,13 +76,35 @@ func AccessLog(log *slog.Logger, next http.Handler) http.Handler {
 			slog.String("id", RequestID(r.Context())),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.EscapedPath()),
-			slog.String("query", r.URL.RawQuery),
+			slog.String("query", redactQuery(r.URL.RawQuery)),
 			slog.Int("status", sw.status),
 			slog.Int64("bytes", sw.bytes),
 			slog.Duration("took", time.Since(start)),
 			slog.String("remote", r.RemoteAddr),
 		)
 	})
+}
+
+// secretParams are query parameters whose values must never reach the logs:
+// a logged presigned-URL signature can be replayed until the URL expires.
+var secretParams = []string{"X-Amz-Signature", "X-Amz-Security-Token"}
+
+// redactQuery replaces the values of secretParams with "REDACTED", leaving the
+// rest of the raw query untouched.
+func redactQuery(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	parts := strings.Split(raw, "&")
+	for i, p := range parts {
+		name, _, _ := strings.Cut(p, "=")
+		for _, s := range secretParams {
+			if strings.EqualFold(name, s) {
+				parts[i] = name + "=REDACTED"
+			}
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 // Recover turns a panic into a logged error and a response rendered by onPanic,

@@ -19,6 +19,7 @@ import (
 	"bin/internal/buildinfo"
 	"bin/internal/config"
 	"bin/internal/s3"
+	"bin/internal/s3/sigv4"
 	"bin/internal/server"
 )
 
@@ -59,7 +60,11 @@ func run() error {
 		server.Listener{Name: "s3", Addr: cfg.S3Addr, Handler: s3.NewHandler(s3.Options{
 			Domain: cfg.Domain,
 			HostID: hostID(cfg),
-			Log:    log.With("listener", "s3"),
+			Auth: &sigv4.Verifier{
+				Region: cfg.Region,
+				Store:  sigv4.StaticStore{cfg.RootAccessKey: cfg.RootSecretKey},
+			},
+			Log: log.With("listener", "s3"),
 		})},
 		server.Listener{Name: "console", Addr: cfg.ConsoleAddr, Handler: admin.NewHandler(admin.Options{
 			Log: log.With("listener", "console"),
