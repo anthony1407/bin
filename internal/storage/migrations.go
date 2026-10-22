@@ -100,6 +100,32 @@ var migrations = []string{
 		PRIMARY KEY (upload_id, part_number)
 	) WITHOUT ROWID;
 	CREATE INDEX upload_parts_blob ON upload_parts (blob);`,
+
+	// 4: administration. Access key secrets are stored encrypted with the
+	// master key; sessions are stored by the hash of their token, never the
+	// token itself.
+	`CREATE TABLE access_keys (
+		access_key   TEXT    PRIMARY KEY,
+		secret_enc   TEXT    NOT NULL,
+		name         TEXT    NOT NULL DEFAULT '',
+		enabled      INTEGER NOT NULL DEFAULT 1,
+		internal     INTEGER NOT NULL DEFAULT 0,  -- managed by bin itself, hidden from listings
+		created_at   INTEGER NOT NULL,
+		expires_at   INTEGER NOT NULL DEFAULT 0,  -- 0 = never
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		scope        TEXT    NOT NULL DEFAULT ''  -- JSON, interpreted by package auth; '' = full access
+	) WITHOUT ROWID;
+	CREATE TABLE sessions (
+		token_hash TEXT    PRIMARY KEY,
+		csrf       TEXT    NOT NULL,
+		user       TEXT    NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	) WITHOUT ROWID;
+	CREATE TABLE settings (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	) WITHOUT ROWID;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

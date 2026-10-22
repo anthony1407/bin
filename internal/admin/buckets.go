@@ -1,0 +1,165 @@
+package admin
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"bin/internal/auth"
+	"bin/internal/server"
+	"bin/internal/storage"
+)
+
+type bucketJSON struct {
+	Name       string            `json:"name"`
+	CreatedAt  time.Time         `json:"createdAt"`
+	Objects    int64             `json:"objects"`
+	Size       int64             `json:"size"`
+	QuotaBytes int64             `json:"quotaBytes"`
+	Policy     auth.Policy       `json:"policy"`
+	Tags       map[string]string `json:"tags"`
+	Versioning string            `json:"versioning"`
+}
+
+func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage) bucketJSON {
+	policy, _ := auth.ParsePolicy(b.Policy)
+	tags, err := h.opts.Store.BucketTags(r.Context(), b.Name)
+	if err != nil {
+		tags = map[string]string{}
+	}
+	return bucketJSON{
+		Name: b.Name, CreatedAt: b.CreatedAt, Objects: u.Objects, Size: u.Bytes,
+		QuotaBytes: b.QuotaBytes, Policy: policy, Tags: tags, Versioning: b.Versioning,
+	}
+}
+
+func (h *Handler) listBuckets(w http.ResponseWriter, r *http.Request) {
+	buckets, err := h.opts.Store.ListBuckets(r.Context())
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	usage, err := h.opts.Store.BucketUsage(r.Context())
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	out := make([]bucketJSON, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, h.bucketJSON(r, b, usage[b.Name]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": out})
+}
+
+func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Name string `json:"name"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if err := h.opts.Store.CreateBucket(r.Context(), in.Name); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	h.opts.Log.Info("bucket created from the console", "bucket", in.Name)
+	b, _ := h.opts.Store.GetBucket(r.Context(), in.Name)
+	writeJSON(w, http.StatusCreated, h.bucketJSON(r, b, storage.Usage{}))
+}
+
+func (h *Handler) getBucket(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("bucket")
+	b, err := h.opts.Store.GetBucket(r.Context(), name)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	usage, err := h.opts.Store.BucketUsage(r.Context())
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.bucketJSON(r, b, usage[name]))
+}
+
+// deleteBucket removes a bucket; with ?force=true it first deletes every
+// object in it.
+func (h *Handler) deleteBucket(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("bucket")
+	if r.URL.Query().Get("force") == "true" {
+		n, err := h.opts.Store.DeletePrefix(r.Context(), name, "")
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		server.Annotate(r.Context(), slog.Int("objects_deleted", n))
+	}
+	if err := h.opts.Store.DeleteBucket(r.Context(), name); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	h.opts.Log.Info("bucket deleted from the console", "bucket", name)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) putTags(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Tags map[string]string `json:"tags"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if len(in.Tags) > 50 {
+		writeError(w, http.StatusBadRequest, "too_many_tags", "A bucket can have at most 50 tags.")
+		return
+	}
+	for k, v := range in.Tags {
+		if k == "" || len(k) > 128 || len(v) > 256 {
+			writeError(w, http.StatusBadRequest, "invalid_tag", "Tag keys need 1-128 characters and values at most 256.")
+			return
+		}
+	}
+	if err := h.opts.Store.SetBucketTags(r.Context(), r.PathValue("bucket"), in.Tags); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	h.getBucket(w, r)
+}
+
+func (h *Handler) putQuota(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Bytes int64 `json:"bytes"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.Bytes < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_quota", "The quota must be zero (no limit) or a positive number of bytes.")
+		return
+	}
+	if err := h.opts.Store.SetBucketQuota(r.Context(), r.PathValue("bucket"), in.Bytes); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	h.getBucket(w, r)
+}
+
+func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
+	var in auth.Policy
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if err := in.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
+		return
+	}
+	name := r.PathValue("bucket")
+	if err := h.opts.Store.SetBucketPolicy(r.Context(), name, in.String()); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	if in.Mode != "private" {
+		h.opts.Log.Warn("bucket opened to anonymous access from the console", "bucket", name, "mode", in.Mode)
+	}
+	h.getBucket(w, r)
+}

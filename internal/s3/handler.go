@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"bin/internal/auth"
 	"bin/internal/s3/s3err"
 	"bin/internal/s3/sigv4"
 	"bin/internal/server"
@@ -21,6 +22,7 @@ type Options struct {
 	HostID string          // stable instance identifier, sent as x-amz-id-2 and <HostId>
 	Owner  Owner           // reported as the owner of every bucket
 	Auth   *sigv4.Verifier // authenticates every request
+	Keys   *auth.Keyring   // scopes of access keys; nil gives every signed request full access
 	Log    *slog.Logger
 	// LogRequests logs one line per request (server errors are always logged).
 	LogRequests bool
@@ -115,21 +117,31 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authenticate before routing, so unauthenticated callers only ever see
-	// authentication errors.
+	// Authenticate, route, then authorize. Anonymous callers whose request is
+	// not allowed by the bucket policy only ever see AccessDenied.
 	bucket, key := parseTarget(r, h.opts.Domain)
 	req := Request{Bucket: bucket, Key: key}
 	auth, err := h.opts.Auth.Verify(r)
-	if err == nil && auth.Anonymous() {
-		err = s3err.ErrAccessDenied // anonymous access rules arrive with bucket policies
-	}
 	if err == nil {
 		r = r.WithContext(context.WithValue(r.Context(), authKey{}, auth.AccessKey))
-		server.Annotate(r.Context(), slog.String("access_key", auth.AccessKey))
+		if auth.Anonymous() {
+			server.Annotate(r.Context(), slog.String("access_key", "(anonymous)"))
+		} else {
+			server.Annotate(r.Context(), slog.String("access_key", auth.AccessKey))
+		}
 		req, err = Resolve(r, h.opts.Domain)
+		if err != nil && auth.Anonymous() {
+			err = s3err.ErrAccessDenied
+		}
 	}
 	if req.Op != "" {
 		server.Annotate(r.Context(), slog.String("op", string(req.Op)))
+	}
+	if err == nil {
+		var ctx context.Context
+		if ctx, err = h.authorize(r, req, auth.AccessKey); err == nil {
+			r = r.WithContext(ctx)
+		}
 	}
 	if err == nil {
 		if fn := h.ops[req.Op]; fn != nil {

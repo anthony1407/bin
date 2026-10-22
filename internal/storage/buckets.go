@@ -14,6 +14,18 @@ type Bucket struct {
 	Name       string
 	CreatedAt  time.Time
 	Versioning string // "", "Enabled" or "Suspended"
+	QuotaBytes int64  // 0: unlimited
+	Policy     string // access policy JSON (package auth); "": private
+}
+
+const bucketColumns = `name, created_at, versioning, quota_bytes, policy`
+
+func scanBucket(scan func(...any) error) (Bucket, error) {
+	var b Bucket
+	var created int64
+	err := scan(&b.Name, &created, &b.Versioning, &b.QuotaBytes, &b.Policy)
+	b.CreatedAt = fromNanos(created)
+	return b, err
 }
 
 // ValidBucketName applies the AWS naming rules for general purpose buckets.
@@ -68,33 +80,26 @@ func (s *Store) CreateBucket(ctx context.Context, name string) error {
 
 // GetBucket returns a bucket's settings.
 func (s *Store) GetBucket(ctx context.Context, name string) (Bucket, error) {
-	var b Bucket
-	var created int64
-	err := s.read.QueryRowContext(ctx,
-		`SELECT name, created_at, versioning FROM buckets WHERE name = ?`, name).
-		Scan(&b.Name, &created, &b.Versioning)
+	b, err := scanBucket(s.read.QueryRowContext(ctx, `SELECT `+bucketColumns+` FROM buckets WHERE name = ?`, name).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Bucket{}, ErrNoSuchBucket
 	}
-	b.CreatedAt = fromNanos(created)
 	return b, err
 }
 
 // ListBuckets returns every bucket, ordered by name.
 func (s *Store) ListBuckets(ctx context.Context) ([]Bucket, error) {
-	rows, err := s.read.QueryContext(ctx, `SELECT name, created_at, versioning FROM buckets ORDER BY name`)
+	rows, err := s.read.QueryContext(ctx, `SELECT `+bucketColumns+` FROM buckets ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Bucket
 	for rows.Next() {
-		var b Bucket
-		var created int64
-		if err := rows.Scan(&b.Name, &created, &b.Versioning); err != nil {
+		b, err := scanBucket(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		b.CreatedAt = fromNanos(created)
 		out = append(out, b)
 	}
 	return out, rows.Err()

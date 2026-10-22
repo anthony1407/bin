@@ -461,6 +461,9 @@ func (s *Store) CompleteUpload(ctx context.Context, bucket, key, uploadID string
 		if err != nil {
 			return err
 		}
+		if err := checkQuota(ctx, tx, bid, info.Size); err != nil {
+			return err
+		}
 		dropped = replaced
 		// Parts uploaded but not listed are discarded with the upload.
 		used := map[int]bool{}

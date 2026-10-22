@@ -24,11 +24,13 @@ import (
 	"time"
 
 	"bin/internal/admin"
+	"bin/internal/auth"
 	"bin/internal/buildinfo"
 	"bin/internal/config"
 	"bin/internal/logging"
 	"bin/internal/s3"
 	"bin/internal/s3/sigv4"
+	"bin/internal/secrets"
 	"bin/internal/server"
 	"bin/internal/storage"
 )
@@ -168,6 +170,11 @@ func runServer(args []string) error {
 	}
 	defer store.Close()
 
+	keys, err := openKeyring(log, cfg, store)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	go stopOnSignal(log, cancel)
@@ -183,19 +190,23 @@ func runServer(args []string) error {
 	defer os.Remove(healthAddrFile())
 	err = server.Run(ctx, log, ready,
 		server.Listener{Name: "s3", Addr: cfg.S3Addr, Handler: s3.NewHandler(s3.Options{
-			Store:  store,
-			Region: cfg.Region,
-			Domain: cfg.Domain,
-			HostID: hostID(cfg),
-			Owner:  owner(cfg),
-			Auth: &sigv4.Verifier{
-				Region: cfg.Region,
-				Store:  sigv4.StaticStore{cfg.RootAccessKey: cfg.RootSecretKey},
-			},
+			Store:       store,
+			Region:      cfg.Region,
+			Domain:      cfg.Domain,
+			HostID:      hostID(cfg),
+			Owner:       owner(cfg),
+			Auth:        &sigv4.Verifier{Region: cfg.Region, Store: keys},
+			Keys:        keys,
 			Log:         log.With("api", "s3"),
 			LogRequests: cfg.LogRequests,
 		})},
 		server.Listener{Name: "console", Addr: cfg.ConsoleAddr, Handler: admin.NewHandler(admin.Options{
+			Store:       store,
+			Keys:        keys,
+			Region:      cfg.Region,
+			DataDir:     cfg.DataDir,
+			S3Addr:      cfg.S3Addr,
+			PublicURL:   cfg.PublicURL,
 			Log:         log.With("api", "console"),
 			LogRequests: cfg.LogRequests,
 		})},
@@ -204,6 +215,34 @@ func runServer(args []string) error {
 		log.Info("bin stopped")
 	}
 	return err
+}
+
+// openKeyring loads the master key (BIN_MASTER_KEY or .bin/master.key),
+// checks it against the stored secrets and returns the credential keyring.
+func openKeyring(log *slog.Logger, cfg *config.Config, store *storage.Store) (*auth.Keyring, error) {
+	keyFile := filepath.Join(cfg.DataDir, ".bin", "master.key")
+	key, created, err := secrets.LoadKey(cfg.MasterKey, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading the master key: %w", err)
+	}
+	if created {
+		log.Warn("generated a new master key; keep a backup of it together with the data, "+
+			"or set BIN_MASTER_KEY to keep it outside", "file", keyFile)
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := auth.CheckMasterKey(context.Background(), store, box); err != nil {
+		return nil, err
+	}
+	return &auth.Keyring{
+		RootAccessKey: cfg.RootAccessKey,
+		RootSecretKey: cfg.RootSecretKey,
+		Store:         store,
+		Box:           box,
+		Log:           log,
+	}, nil
 }
 
 // stopOnSignal cancels the server on SIGINT/SIGTERM, recording which signal

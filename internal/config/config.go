@@ -21,6 +21,7 @@ type Config struct {
 	ConsoleAddr string // listen address of the panel and the admin API
 	Region      string // region advertised and required in SigV4 scopes
 	Domain      string // domain for virtual-host style (bucket.domain); empty = path-style only
+	PublicURL   string // S3 endpoint as clients reach it; empty = derived from each request
 
 	RootAccessKey string
 	RootSecretKey string
@@ -45,6 +46,7 @@ const (
 	envLogLevel      = "BIN_LOG_LEVEL"
 	envLogFormat     = "BIN_LOG_FORMAT"
 	envLogRequests   = "BIN_LOG_REQUESTS"
+	envPublicURL     = "BIN_PUBLIC_URL"
 )
 
 // Setting documents one configuration variable, for --help and validation.
@@ -66,6 +68,7 @@ var Settings = []Setting{
 	{envConsoleAddr, nil, ":9001", "listen address of the web console and admin API"},
 	{envRegion, nil, "us-east-1", "region reported to clients and required in signatures"},
 	{envDomain, nil, "", "domain for virtual-host style requests (bucket.domain); empty = path style only"},
+	{envPublicURL, nil, "", "S3 API URL as clients see it (e.g. https://s3.example.com), used in share links"},
 	{envMasterKey, nil, "(generated)", "key that encrypts secrets at rest; generated in the data directory if unset"},
 	{envLogLevel, nil, "info", "debug, info, warn or error"},
 	{envLogFormat, nil, "text", "text (readable) or json (for log collectors)"},
@@ -206,6 +209,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		ConsoleAddr:   get(envConsoleAddr, ":9001"),
 		Region:        get(envRegion, "us-east-1"),
 		Domain:        strings.ToLower(get(envDomain, "")),
+		PublicURL:     strings.TrimRight(get(envPublicURL, ""), "/"),
 		RootAccessKey: get(envRootAccessKey, ""),
 		RootSecretKey: get(envRootSecretKey, ""),
 		MasterKey:     get(envMasterKey, ""),
@@ -248,6 +252,9 @@ func (c *Config) validate() error {
 	}
 	if c.LogFormat != "text" && c.LogFormat != "json" {
 		errs = append(errs, fmt.Errorf("%s must be \"text\" or \"json\"", envLogFormat))
+	}
+	if c.PublicURL != "" && !strings.HasPrefix(c.PublicURL, "http://") && !strings.HasPrefix(c.PublicURL, "https://") {
+		errs = append(errs, fmt.Errorf("%s must start with http:// or https://", envPublicURL))
 	}
 	if c.S3Addr == c.ConsoleAddr {
 		errs = append(errs, fmt.Errorf("%s and %s must not be the same address", envS3Addr, envConsoleAddr))

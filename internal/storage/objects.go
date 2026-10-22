@@ -115,6 +115,9 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 		return ObjectInfo{}, err
 	}
 
+	if err := s.precheckQuota(ctx, bucket, key, size); err != nil {
+		return ObjectInfo{}, err
+	}
 	blob, n, sums, err := s.writeBlob(r, size, opts.Checksums)
 	if err != nil {
 		return ObjectInfo{}, err
@@ -156,6 +159,9 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 		if replaced, err = s.replaceLatest(ctx, tx, bid, key, opts.IfMatch, opts.IfNoneMatch); err != nil {
 			return err
 		}
+		if err := checkQuota(ctx, tx, bid, info.Size); err != nil {
+			return err // the replaced object is already excluded from the usage
+		}
 		_, err = insertObject(ctx, tx, bid, info)
 		return err
 	})
@@ -165,6 +171,24 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 	}
 	s.collect(ctx, replaced...)
 	return info, nil
+}
+
+// precheckQuota rejects a write of size bytes before any data is read when
+// it would clearly exceed the bucket quota. The authoritative check happens
+// again at commit time.
+func (s *Store) precheckQuota(ctx context.Context, bucket, key string, size int64) error {
+	if size <= 0 {
+		return nil
+	}
+	bid, err := bucketID(ctx, s.read, bucket)
+	if err != nil {
+		return err
+	}
+	grow := size
+	if cur, err := latest(ctx, s.read, bid, key); err == nil {
+		grow -= cur.Size
+	}
+	return checkQuota(ctx, s.read, bid, grow)
 }
 
 // replaceLatest evaluates a conditional write against the current object and

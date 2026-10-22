@@ -1,0 +1,397 @@
+package admin
+
+import (
+	"errors"
+	"io"
+	"log/slog"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"path"
+	"strconv"
+	"strings"
+	"time"
+
+	"bin/internal/httprange"
+	"bin/internal/s3/sigv4"
+	"bin/internal/server"
+	"bin/internal/storage"
+)
+
+// maxSingleUpload is the largest body accepted by the single-request upload;
+// larger files go through the multipart endpoints.
+const maxSingleUpload = 5 << 30
+
+type objectJSON struct {
+	Key          string            `json:"key"`
+	Size         int64             `json:"size"`
+	ETag         string            `json:"etag"`
+	LastModified time.Time         `json:"lastModified"`
+	ContentType  string            `json:"contentType,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	Checksums    map[string]string `json:"checksums,omitempty"`
+	PartsCount   int               `json:"partsCount,omitempty"`
+}
+
+func toObjectJSON(o storage.ObjectInfo) objectJSON {
+	j := objectJSON{
+		Key: o.Key, Size: o.Size, ETag: o.ETag, LastModified: o.ModTime, ContentType: o.ContentType,
+		Headers: o.Headers, Metadata: o.UserMeta, PartsCount: o.PartsCount,
+	}
+	if len(o.Checksums) > 0 {
+		j.Checksums = map[string]string{}
+		for a, v := range o.Checksums {
+			j.Checksums[string(a)] = v
+		}
+	}
+	return j
+}
+
+// listObjects lists a "folder" (prefix + delimiter), or searches under the
+// prefix when ?search= is set.
+func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	bucket, prefix := r.PathValue("bucket"), q.Get("prefix")
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive number.")
+			return
+		}
+		limit = min(n, 1000)
+	}
+	if term := q.Get("search"); term != "" {
+		found, err := h.opts.Store.SearchObjects(r.Context(), bucket, prefix, term, limit+1)
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		out := make([]objectJSON, 0, len(found))
+		for i, o := range found {
+			if i < limit {
+				out = append(out, toObjectJSON(o))
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"objects": out, "prefixes": []string{}, "truncated": len(found) > limit})
+		return
+	}
+	delimiter := "/"
+	if q.Has("delimiter") {
+		delimiter = q.Get("delimiter")
+	}
+	res, err := h.opts.Store.ListObjects(r.Context(), bucket, storage.ListOptions{
+		Prefix: prefix, Delimiter: delimiter, After: q.Get("after"), MaxKeys: limit,
+	})
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	out := make([]objectJSON, 0, len(res.Objects))
+	for _, o := range res.Objects {
+		out = append(out, toObjectJSON(o))
+	}
+	prefixes := res.CommonPrefixes
+	if prefixes == nil {
+		prefixes = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"objects": out, "prefixes": prefixes, "truncated": res.IsTruncated, "nextAfter": res.NextMarker,
+	})
+}
+
+func (h *Handler) statObject(w http.ResponseWriter, r *http.Request) {
+	info, err := h.opts.Store.StatObject(r.Context(), r.PathValue("bucket"), r.URL.Query().Get("key"))
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toObjectJSON(info))
+}
+
+// download streams an object for saving (attachment) or previewing (?inline=1).
+// Every response is sandboxed by CSP: the console origin also serves the admin
+// API, and an uploaded HTML or SVG file must never run scripts in it.
+func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	info, data, err := h.opts.Store.OpenObject(r.Context(), r.PathValue("bucket"), key)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	defer data.Close()
+
+	hdr := w.Header()
+	hdr.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	hdr.Set("Cache-Control", "private, no-cache")
+	hdr.Set("Content-Type", info.ContentType)
+	hdr.Set("ETag", `"`+info.ETag+`"`)
+	hdr.Set("Last-Modified", info.ModTime.Format(http.TimeFormat))
+	hdr.Set("Accept-Ranges", "bytes")
+	disposition := "attachment"
+	if r.URL.Query().Get("inline") == "1" {
+		disposition = "inline"
+	}
+	hdr.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": path.Base(key)}))
+
+	body := data.Verified()
+	status, length := http.StatusOK, info.Size
+	if rh := r.Header.Get("Range"); rh != "" {
+		start, n, ok, satisfiable := httprange.Parse(rh, info.Size)
+		if ok && !satisfiable {
+			hdr.Set("Content-Range", "bytes */"+strconv.FormatInt(info.Size, 10))
+			writeError(w, http.StatusRequestedRangeNotSatisfiable, "invalid_range", "The requested range is not satisfiable.")
+			return
+		}
+		if ok {
+			status, length, body = http.StatusPartialContent, n, data.Range(start, n)
+			hdr.Set("Content-Range", httprange.ContentRange(start, n, info.Size))
+		}
+	}
+	hdr.Set("Content-Length", strconv.FormatInt(length, 10))
+	w.WriteHeader(status)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := io.Copy(w, body); err != nil {
+		if errors.Is(err, storage.ErrCorrupt) {
+			h.opts.Log.Error("corrupt object: SHA-256 mismatch, download aborted", "bucket", info.Bucket, "key", key)
+		}
+		panic(http.ErrAbortHandler)
+	}
+}
+
+// contentType picks the stored type: the browser's, unless it is the generic
+// one, in which case the file extension decides.
+func contentType(r *http.Request, key string) string {
+	ct := r.Header.Get("Content-Type")
+	if ct == "" || ct == "application/octet-stream" {
+		if byExt := mime.TypeByExtension(path.Ext(key)); byExt != "" {
+			return byExt
+		}
+	}
+	if ct == "" {
+		return "application/octet-stream"
+	}
+	return ct
+}
+
+// upload stores the raw request body as one object (up to 5 GiB).
+func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if r.ContentLength < 0 {
+		writeError(w, http.StatusLengthRequired, "length_required", "Content-Length is required.")
+		return
+	}
+	if r.ContentLength > maxSingleUpload {
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "Files over 5 GiB must use the multipart upload endpoints.")
+		return
+	}
+	info, err := h.opts.Store.PutObject(r.Context(), r.PathValue("bucket"), key, r.Body, r.ContentLength,
+		storage.PutOptions{ContentType: contentType(r, key)})
+	if err != nil {
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			err = storage.ErrIncompleteBody
+		}
+		h.storageError(w, r, err)
+		return
+	}
+	server.Annotate(r.Context(), slog.String("key", key))
+	writeJSON(w, http.StatusCreated, toObjectJSON(info))
+}
+
+// createFolder stores the empty "prefix/" object S3 tools use as a folder.
+func (h *Handler) createFolder(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Prefix string `json:"prefix"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if strings.Trim(in.Prefix, "/") == "" {
+		writeError(w, http.StatusBadRequest, "invalid_prefix", "Give the folder a name.")
+		return
+	}
+	if !strings.HasSuffix(in.Prefix, "/") {
+		in.Prefix += "/"
+	}
+	info, err := h.opts.Store.PutObject(r.Context(), r.PathValue("bucket"), in.Prefix, strings.NewReader(""), 0,
+		storage.PutOptions{ContentType: "application/x-directory", IfNoneMatch: "*"})
+	if errors.Is(err, storage.ErrPrecondition) {
+		writeError(w, http.StatusConflict, "folder_exists", "The folder already exists.")
+		return
+	}
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toObjectJSON(info))
+}
+
+// deleteObjects deletes the listed keys and everything under the listed
+// prefixes (folders).
+func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Keys     []string `json:"keys"`
+		Prefixes []string `json:"prefixes"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	bucket := r.PathValue("bucket")
+	deleted := 0
+	for _, k := range in.Keys {
+		if err := h.opts.Store.DeleteObject(r.Context(), bucket, k); err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		deleted++
+	}
+	for _, p := range in.Prefixes {
+		if p == "" {
+			writeError(w, http.StatusBadRequest, "invalid_prefix", "Deleting a whole bucket's content needs DELETE /buckets/{bucket}?force=true.")
+			return
+		}
+		n, err := h.opts.Store.DeletePrefix(r.Context(), bucket, p)
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		deleted += n
+	}
+	server.Annotate(r.Context(), slog.Int("deleted", deleted))
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted})
+}
+
+// share returns a presigned GET URL for an object, signed with the internal
+// read-only share key and limited by the configured maximum expiry.
+func (h *Handler) share(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Key       string `json:"key"`
+		ExpiresIn int64  `json:"expiresIn"` // seconds
+		Download  bool   `json:"download"`  // force "save as" instead of opening
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	bucket := r.PathValue("bucket")
+	if _, err := h.opts.Store.StatObject(r.Context(), bucket, in.Key); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	maxExpiry, err := h.shareMaxExpiry(r)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	expires := time.Duration(in.ExpiresIn) * time.Second
+	if expires <= 0 || expires > maxExpiry {
+		writeError(w, http.StatusBadRequest, "invalid_expiry",
+			"expiresIn must be between 1 second and the maximum set in the settings ("+maxExpiry.String()+").")
+		return
+	}
+	ak, sk, err := h.opts.Keys.ShareCredentials(r.Context())
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	target := h.s3BaseURL(r) + "/" + bucket + "/" + (&url.URL{Path: in.Key}).EscapedPath()
+	if in.Download {
+		target += "?response-content-disposition=" +
+			url.QueryEscape(mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(in.Key)}))
+	}
+	now := time.Now()
+	signed, err := sigv4.Presign(http.MethodGet, target, ak, sk, h.opts.Region, expires, now)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_expiry", err.Error())
+		return
+	}
+	h.opts.Log.Info("share link created", "bucket", bucket, "key", in.Key, "expires_in", expires.String())
+	writeJSON(w, http.StatusOK, map[string]any{"url": signed, "expiresAt": now.Add(expires).UTC()})
+}
+
+// s3BaseURL is where clients reach the S3 API: BIN_PUBLIC_URL when set,
+// otherwise the host the console was reached on, with the S3 port.
+func (h *Handler) s3BaseURL(r *http.Request) string {
+	if h.opts.PublicURL != "" {
+		return strings.TrimRight(h.opts.PublicURL, "/")
+	}
+	scheme := "http"
+	if isHTTPS(r) {
+		scheme = "https"
+	}
+	host, _, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host = r.Host
+	}
+	_, port, err := net.SplitHostPort(h.opts.S3Addr)
+	if err != nil || port == "" {
+		port = "9000"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
+// --- multipart uploads for large files ----------------------------------------------
+
+func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	u, err := h.opts.Store.CreateUpload(r.Context(), r.PathValue("bucket"), key,
+		storage.UploadOptions{ContentType: contentType(r, key)})
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"uploadId": u.ID, "key": key})
+}
+
+func (h *Handler) uploadPart(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 1 || n > storage.MaxPartNumber {
+		writeError(w, http.StatusBadRequest, "invalid_part_number", "Part numbers go from 1 to 10000.")
+		return
+	}
+	if r.ContentLength < 0 || r.ContentLength > maxSingleUpload {
+		writeError(w, http.StatusBadRequest, "invalid_part_size", "Parts need a Content-Length of at most 5 GiB.")
+		return
+	}
+	part, err := h.opts.Store.PutPart(r.Context(), r.PathValue("bucket"), r.URL.Query().Get("key"),
+		r.PathValue("id"), n, r.Body, r.ContentLength, storage.PartOptions{})
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"number": part.Number, "etag": part.ETag, "size": part.Size})
+}
+
+func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Parts []struct {
+			Number int    `json:"number"`
+			ETag   string `json:"etag"`
+		} `json:"parts"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	opts := storage.CompleteOptions{ObjectSize: -1}
+	for _, p := range in.Parts {
+		opts.Parts = append(opts.Parts, storage.CompletePart{Number: p.Number, ETag: p.ETag})
+	}
+	info, err := h.opts.Store.CompleteUpload(r.Context(), r.PathValue("bucket"), r.URL.Query().Get("key"), r.PathValue("id"), opts)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toObjectJSON(info))
+}
+
+func (h *Handler) abortUpload(w http.ResponseWriter, r *http.Request) {
+	if err := h.opts.Store.AbortUpload(r.Context(), r.PathValue("bucket"), r.URL.Query().Get("key"), r.PathValue("id")); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

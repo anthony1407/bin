@@ -129,6 +129,8 @@ func storageError(err error) error {
 		return s3err.ErrInvalidRequest.WithMessage("The checksum type is not supported for this checksum algorithm.")
 	case errors.Is(err, storage.ErrInvalidRange):
 		return s3err.ErrInvalidRange
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return s3err.ErrQuotaExceeded
 	case errors.Is(err, storage.ErrNoSuchBucket):
 		return s3err.ErrNoSuchBucket
 	case errors.Is(err, storage.ErrBucketExists):

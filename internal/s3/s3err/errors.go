@@ -76,6 +76,7 @@ var (
 	ErrNoSuchTagSet                 = newErr("NoSuchTagSet", 404, "The TagSet does not exist")
 	ErrNoSuchUpload                 = newErr("NoSuchUpload", 404, "The specified multipart upload does not exist. The upload ID may be invalid, or the upload may have been aborted or completed.")
 	ErrNotImplemented               = newErr("NotImplemented", 501, "A header you provided implies functionality that is not implemented.")
+	ErrQuotaExceeded                = newErr("QuotaExceeded", 400, "The bucket quota would be exceeded by this request.")
 	ErrPreconditionFailed           = newErr("PreconditionFailed", 412, "At least one of the pre-conditions you specified did not hold")
 	ErrRequestTimeTooSkewed         = newErr("RequestTimeTooSkewed", 403, "The difference between the request time and the server's time is too large.")
 	ErrSignatureDoesNotMatch        = newErr("SignatureDoesNotMatch", 403, "The request signature we calculated does not match the signature you provided. Check your key and signing method.")

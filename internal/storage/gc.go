@@ -133,6 +133,7 @@ func (s *Store) gcLoop(ctx context.Context, log *slog.Logger) {
 				log.Info("aborted abandoned multipart uploads", "count", n)
 			}
 			s.collectQueued(ctx)
+			s.deleteExpiredSessions(ctx)
 		}
 	}
 }
