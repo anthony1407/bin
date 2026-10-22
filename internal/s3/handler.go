@@ -83,7 +83,10 @@ func newHandler(opts Options) *Handler {
 func (h *Handler) withMiddleware() http.Handler {
 	var next http.Handler = http.HandlerFunc(h.serve)
 	next = server.Recover(h.opts.Log, h.panicResponse, next)
-	next = server.AccessLog(h.opts.Log, server.LogOptions{Requests: h.opts.LogRequests}, next)
+	next = server.AccessLog(h.opts.Log, server.LogOptions{
+		Requests: h.opts.LogRequests,
+		Quiet:    func(r *http.Request) bool { return r.URL.Path == healthPath },
+	}, next)
 	return server.WithRequestID("X-Amz-Request-Id", next)
 }
 
@@ -95,9 +98,22 @@ func AccessKey(ctx context.Context) string {
 	return key
 }
 
+// healthPath answers unauthenticated liveness probes on the S3 port, for load
+// balancers that only reach it. "_health" can never be a bucket name, so the
+// path cannot shadow a real bucket.
+const healthPath = "/_health/live"
+
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", "bin")
 	w.Header().Set("X-Amz-Id-2", h.opts.HostID)
+	if r.URL.Path == healthPath && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			w.Write([]byte(`{"status":"ok"}` + "\n"))
+		}
+		return
+	}
 
 	// Authenticate before routing, so unauthenticated callers only ever see
 	// authentication errors.

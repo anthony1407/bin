@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,32 +34,77 @@ import (
 )
 
 func main() {
-	cmd := ""
-	if len(os.Args) > 1 {
-		cmd = os.Args[1]
-	}
-	for _, a := range os.Args[1:] {
-		if a == "-h" || a == "--help" {
-			cmd = "help"
-		}
-	}
-	var err error
-	switch cmd {
-	case "", "server":
-		err = run()
-	case "version", "--version", "-v":
-		fmt.Println("bin version", buildinfo.String())
-	case "help", "--help", "-h":
-		printHelp(os.Stdout)
-	case "healthcheck":
-		err = healthcheck()
-	default:
-		err = fmt.Errorf("unknown command %q; run \"bin --help\" for usage", cmd)
-	}
-	if err != nil {
+	if err := dispatch(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "bin:", err)
 		os.Exit(1)
 	}
+}
+
+// dispatch runs the command named by args[0]. Without a command, or when the
+// first argument is a server flag or a data directory, it runs the server.
+func dispatch(args []string) error {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			printHelp(os.Stdout)
+			return nil
+		}
+	}
+	cmd := ""
+	if len(args) > 0 {
+		cmd = args[0]
+	}
+	switch cmd {
+	case "server":
+		return runServer(args[1:])
+	case "version", "--version", "-v":
+		fmt.Println("bin version", buildinfo.String())
+		return nil
+	case "help":
+		printHelp(os.Stdout)
+		return nil
+	case "healthcheck":
+		return healthcheck()
+	}
+	if cmd == "" || strings.HasPrefix(cmd, "-") || strings.ContainsAny(cmd, `/\`) {
+		return runServer(args)
+	}
+	return fmt.Errorf("unknown command %q; run \"bin --help\" for usage", cmd)
+}
+
+// serverOverrides parses `bin server [DATA_DIR] [--address ADDR]
+// [--console-address ADDR]` into settings that take precedence over the
+// environment and bin.env.
+func serverOverrides(args []string) (map[string]string, error) {
+	fs := flag.NewFlagSet("server", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	address := fs.String("address", "", "listen address of the S3 API")
+	console := fs.String("console-address", "", "listen address of the web console")
+	// Accept the data directory before or after the flags.
+	var positional []string
+	for len(args) > 0 {
+		if err := fs.Parse(args); err != nil {
+			return nil, fmt.Errorf("%w; run \"bin --help\" for usage", err)
+		}
+		args = fs.Args()
+		if len(args) > 0 {
+			positional = append(positional, args[0])
+			args = args[1:]
+		}
+	}
+	if len(positional) > 1 {
+		return nil, fmt.Errorf("expected at most one data directory, got %q", positional)
+	}
+	out := map[string]string{}
+	if len(positional) == 1 {
+		out["BIN_DATA_DIR"] = positional[0]
+	}
+	if *address != "" {
+		out["BIN_S3_ADDR"] = *address
+	}
+	if *console != "" {
+		out["BIN_CONSOLE_ADDR"] = *console
+	}
+	return out, nil
 }
 
 func printHelp(w io.Writer) {
@@ -65,6 +112,7 @@ func printHelp(w io.Writer) {
 
 Usage:
   bin [command]
+  bin server [DATA_DIR] [--address ADDR] [--console-address ADDR]
 
 Commands:
   server        run the server (the default when no command is given)
@@ -72,24 +120,42 @@ Commands:
   healthcheck   exit 0 if the local server answers its health endpoint
   help          show this help (also --help, -h)
 
+Server flags (they override the matching settings below):
+  DATA_DIR                 same as BIN_DATA_DIR
+  --address ADDR           same as BIN_S3_ADDR, e.g. :9000 or 127.0.0.1:9000
+  --console-address ADDR   same as BIN_CONSOLE_ADDR, e.g. :9001
+
 Configuration (environment variables, or KEY=VALUE lines in bin.env):
 `)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, s := range config.Settings {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", s.Name, s.Default, s.Description)
+		if len(s.Aliases) > 0 {
+			fmt.Fprintf(tw, "  \t\talso accepted: %s\n", strings.Join(s.Aliases, ", "))
+		}
 	}
 	tw.Flush()
 	fmt.Fprint(w, `
 Examples:
-  BIN_ROOT_ACCESS_KEY=admin BIN_ROOT_SECRET_KEY=change-me-please bin
+  BIN_ROOT_ACCESS_KEY=admin BIN_ROOT_SECRET_KEY=change-me-please bin server /data
+  bin server /data --address :9100 --console-address :9101
   docker run -p 9000:9000 -p 9001:9001 -v bin-data:/data \
     -e BIN_ROOT_ACCESS_KEY=admin -e BIN_ROOT_SECRET_KEY=change-me-please bin
   aws --endpoint-url http://localhost:9000 s3 ls
 `)
 }
 
-func run() error {
-	cfg, err := config.Load(os.Getenv)
+func runServer(args []string) error {
+	overrides, err := serverOverrides(args)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(func(k string) string {
+		if v, ok := overrides[k]; ok {
+			return v
+		}
+		return os.Getenv(k)
+	})
 	if err != nil {
 		return err
 	}
@@ -106,7 +172,16 @@ func run() error {
 	defer cancel(nil)
 	go stopOnSignal(log, cancel)
 
-	err = server.Run(ctx, log, func(b []server.Bound) { announce(log, cfg, b) },
+	ready := func(bound []server.Bound) {
+		announce(log, cfg, bound)
+		for _, b := range bound {
+			if b.Name == "console" {
+				recordConsoleAddr(log, b.Addr)
+			}
+		}
+	}
+	defer os.Remove(healthAddrFile())
+	err = server.Run(ctx, log, ready,
 		server.Listener{Name: "s3", Addr: cfg.S3Addr, Handler: s3.NewHandler(s3.Options{
 			Store:  store,
 			Region: cfg.Region,
@@ -218,16 +293,30 @@ func listenURLs(addr net.Addr) []string {
 	return append(out, "http://"+net.JoinHostPort("127.0.0.1", port))
 }
 
+// healthAddrFile is where a running server records its console address, so
+// `bin healthcheck` finds it whatever flags or settings chose the port.
+func healthAddrFile() string { return filepath.Join(os.TempDir(), "bin-console.addr") }
+
+func recordConsoleAddr(log *slog.Logger, addr net.Addr) {
+	if err := os.WriteFile(healthAddrFile(), []byte(addr.String()), 0o644); err != nil {
+		log.Debug("cannot record the console address for healthcheck", "err", err)
+	}
+}
+
 // healthcheck probes the console's health endpoint on the loopback interface.
-// It exists so container images need no shell or HTTP client.
+// It exists so container images need no shell or HTTP client. The port comes
+// from the running server's record, else BIN_CONSOLE_ADDR, else 9001.
 func healthcheck() error {
 	addr := os.Getenv("BIN_CONSOLE_ADDR")
+	if recorded, err := os.ReadFile(healthAddrFile()); err == nil {
+		addr = strings.TrimSpace(string(recorded))
+	}
 	if addr == "" {
 		addr = ":9001"
 	}
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("BIN_CONSOLE_ADDR: %w", err)
+		return fmt.Errorf("console address %q: %w", addr, err)
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", port) + "/api/v1/health")

@@ -50,35 +50,71 @@ const (
 // Setting documents one configuration variable, for --help and validation.
 type Setting struct {
 	Name        string
+	Aliases     []string // other accepted names, equivalent to Name
 	Default     string
 	Description string
 }
 
 // Settings lists every variable bin reads, in the order --help shows them.
+// The root credentials accept the naming styles people bring from other S3
+// servers: ROOT_USER/ROOT_PASSWORD and ACCESS_KEY/SECRET_KEY.
 var Settings = []Setting{
-	{envRootAccessKey, "(required)", "access key of the root account (3+ characters)"},
-	{envRootSecretKey, "(required)", "secret key of the root account (8+ characters, 16+ recommended)"},
-	{envDataDir, "./data", "directory holding objects and metadata"},
-	{envS3Addr, ":9000", "listen address of the S3 API"},
-	{envConsoleAddr, ":9001", "listen address of the web console and admin API"},
-	{envRegion, "us-east-1", "region reported to clients and required in signatures"},
-	{envDomain, "", "domain for virtual-host style requests (bucket.domain); empty = path style only"},
-	{envMasterKey, "(generated)", "key that encrypts secrets at rest; generated in the data directory if unset"},
-	{envLogLevel, "info", "debug, info, warn or error"},
-	{envLogFormat, "text", "text (readable) or json (for log collectors)"},
-	{envLogRequests, "true", "log one line per request"},
-	{envConfigFile, "bin.env", "optional KEY=VALUE file read before applying the environment"},
+	{envRootAccessKey, []string{"BIN_ROOT_USER", "BIN_ACCESS_KEY"}, "(required)", "access key of the root account (3+ characters)"},
+	{envRootSecretKey, []string{"BIN_ROOT_PASSWORD", "BIN_SECRET_KEY"}, "(required)", "secret key of the root account (8+ characters, 16+ recommended)"},
+	{envDataDir, nil, "./data", "directory holding objects and metadata"},
+	{envS3Addr, nil, ":9000", "listen address of the S3 API"},
+	{envConsoleAddr, nil, ":9001", "listen address of the web console and admin API"},
+	{envRegion, nil, "us-east-1", "region reported to clients and required in signatures"},
+	{envDomain, nil, "", "domain for virtual-host style requests (bucket.domain); empty = path style only"},
+	{envMasterKey, nil, "(generated)", "key that encrypts secrets at rest; generated in the data directory if unset"},
+	{envLogLevel, nil, "info", "debug, info, warn or error"},
+	{envLogFormat, nil, "text", "text (readable) or json (for log collectors)"},
+	{envLogRequests, nil, "true", "log one line per request"},
+	{envConfigFile, nil, "bin.env", "optional KEY=VALUE file read before applying the environment"},
 }
 
-var known = func() map[string]bool {
-	m := map[string]bool{}
+// aliases maps every accepted name to its canonical one.
+var aliases = func() map[string]string {
+	m := map[string]string{}
 	for _, s := range Settings {
-		if s.Name != envConfigFile {
-			m[s.Name] = true
+		if s.Name == envConfigFile {
+			continue
+		}
+		m[s.Name] = s.Name
+		for _, a := range s.Aliases {
+			m[a] = s.Name
 		}
 	}
 	return m
 }()
+
+var known = func() map[string]bool {
+	m := map[string]bool{}
+	for name := range aliases {
+		m[name] = true
+	}
+	return m
+}()
+
+// describe names a setting with its aliases, e.g.
+// "BIN_ROOT_ACCESS_KEY (or BIN_ROOT_USER, BIN_ACCESS_KEY)".
+func describe(canonical string) string {
+	names := namesOf(canonical)
+	if len(names) == 1 {
+		return canonical
+	}
+	return names[0] + " (or " + strings.Join(names[1:], ", ") + ")"
+}
+
+// namesOf returns a setting's canonical name followed by its aliases.
+func namesOf(canonical string) []string {
+	for _, s := range Settings {
+		if s.Name == canonical {
+			return append([]string{s.Name}, s.Aliases...)
+		}
+	}
+	return []string{canonical}
+}
 
 // UnknownEnv returns BIN_* variables in environ (as from os.Environ) that bin
 // does not read, each with the closest known name: usually typos.
@@ -139,12 +175,27 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
+	// get resolves a setting by any of its names: the environment first, then
+	// the file. Two names of the same setting with different values in the
+	// same source is an error, never a silent choice.
+	var conflicts []error
 	get := func(key, def string) string {
-		if v := getenv(key); v != "" {
-			return v
-		}
-		if v, ok := file[key]; ok && v != "" {
-			return v
+		fromFile := func(k string) string { return file[k] }
+		for _, source := range []func(string) string{getenv, fromFile} {
+			value, from := "", ""
+			for _, name := range namesOf(key) {
+				v := source(name)
+				switch {
+				case v == "":
+				case value == "":
+					value, from = v, name
+				case v != value:
+					conflicts = append(conflicts, fmt.Errorf("%s and %s are set to different values; set only one of them", from, name))
+				}
+			}
+			if value != "" {
+				return value
+			}
 		}
 		return def
 	}
@@ -159,6 +210,9 @@ func Load(getenv func(string) string) (*Config, error) {
 		RootSecretKey: get(envRootSecretKey, ""),
 		MasterKey:     get(envMasterKey, ""),
 		LogFormat:     get(envLogFormat, "text"),
+	}
+	if len(conflicts) > 0 {
+		return nil, errors.Join(conflicts...)
 	}
 	switch v := strings.ToLower(get(envLogRequests, "true")); v {
 	case "true", "1", "yes", "on":
@@ -184,10 +238,10 @@ func Load(getenv func(string) string) (*Config, error) {
 func (c *Config) validate() error {
 	var errs []error
 	if len(c.RootAccessKey) < 3 {
-		errs = append(errs, fmt.Errorf("%s is required and must be at least 3 characters", envRootAccessKey))
+		errs = append(errs, fmt.Errorf("%s is required and must be at least 3 characters", describe(envRootAccessKey)))
 	}
 	if len(c.RootSecretKey) < 8 {
-		errs = append(errs, fmt.Errorf("%s is required and must be at least 8 characters", envRootSecretKey))
+		errs = append(errs, fmt.Errorf("%s is required and must be at least 8 characters", describe(envRootSecretKey)))
 	}
 	if c.Region == "" {
 		errs = append(errs, fmt.Errorf("%s must not be empty", envRegion))

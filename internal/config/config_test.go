@@ -116,6 +116,52 @@ func TestUnknownEnv(t *testing.T) {
 	}
 }
 
+// The root credentials accept three naming styles, from any source.
+func TestCredentialAliases(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, pair := range [][2]string{
+		{"BIN_ROOT_ACCESS_KEY", "BIN_ROOT_SECRET_KEY"},
+		{"BIN_ROOT_USER", "BIN_ROOT_PASSWORD"},
+		{"BIN_ACCESS_KEY", "BIN_SECRET_KEY"},
+	} {
+		c, err := Load(envOf(map[string]string{pair[0]: "admin", pair[1]: "Bin123!-long-secret"}))
+		if err != nil || c.RootAccessKey != "admin" || c.RootSecretKey != "Bin123!-long-secret" {
+			t.Errorf("%v: %+v, %v", pair, c, err)
+		}
+	}
+
+	// The same value under two names is fine; different values are rejected.
+	_, err := Load(envOf(map[string]string{
+		"BIN_ROOT_USER": "admin", "BIN_ACCESS_KEY": "admin", "BIN_ROOT_PASSWORD": "long-secret",
+	}))
+	if err != nil {
+		t.Errorf("same value twice: %v", err)
+	}
+	_, err = Load(envOf(map[string]string{
+		"BIN_ROOT_USER": "alice", "BIN_ACCESS_KEY": "bob", "BIN_ROOT_PASSWORD": "long-secret",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "BIN_ROOT_USER and BIN_ACCESS_KEY are set to different values") {
+		t.Errorf("conflict: %v", err)
+	}
+
+	// Aliases work in bin.env too, and the environment still wins.
+	path := filepath.Join(t.TempDir(), "bin.env")
+	os.WriteFile(path, []byte("BIN_ROOT_USER=fromfile\nBIN_ROOT_PASSWORD=file-secret-long\n"), 0o600)
+	c, err := Load(envOf(map[string]string{"BIN_CONFIG_FILE": path, "BIN_ACCESS_KEY": "fromenv"}))
+	if err != nil || c.RootAccessKey != "fromenv" || c.RootSecretKey != "file-secret-long" {
+		t.Errorf("file + env: %+v, %v", c, err)
+	}
+
+	// Aliases are not reported as unknown settings.
+	if u := UnknownEnv([]string{"BIN_ROOT_USER=a", "BIN_SECRET_KEY=b"}); len(u) != 0 {
+		t.Errorf("aliases flagged as unknown: %v", u)
+	}
+	_, err = Load(envOf(map[string]string{}))
+	if err == nil || !strings.Contains(err.Error(), "BIN_ROOT_ACCESS_KEY (or BIN_ROOT_USER, BIN_ACCESS_KEY) is required") {
+		t.Errorf("missing credentials message: %v", err)
+	}
+}
+
 func TestLogRequests(t *testing.T) {
 	t.Chdir(t.TempDir())
 	base := map[string]string{"BIN_ROOT_ACCESS_KEY": "admin", "BIN_ROOT_SECRET_KEY": "long-secret"}

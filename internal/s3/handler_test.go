@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,17 @@ func TestAnonymousIsDenied(t *testing.T) {
 		if rec.Code != http.StatusForbidden || body.Code != "AccessDenied" || body.Resource != "/b/k.txt" {
 			t.Errorf("%s: got %d %+v", method, rec.Code, body)
 		}
+	}
+}
+
+func TestHealthNeedsNoSignature(t *testing.T) {
+	rec, _ := send(newTestHandler(t, nil), httptest.NewRequest("GET", "/_health/live", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok"`) {
+		t.Errorf("health: %d %q", rec.Code, rec.Body.String())
+	}
+	rec, _ = send(newTestHandler(t, nil), httptest.NewRequest("PUT", "/_health/live", nil))
+	if rec.Code != 403 {
+		t.Errorf("only GET/HEAD are unauthenticated, PUT got %d", rec.Code)
 	}
 }
 

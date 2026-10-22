@@ -15,6 +15,11 @@ export MSYS_NO_PATHCONV=1 # Git Bash: do not rewrite /paths passed to docker
 IMAGE=${BIN_IMAGE:-bin:dev}
 NET=bin-test
 HOST=bin-test
+# Ports bin listens on inside the container; scripts that start it with
+# --address/--console-address change them, and set SERVER_ARGS accordingly.
+S3_PORT=9000
+CONSOLE_PORT=9001
+SERVER_ARGS=()
 AK=testaccesskey
 SK=testsecretkey12345
 
@@ -40,14 +45,14 @@ start_server() {
   docker network create "$NET" >/dev/null 2>&1 || true
   docker rm -f "$HOST" >/dev/null 2>&1
   docker run -d --name "$HOST" --network "$NET" "$@" \
-    -e BIN_ROOT_ACCESS_KEY="$AK" -e BIN_ROOT_SECRET_KEY="$SK" "$IMAGE" >/dev/null || exit 1
+    -e BIN_ROOT_ACCESS_KEY="$AK" -e BIN_ROOT_SECRET_KEY="$SK" "$IMAGE" "${SERVER_ARGS[@]}" >/dev/null || exit 1
   trap stop_server EXIT
   wait_ready
 }
 
 wait_ready() {
   for _ in $(seq 1 30); do
-    if [ "$(curl_ -s -o /dev/null -w '%{http_code}' "http://$HOST:9001/api/v1/health")" = 200 ]; then
+    if [ "$(curl_ -s -o /dev/null -w '%{http_code}' "http://$HOST:$CONSOLE_PORT/api/v1/health")" = 200 ]; then
       return 0
     fi
     sleep 1
@@ -72,7 +77,7 @@ aws_as() {
   docker run --rm --network "$NET" -v "$WORK_NATIVE:/work" -w /work \
     -e AWS_ACCESS_KEY_ID="$1" -e AWS_SECRET_ACCESS_KEY="$2" -e AWS_DEFAULT_REGION="$3" \
     -e AWS_MAX_ATTEMPTS=1 "${config[@]}" \
-    "$AWS_CLI_IMAGE" --endpoint-url "http://$HOST:9000" "${@:4}" 2>&1
+    "$AWS_CLI_IMAGE" --endpoint-url "http://$HOST:$S3_PORT" "${@:4}" 2>&1
 }
 aws_() { aws_as "$AK" "$SK" us-east-1 "$@"; }
 
@@ -81,7 +86,7 @@ aws_() { aws_as "$AK" "$SK" us-east-1 "$@"; }
 rclone_as() {
   docker run --rm --network "$NET" -v "$WORK_NATIVE:/work" -w /work \
     -e RCLONE_CONFIG_REF_TYPE=s3 -e RCLONE_CONFIG_REF_PROVIDER=Other \
-    -e RCLONE_CONFIG_REF_ENDPOINT="http://$HOST:9000" -e RCLONE_CONFIG_REF_REGION=us-east-1 \
+    -e RCLONE_CONFIG_REF_ENDPOINT="http://$HOST:$S3_PORT" -e RCLONE_CONFIG_REF_REGION=us-east-1 \
     -e RCLONE_CONFIG_REF_ACCESS_KEY_ID="$AK" -e RCLONE_CONFIG_REF_SECRET_ACCESS_KEY="$1" \
     "$RCLONE_IMAGE" --retries 1 --low-level-retries 1 "${@:2}" 2>&1 |
     if [ -n "${RCLONE_KEEP_NOTICE:-}" ]; then cat; else grep -v NOTICE; fi
