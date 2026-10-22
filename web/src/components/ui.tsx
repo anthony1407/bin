@@ -220,7 +220,7 @@ export function Modal({
 }: {
   open: boolean;
   onClose: () => void;
-  title: string;
+  title: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;

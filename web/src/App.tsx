@@ -8,6 +8,10 @@ import { ExplorerPage } from "./pages/Explorer";
 import { BucketSettingsPage } from "./pages/BucketSettings";
 import { AccessKeysPage } from "./pages/AccessKeys";
 import { SettingsPage } from "./pages/Settings";
+import { PoliciesPage } from "./pages/Policies";
+import { UsersPage } from "./pages/Users";
+import { MetricsPage } from "./pages/Metrics";
+import { LogsPage } from "./pages/Logs";
 
 function Routed() {
   const { session, loading } = useAuth();
@@ -37,6 +41,10 @@ function Routed() {
         <Route path="/buckets/:bucket" element={<ExplorerPage />} />
         <Route path="/buckets/:bucket/settings" element={<BucketSettingsPage />} />
         <Route path="/access-keys" element={<AccessKeysPage />} />
+        <Route path="/policies" element={<PoliciesPage />} />
+        <Route path="/identity/users" element={<UsersPage />} />
+        <Route path="/monitoring/metrics" element={<MetricsPage />} />
+        <Route path="/monitoring/logs" element={<LogsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/buckets" replace />} />
       </Routes>

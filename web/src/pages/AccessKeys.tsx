@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { Check, Copy, KeyRound, Pencil, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, KeyRound, Pencil, Plus, Trash2, TriangleAlert } from "lucide-react";
+import Editor from "@monaco-editor/react";
 import { api, type AccessKey, type Bucket } from "../api";
 import { date, relative } from "../lib/format";
 import { Badge, Button, EmptyState, Field, IconButton, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
+import { DatePicker } from "../components/DatePicker";
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
@@ -27,52 +29,295 @@ function status(k: AccessKey): { tone: "ok" | "neutral" | "danger"; text: string
   return { tone: "ok", text: "active" };
 }
 
-// --- create / edit form -----------------------------------------------------------------
+// --- policy helpers ---------------------------------------------------------------------
+
+function generatePolicyJson(buckets: string[], readOnly: boolean): string {
+  const actions = readOnly ? ["s3:Get*", "s3:List*"] : ["s3:*"];
+  const resources =
+    buckets.length === 0
+      ? ["arn:aws:s3:::*"]
+      : buckets.flatMap((b) => [`arn:aws:s3:::${b}`, `arn:aws:s3:::${b}/*`]);
+
+  return JSON.stringify(
+    {
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Action: actions,
+          Resource: resources,
+        },
+      ],
+    },
+    null,
+    2,
+  );
+}
+
+function parsePolicyJson(json: string): { buckets?: string[]; readOnly?: boolean } | null {
+  try {
+    const data = JSON.parse(json);
+    const stmts = Array.isArray(data.Statement) ? data.Statement : [data.Statement];
+    let isReadOnly = false;
+    let allBuckets = false;
+    const bucketSet = new Set<string>();
+
+    for (const s of stmts) {
+      if (!s) continue;
+      const acts: string[] = Array.isArray(s.Action) ? s.Action : [s.Action];
+      if (acts.every((a) => typeof a === "string" && (a.startsWith("s3:Get") || a.startsWith("s3:List")))) {
+        isReadOnly = true;
+      }
+      const reses: string[] = Array.isArray(s.Resource) ? s.Resource : [s.Resource];
+      for (const r of reses) {
+        if (typeof r !== "string") continue;
+        if (r === "arn:aws:s3:::*" || r === "*") {
+          allBuckets = true;
+        } else if (r.startsWith("arn:aws:s3:::")) {
+          const b = r.replace("arn:aws:s3:::", "").split("/")[0];
+          if (b && b !== "*") bucketSet.add(b);
+        }
+      }
+    }
+    return {
+      buckets: allBuckets ? [] : Array.from(bucketSet),
+      readOnly: isReadOnly,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// --- create / edit form (MinIO style with Monaco Editor) --------------------------------
 
 interface Draft {
   name: string;
+  description: string;
   expiresAt: string; // YYYY-MM-DD or ""
   buckets: string[];
   readOnly: boolean;
+  enabled: boolean;
+  policy: string;
 }
 
 function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Draft) => void; buckets: Bucket[] }) {
+  const [copiedPolicy, setCopiedPolicy] = useState(false);
+  const [showBucketPicker, setShowBucketPicker] = useState(false);
+  const isNever = !draft.expiresAt;
   const all = draft.buckets.length === 0;
-  const toggle = (name: string) =>
-    setDraft({ ...draft, buckets: draft.buckets.includes(name) ? draft.buckets.filter((b) => b !== name) : [...draft.buckets, name] });
+
+  const copyPolicy = () => {
+    navigator.clipboard.writeText(draft.policy).then(() => {
+      setCopiedPolicy(true);
+      setTimeout(() => setCopiedPolicy(false), 1500);
+    });
+  };
+
+  const handleEditorChange = (val: string | undefined) => {
+    const nextVal = val ?? "";
+    const parsed = parsePolicyJson(nextVal);
+    if (parsed) {
+      setDraft({
+        ...draft,
+        policy: nextVal,
+        ...(parsed.buckets !== undefined ? { buckets: parsed.buckets } : {}),
+        ...(parsed.readOnly !== undefined ? { readOnly: parsed.readOnly } : {}),
+      });
+    } else {
+      setDraft({ ...draft, policy: nextVal });
+    }
+  };
+
+  const toggleBucket = (name: string) => {
+    const nextBuckets = draft.buckets.includes(name)
+      ? draft.buckets.filter((b) => b !== name)
+      : [...draft.buckets, name];
+    setDraft({
+      ...draft,
+      buckets: nextBuckets,
+      policy: generatePolicyJson(nextBuckets, draft.readOnly),
+    });
+  };
+
+  const setAllBuckets = (selectAll: boolean) => {
+    const nextBuckets = selectAll ? [] : buckets.slice(0, 1).map((b) => b.name);
+    setDraft({
+      ...draft,
+      buckets: nextBuckets,
+      policy: generatePolicyJson(nextBuckets, draft.readOnly),
+    });
+  };
+
   return (
-    <div className="space-y-5">
-      <Field label="Name" hint="What this key is for, e.g. the app or person using it.">
-        <Input autoFocus value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="backup job" />
-      </Field>
-      <Field label="Expires" hint="Leave empty for a key that never expires.">
-        <Input type="date" value={draft.expiresAt} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setDraft({ ...draft, expiresAt: e.target.value })} className="w-48" />
-      </Field>
+    <div className="space-y-4">
+      {/* 1. Access Key Policy with Monaco Editor */}
       <div>
-        <div className="mb-1.5 text-sm font-medium">Buckets</div>
-        <div className="rounded-md border border-line-strong">
-          <label className="flex items-center gap-2.5 border-b border-line px-3 py-2 text-sm">
-            <input type="checkbox" checked={all} onChange={() => setDraft({ ...draft, buckets: all ? buckets.slice(0, 1).map((b) => b.name) : [] })} className="size-4 accent-[var(--accent)]" />
-            All buckets, including future ones
-          </label>
-          <div className={cx("max-h-40 overflow-y-auto", all && "opacity-50")}>
-            {buckets.length === 0 && <div className="px-3 py-2 text-xs text-faint">No buckets yet.</div>}
-            {buckets.map((b) => (
-              <label key={b.name} className="flex items-center gap-2.5 px-3 py-1.5 font-mono text-xs">
-                <input type="checkbox" disabled={all} checked={all || draft.buckets.includes(b.name)} onChange={() => toggle(b.name)} className="size-4 accent-[var(--accent)]" />
-                {b.name}
+        <div className="mb-1.5 flex items-center justify-between">
+          <label className="text-sm font-medium text-ink">Access Key Policy</label>
+          <button
+            type="button"
+            onClick={() => setShowBucketPicker((p) => !p)}
+            className="flex items-center gap-1 text-xs text-muted hover:text-ink transition-colors"
+          >
+            <span>{all ? "All buckets" : `${draft.buckets.length} bucket(s)`}</span>
+            {showBucketPicker ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          </button>
+        </div>
+
+        {/* Optional Collapsible Bucket / ReadOnly Helper */}
+        {showBucketPicker && (
+          <div className="mb-2.5 rounded-md border border-line bg-sunken/40 p-3 text-xs space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={all}
+                  onChange={(e) => setAllBuckets(e.target.checked)}
+                  className="size-4 accent-[var(--accent)]"
+                />
+                All buckets (full access)
               </label>
-            ))}
+              <label className="flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={draft.readOnly}
+                  onChange={(e) => {
+                    const ro = e.target.checked;
+                    setDraft({
+                      ...draft,
+                      readOnly: ro,
+                      policy: generatePolicyJson(draft.buckets, ro),
+                    });
+                  }}
+                  className="size-4 accent-[var(--accent)]"
+                />
+                Read-only
+              </label>
+            </div>
+            {!all && (
+              <div className="max-h-28 overflow-y-auto space-y-1 pt-1 border-t border-line">
+                {buckets.map((b) => (
+                  <label key={b.name} className="flex items-center gap-2 font-mono">
+                    <input
+                      type="checkbox"
+                      checked={draft.buckets.includes(b.name)}
+                      onChange={() => toggleBucket(b.name)}
+                      className="size-3.5 accent-[var(--accent)]"
+                    />
+                    {b.name}
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
+        )}
+
+        {/* Monaco Editor Container */}
+        <div className="relative overflow-hidden rounded-md border border-line-strong bg-[#1e1e1e] shadow-inner">
+          <Editor
+            height="210px"
+            defaultLanguage="json"
+            language="json"
+            theme="vs-dark"
+            value={draft.policy}
+            onChange={handleEditorChange}
+            options={{
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              fontSize: 12,
+              tabSize: 2,
+              lineNumbers: "on",
+              folding: true,
+              wordWrap: "on",
+              automaticLayout: true,
+              formatOnPaste: true,
+            }}
+          />
+          {/* Copy Policy Button on bottom-right inside editor */}
+          <button
+            type="button"
+            onClick={copyPolicy}
+            title="Copy policy to clipboard"
+            aria-label="Copy policy"
+            className="absolute right-2.5 bottom-2.5 z-10 flex size-7 items-center justify-center rounded border border-white/10 bg-[#252526]/90 text-slate-300 shadow-sm backdrop-blur transition-colors hover:bg-[#333333] hover:text-white focus:outline-none"
+          >
+            {copiedPolicy ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
+          </button>
         </div>
       </div>
-      <label className="flex items-start gap-2.5 text-sm">
-        <input type="checkbox" checked={draft.readOnly} onChange={(e) => setDraft({ ...draft, readOnly: e.target.checked })} className="mt-0.5 size-4 accent-[var(--accent)]" />
-        <span>
-          Read-only
-          <span className="block text-xs text-muted">Can list and download, but not upload, delete or create buckets.</span>
-        </span>
-      </label>
+
+      {/* 2. Expiry */}
+      <div>
+        <div className="mb-1.5 text-sm font-medium text-ink">Expiry</div>
+        <div className="space-y-2">
+          <DatePicker
+            value={draft.expiresAt}
+            onChange={(val) => setDraft({ ...draft, expiresAt: val })}
+            min={new Date().toISOString().slice(0, 10)}
+            placeholder="No expiration (never expires)"
+            disabled={isNever}
+            className="w-full"
+          />
+          <label className="flex items-center gap-2.5 text-xs text-muted cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={isNever}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setDraft({ ...draft, expiresAt: "" });
+                } else {
+                  const d = new Date();
+                  d.setDate(d.getDate() + 90);
+                  setDraft({ ...draft, expiresAt: d.toISOString().slice(0, 10) });
+                }
+              }}
+              className="size-4 accent-[var(--accent)]"
+            />
+            <span>Never expires</span>
+          </label>
+        </div>
+      </div>
+
+      {/* 3. Name */}
+      <Field label="Name">
+        <Input
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          placeholder="Enter a name"
+        />
+      </Field>
+
+      {/* 4. Description */}
+      <Field label="Description">
+        <Input
+          value={draft.description}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+          placeholder="Enter a description"
+        />
+      </Field>
+
+      {/* 5. Status (MinIO Switch toggle) */}
+      <div className="flex items-center justify-between pt-1">
+        <span className="text-sm font-medium text-ink">Status</span>
+        <label className="flex cursor-pointer items-center gap-2.5 select-none text-xs">
+          <span className={cx(!draft.enabled ? "font-medium text-ink" : "text-muted")}>Disabled</span>
+          <div
+            onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}
+            className={cx(
+              "relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+              draft.enabled ? "bg-ok" : "bg-line-strong",
+            )}
+          >
+            <span
+              className={cx(
+                "absolute size-3.5 rounded-full bg-white shadow transition-transform",
+                draft.enabled ? "translate-x-4" : "translate-x-0.5",
+              )}
+            />
+          </div>
+          <span className={cx(draft.enabled ? "font-medium text-ink" : "text-muted")}>Enabled</span>
+        </label>
+      </div>
     </div>
   );
 }
@@ -122,7 +367,15 @@ aws --profile bin s3 ls`;
 
 // --- page ------------------------------------------------------------------------------------
 
-const emptyDraft: Draft = { name: "", expiresAt: "", buckets: [], readOnly: false };
+const emptyDraft: Draft = {
+  name: "",
+  description: "",
+  expiresAt: "",
+  buckets: [],
+  readOnly: false,
+  enabled: true,
+  policy: generatePolicyJson([], false),
+};
 
 export function AccessKeysPage() {
   const [keys, setKeys] = useState<AccessKey[] | null>(null);
@@ -152,7 +405,15 @@ export function AccessKeysPage() {
 
   function openEdit(k: AccessKey) {
     setEditing(k);
-    setDraft({ name: k.name, expiresAt: k.expiresAt ? k.expiresAt.slice(0, 10) : "", buckets: k.buckets, readOnly: k.readOnly });
+    setDraft({
+      name: k.name,
+      description: "",
+      expiresAt: k.expiresAt ? k.expiresAt.slice(0, 10) : "",
+      buckets: k.buckets,
+      readOnly: k.readOnly,
+      enabled: k.enabled,
+      policy: generatePolicyJson(k.buckets, k.readOnly),
+    });
     setCreated(null);
     setFormOpen(true);
   }
@@ -165,6 +426,7 @@ export function AccessKeysPage() {
       if (editing) {
         await api.updateAccessKey(editing.accessKey, {
           name: draft.name,
+          enabled: draft.enabled,
           buckets: draft.buckets,
           readOnly: draft.readOnly,
           ...(expiresAt ? { expiresAt } : { noExpiry: true }),
@@ -302,8 +564,22 @@ export function AccessKeysPage() {
       <Modal
         open={formOpen}
         onClose={() => setFormOpen(false)}
-        title={created ? "Access key created" : editing ? "Edit access key" : "Create access key"}
-        wide={!!created}
+        title={
+          created ? (
+            "Access key created"
+          ) : editing ? (
+            <span className="flex items-center gap-2">
+              <KeyRound className="size-4 text-accent" />
+              <span>Edit details of - {editing.accessKey}</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-2">
+              <KeyRound className="size-4 text-accent" />
+              <span>Create access key</span>
+            </span>
+          )
+        }
+        wide={true}
         footer={
           created ? (
             <Button variant="primary" onClick={() => setFormOpen(false)}>
@@ -313,7 +589,7 @@ export function AccessKeysPage() {
             <>
               <Button onClick={() => setFormOpen(false)}>Cancel</Button>
               <Button variant="primary" busy={busy} onClick={submit}>
-                {editing ? "Save changes" : "Create key"}
+                {editing ? "Update" : "Create"}
               </Button>
             </>
           )

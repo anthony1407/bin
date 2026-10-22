@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
-  ChevronRight,
+  Check,
+  ChevronLeft,
   Copy,
   Download,
   File,
@@ -23,7 +24,7 @@ import {
 } from "lucide-react";
 import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo } from "../api";
 import { baseName, bytes, count, dateTime, relative } from "../lib/format";
-import { Badge, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { accessLabel } from "./Buckets";
 
 // --- file kinds ------------------------------------------------------------------
@@ -415,6 +416,7 @@ function Detail({
 
 export function ExplorerPage() {
   const bucket = useParams().bucket!;
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const prefix = params.get("prefix") ?? "";
   const [meta, setMeta] = useState<Bucket | null>(null);
@@ -432,6 +434,7 @@ export function ExplorerPage() {
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const toast = useToast();
@@ -493,10 +496,7 @@ export function ExplorerPage() {
     }
   }
 
-  // Drag and drop of files onto the whole window. dragenter/dragleave fire for
-  // every child element and not at all in some cases (leaving the window,
-  // Esc), so the overlay instead stays up while dragover keeps arriving: the
-  // browser repeats it at least every ~550 ms while a drag is over the page.
+  // Drag and drop of files onto the whole window.
   const uploadRef = useRef(upload);
   uploadRef.current = upload;
   useEffect(() => {
@@ -508,17 +508,17 @@ export function ExplorerPage() {
     };
     const onOver = (e: globalThis.DragEvent) => {
       if (!hasFiles(e)) return;
-      e.preventDefault(); // allows the drop
+      e.preventDefault();
       setDragging(true);
       clearTimeout(hide);
       hide = setTimeout(stop, 800);
     };
     const onLeave = (e: globalThis.DragEvent) => {
-      if (!e.relatedTarget) stop(); // left the window
+      if (!e.relatedTarget) stop();
     };
     const onDrop = (e: globalThis.DragEvent) => {
       if (!hasFiles(e)) return;
-      e.preventDefault(); // keeps the browser from opening the file
+      e.preventDefault();
       stop();
       if (e.dataTransfer?.files.length) uploadRef.current(e.dataTransfer.files);
     };
@@ -539,6 +539,28 @@ export function ExplorerPage() {
     const parts = prefix.split("/").filter(Boolean);
     return parts.map((p, i) => ({ name: p, prefix: parts.slice(0, i + 1).join("/") + "/" }));
   }, [prefix]);
+
+  const parentPrefix = useMemo(() => {
+    if (!prefix) return null;
+    const parts = prefix.replace(/\/$/, "").split("/");
+    parts.pop();
+    return parts.length > 0 ? parts.join("/") + "/" : "";
+  }, [prefix]);
+
+  const currentPath = prefix ? `${bucket}/${prefix}` : `${bucket}`;
+
+  function copyCurrentPath() {
+    navigator.clipboard
+      .writeText(currentPath)
+      .then(() => {
+        setCopiedPath(true);
+        toast("ok", `Path copied: ${currentPath}`);
+        setTimeout(() => setCopiedPath(false), 1500);
+      })
+      .catch(() => {
+        toast("error", "Failed to copy path.");
+      });
+  }
 
   const goTo = (p: string) => {
     setSearch("");
@@ -589,72 +611,118 @@ export function ExplorerPage() {
 
   return (
     <div className="relative">
-      {/* Header */}
-      <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      {/* MinIO style Bucket Header */}
+      <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
-          <Link to="/buckets" className="label-strip hover:text-ink">
-            ← buckets
-          </Link>
-          <h1 className="mt-1 truncate font-mono text-2xl font-medium tracking-tight">{bucket}</h1>
-          {meta && access && (
-            <div className="label-strip mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span>{count(meta.objects)} objects</span>
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
+              <BinMark className="size-5" />
+            </div>
+            <h1 className="truncate font-mono text-2xl font-bold tracking-tight text-ink">{bucket}</h1>
+          </div>
+          {meta && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+              <span>Created on: {dateTime(meta.createdAt)}</span>
               <span>·</span>
-              <span>{bytes(meta.size)}</span>
+              <span>
+                Access: <strong className="font-semibold uppercase tracking-wider text-ink">{access?.text ?? "PRIVATE"}</strong>
+              </span>
+              <span>·</span>
+              <span>
+                {bytes(meta.size)} - {count(meta.objects)} Objects
+              </span>
               {meta.quotaBytes > 0 && (
                 <>
                   <span>·</span>
                   <span>quota {bytes(meta.quotaBytes)}</span>
                 </>
               )}
-              <Badge tone={access.tone}>
-                <access.icon className="size-3" />
-                {access.text}
-              </Badge>
             </div>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
-            Upload
-          </Button>
-          <Button icon={<FolderPlus className="size-4" />} onClick={() => setFolderOpen(true)}>
-            New folder
+        <div className="flex flex-wrap items-center gap-2">
+          <Button icon={<RefreshCw className={cx("size-4", loading && "animate-spin")} />} onClick={() => load()}>
+            Refresh
           </Button>
           <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="contents">
             <Button icon={<Settings2 className="size-4" />}>Settings</Button>
           </Link>
+          <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
+            Upload
+          </Button>
         </div>
       </div>
       <input ref={fileInput} type="file" multiple hidden onChange={(e) => e.target.files && upload(e.target.files)} />
 
-      {/* Toolbar */}
-      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <nav className="flex min-w-0 flex-wrap items-center gap-1 font-mono text-sm" aria-label="Folders">
-          <button onClick={() => goTo("")} className={cx("rounded px-1.5 py-0.5 hover:bg-sunken", !prefix && "font-medium text-ink")}>
-            {bucket}
+      {/* MinIO style Navigation / Path Toolbar */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {/* Back button */}
+        <button
+          type="button"
+          onClick={() => (parentPrefix !== null ? goTo(parentPrefix) : navigate("/buckets"))}
+          title={parentPrefix !== null ? "Go to parent folder" : "Back to buckets"}
+          aria-label="Back"
+          className="flex size-9 shrink-0 items-center justify-center rounded-md border border-line-strong bg-surface text-ink transition-colors hover:bg-sunken"
+        >
+          <ChevronLeft className="size-4" />
+        </button>
+
+        {/* Path container with integrated copy button */}
+        <div className="flex h-9 min-w-44 flex-1 items-center justify-between rounded-md border border-line-strong bg-surface px-3 text-sm">
+          <nav className="flex min-w-0 items-center gap-1 overflow-x-auto font-mono text-sm" aria-label="Folders">
+            <button
+              onClick={() => goTo("")}
+              className={cx(
+                "shrink-0 rounded px-1.5 py-0.5 transition-colors hover:bg-sunken",
+                !prefix ? "font-semibold text-ink" : "text-muted hover:text-ink",
+              )}
+            >
+              {bucket}
+            </button>
+            {crumbs.map((c, i) => (
+              <span key={c.prefix} className="flex shrink-0 items-center gap-1">
+                <span className="text-faint">/</span>
+                <button
+                  onClick={() => goTo(c.prefix)}
+                  className={cx(
+                    "max-w-48 truncate rounded px-1.5 py-0.5 transition-colors hover:bg-sunken",
+                    i === crumbs.length - 1 ? "font-semibold text-ink" : "text-muted hover:text-ink",
+                  )}
+                >
+                  {c.name}
+                </button>
+              </span>
+            ))}
+          </nav>
+
+          {/* Copy path button */}
+          <button
+            type="button"
+            onClick={copyCurrentPath}
+            title={`Copy path (${currentPath})`}
+            aria-label="Copy path"
+            className="ml-2 flex size-6 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-sunken hover:text-ink focus:outline-none"
+          >
+            {copiedPath ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
           </button>
-          {crumbs.map((c, i) => (
-            <span key={c.prefix} className="flex items-center gap-1">
-              <ChevronRight className="size-3.5 text-faint" />
-              <button
-                onClick={() => goTo(c.prefix)}
-                className={cx("max-w-48 truncate rounded px-1.5 py-0.5 hover:bg-sunken", i === crumbs.length - 1 ? "font-medium text-ink" : "text-muted")}
-              >
-                {c.name}
-              </button>
-            </span>
-          ))}
-        </nav>
-        <div className="flex items-center gap-2">
-          <div className="relative w-full sm:w-64">
-            <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
-            <Input ref={searchInput} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={prefix ? "Search in this folder" : "Search objects"} className="pr-9 pl-9" />
-            <kbd className="pointer-events-none absolute top-1/2 right-2.5 hidden -translate-y-1/2 rounded border border-line px-1 font-mono text-[10px] text-faint sm:block">/</kbd>
-          </div>
-          <IconButton label="Refresh" onClick={() => load()}>
-            <RefreshCw className={cx("size-4", loading && "animate-spin")} />
-          </IconButton>
+        </div>
+
+        {/* Create new path button */}
+        <Button icon={<FolderPlus className="size-4" />} onClick={() => setFolderOpen(true)} className="shrink-0">
+          Create new path
+        </Button>
+
+        {/* Search */}
+        <div className="relative w-full sm:w-56">
+          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
+          <Input
+            ref={searchInput}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={prefix ? "Search in folder…" : "Search objects…"}
+            className="h-9 pr-8 pl-9"
+          />
+          <kbd className="pointer-events-none absolute top-1/2 right-2.5 hidden -translate-y-1/2 rounded border border-line px-1 font-mono text-[10px] text-faint sm:block">/</kbd>
         </div>
       </div>
 
@@ -700,9 +768,9 @@ export function ExplorerPage() {
                     className="size-4 accent-[var(--accent)]"
                   />
                 </th>
-                <th className="py-2 pr-3 font-normal">name</th>
-                <th className="hidden w-28 py-2 pr-3 text-right font-normal sm:table-cell">size</th>
-                <th className="hidden w-40 py-2 pr-4 font-normal md:table-cell">modified</th>
+                <th className="py-2 pr-3 font-semibold text-ink">▲ Name</th>
+                <th className="hidden w-44 py-2 pr-4 font-normal md:table-cell">Last Modified</th>
+                <th className="hidden w-28 py-2 pr-4 text-right font-normal sm:table-cell">Size</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -713,12 +781,12 @@ export function ExplorerPage() {
                   </td>
                   <td className="py-2.5 pr-3">
                     <button onClick={() => goTo(p)} className="flex max-w-full items-center gap-2.5 text-left">
-                      <Folder className="size-4 shrink-0 fill-accent-soft text-accent" />
-                      <span className="truncate font-medium group-hover:text-accent-ink">{search ? p : baseName(p)}/</span>
+                      <Folder className="size-4 shrink-0 fill-amber-400 text-amber-500" />
+                      <span className="truncate font-medium text-ink group-hover:text-accent-ink">{search ? p : baseName(p)}/</span>
                     </button>
                   </td>
-                  <td className="hidden py-2.5 pr-3 text-right text-faint sm:table-cell">—</td>
-                  <td className="hidden py-2.5 pr-4 text-faint md:table-cell">—</td>
+                  <td className="hidden py-2.5 pr-4 text-faint md:table-cell">-</td>
+                  <td className="hidden py-2.5 pr-4 text-right text-faint sm:table-cell">-</td>
                 </tr>
               ))}
               {objects.map((o) => {
@@ -731,7 +799,7 @@ export function ExplorerPage() {
                     <td className="max-w-0 py-2.5 pr-3">
                       <div className="flex items-center gap-2.5">
                         <Icon className="size-4 shrink-0 text-faint" />
-                        <span className="truncate" title={o.key}>
+                        <span className="truncate font-medium text-ink" title={o.key}>
                           {search ? o.key : baseName(o.key)}
                         </span>
                       </div>
@@ -739,10 +807,10 @@ export function ExplorerPage() {
                         {bytes(o.size)} · {relative(o.lastModified)}
                       </div>
                     </td>
-                    <td className="num hidden py-2.5 pr-3 text-right text-muted sm:table-cell">{bytes(o.size)}</td>
                     <td className="hidden py-2.5 pr-4 text-muted md:table-cell" title={dateTime(o.lastModified)}>
-                      {relative(o.lastModified)}
+                      {dateTime(o.lastModified)}
                     </td>
+                    <td className="num hidden py-2.5 pr-4 text-right text-muted sm:table-cell">{bytes(o.size)}</td>
                   </tr>
                 );
               })}
