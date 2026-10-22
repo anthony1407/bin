@@ -1,0 +1,26 @@
+# Example deployment. Put the root credentials in a .env file next to this one:
+#
+#   BIN_ROOT_ACCESS_KEY=admin
+#   BIN_ROOT_SECRET_KEY=change-me-to-something-long
+#
+# Then: docker compose up -d
+#   S3 API:  http://localhost:9000
+#   Console: http://localhost:9001
+services:
+  bin:
+    build: .
+    image: bin:dev
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      BIN_ROOT_ACCESS_KEY: ${BIN_ROOT_ACCESS_KEY:?set BIN_ROOT_ACCESS_KEY in .env}
+      BIN_ROOT_SECRET_KEY: ${BIN_ROOT_SECRET_KEY:?set BIN_ROOT_SECRET_KEY in .env}
+      BIN_REGION: us-east-1
+      BIN_LOG_FORMAT: json
+    volumes:
+      - bin-data:/data
+
+volumes:
+  bin-data:

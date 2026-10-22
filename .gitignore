@@ -1,0 +1,17 @@
+# Local runtime data and secrets
+/data/
+bin.env
+.env
+
+# Build output
+/dist/
+/bin.exe
+/bin
+
+# Compatibility evidence and capture tooling stay local
+docs/compat/
+test/compat/
+
+# Panel
+web/node_modules/
+web/dist/
