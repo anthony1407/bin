@@ -10,14 +10,24 @@ import (
 	"bin/internal/s3/s3err"
 	"bin/internal/s3/sigv4"
 	"bin/internal/server"
+	"bin/internal/storage"
 )
 
 // Options configures the S3 handler.
 type Options struct {
+	Store  *storage.Store
+	Region string
 	Domain string          // virtual-host domain; empty = path style only
 	HostID string          // stable instance identifier, sent as x-amz-id-2 and <HostId>
+	Owner  Owner           // reported as the owner of every bucket
 	Auth   *sigv4.Verifier // authenticates every request
 	Log    *slog.Logger
+}
+
+// Owner identifies the account that owns the buckets.
+type Owner struct {
+	ID          string
+	DisplayName string
 }
 
 // opFunc implements one operation. It must either write a complete response
@@ -37,7 +47,19 @@ func NewHandler(opts Options) http.Handler {
 }
 
 func newHandler(opts Options) *Handler {
-	return &Handler{opts: opts, ops: map[Op]opFunc{}}
+	h := &Handler{opts: opts}
+	h.ops = map[Op]opFunc{
+		OpListBuckets:         h.listBuckets,
+		OpCreateBucket:        h.createBucket,
+		OpHeadBucket:          h.headBucket,
+		OpDeleteBucket:        h.deleteBucket,
+		OpGetBucketLocation:   h.getBucketLocation,
+		OpGetBucketVersioning: h.getBucketVersioning,
+		OpGetBucketTagging:    h.getBucketTagging,
+		OpPutBucketTagging:    h.putBucketTagging,
+		OpDeleteBucketTagging: h.deleteBucketTagging,
+	}
+	return h
 }
 
 func (h *Handler) withMiddleware() http.Handler {

@@ -18,6 +18,9 @@ const (
 	OpHeadBucket              Op = "HeadBucket"
 	OpGetBucketLocation       Op = "GetBucketLocation"
 	OpGetBucketVersioning     Op = "GetBucketVersioning"
+	OpGetBucketTagging        Op = "GetBucketTagging"
+	OpPutBucketTagging        Op = "PutBucketTagging"
+	OpDeleteBucketTagging     Op = "DeleteBucketTagging"
 	OpListObjects             Op = "ListObjects"
 	OpListObjectsV2           Op = "ListObjectsV2"
 	OpListMultipartUploads    Op = "ListMultipartUploads"
@@ -50,7 +53,7 @@ var unsupported = []string{
 	"intelligent-tiering", "inventory", "legal-hold", "lifecycle", "logging",
 	"metrics", "notification", "object-lock", "ownershipControls", "policy",
 	"policyStatus", "publicAccessBlock", "replication", "requestPayment",
-	"restore", "retention", "select", "tagging", "torrent", "versions", "website",
+	"restore", "retention", "select", "torrent", "versions", "website",
 }
 
 // parseTarget extracts bucket and key from a request. With a configured domain,
@@ -89,6 +92,10 @@ func Resolve(r *http.Request, domain string) (Request, error) {
 	if q.Has("versioning") && (key != "" || r.Method != http.MethodGet) {
 		return req, s3err.ErrNotImplemented
 	}
+	// Bucket tags are supported; object tags are not (yet).
+	if q.Has("tagging") && key != "" {
+		return req, s3err.ErrNotImplemented
+	}
 
 	switch {
 	case bucket == "":
@@ -115,6 +122,8 @@ func bucketOp(method string, q url.Values) Op {
 			return OpGetBucketLocation
 		case q.Has("versioning"):
 			return OpGetBucketVersioning
+		case q.Has("tagging"):
+			return OpGetBucketTagging
 		case q.Has("uploads"):
 			return OpListMultipartUploads
 		case q.Get("list-type") == "2":
@@ -123,8 +132,14 @@ func bucketOp(method string, q url.Values) Op {
 			return OpListObjects
 		}
 	case http.MethodPut:
+		if q.Has("tagging") {
+			return OpPutBucketTagging
+		}
 		return OpCreateBucket
 	case http.MethodDelete:
+		if q.Has("tagging") {
+			return OpDeleteBucketTagging
+		}
 		return OpDeleteBucket
 	case http.MethodHead:
 		return OpHeadBucket
