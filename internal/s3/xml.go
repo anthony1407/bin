@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"bin/internal/checksum"
 	"bin/internal/s3/s3err"
 	"bin/internal/storage"
 )
@@ -38,8 +39,9 @@ func writeXML(w http.ResponseWriter, status int, v any) error {
 	return err
 }
 
-// readXMLBody reads a small XML request body into v, checking Content-MD5
-// when present. It reports whether the body was empty, leaving v untouched.
+// readXMLBody reads a small XML request body into v, checking Content-MD5 and
+// any x-amz-checksum-* header (or trailer) the client sent. It reports whether
+// the body was empty, leaving v untouched.
 func readXMLBody(r *http.Request, v any) (empty bool, err error) {
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxXMLBody+1))
 	if err != nil {
@@ -55,6 +57,20 @@ func readXMLBody(r *http.Request, v any) (empty bool, err error) {
 		}
 		if sum := md5.Sum(data); !bytes.Equal(sum[:], decoded) {
 			return false, s3err.ErrBadDigest
+		}
+	}
+	for _, a := range checksum.All {
+		want := r.Header.Get(a.Header())
+		if want == "" && r.Trailer != nil {
+			want = r.Trailer.Get(a.Header())
+		}
+		if want == "" {
+			continue
+		}
+		h := a.New()
+		h.Write(data)
+		if checksum.Encode(h.Sum(nil)) != want {
+			return false, s3err.ErrBadDigest.WithMessage("The " + string(a) + " you specified did not match the calculated checksum.")
 		}
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -97,6 +113,22 @@ func storageError(err error) error {
 		return s3err.ErrPreconditionFailed
 	case errors.Is(err, storage.ErrIncompleteBody), errors.Is(err, io.ErrUnexpectedEOF):
 		return s3err.ErrIncompleteBody
+	case errors.Is(err, storage.ErrNoSuchUpload):
+		return s3err.ErrNoSuchUpload
+	case errors.Is(err, storage.ErrInvalidPart):
+		return s3err.ErrInvalidPart
+	case errors.Is(err, storage.ErrInvalidPartOrder):
+		return s3err.ErrInvalidPartOrder
+	case errors.Is(err, storage.ErrEntityTooSmall):
+		return s3err.ErrEntityTooSmall
+	case errors.Is(err, storage.ErrSizeMismatch):
+		return s3err.ErrInvalidRequest.WithMessage("The provided 'x-amz-mp-object-size' header value does not match the size of the completed object.")
+	case errors.Is(err, storage.ErrBadDigest):
+		return s3err.ErrBadDigest.WithMessage("The checksum you specified did not match the calculated checksum of the object.")
+	case errors.Is(err, storage.ErrInvalidChecksumType):
+		return s3err.ErrInvalidRequest.WithMessage("The checksum type is not supported for this checksum algorithm.")
+	case errors.Is(err, storage.ErrInvalidRange):
+		return s3err.ErrInvalidRange
 	case errors.Is(err, storage.ErrNoSuchBucket):
 		return s3err.ErrNoSuchBucket
 	case errors.Is(err, storage.ErrBucketExists):

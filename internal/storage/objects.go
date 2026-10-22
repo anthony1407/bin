@@ -1,16 +1,13 @@
 package storage
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"hash"
 	"io"
-	"os"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -26,17 +23,50 @@ type ObjectInfo struct {
 	Key          string
 	VersionID    string
 	Size         int64
-	ETag         string // unquoted
-	SHA256       []byte
+	ETag         string // unquoted; "<md5>-<n>" for multipart objects
+	SHA256       []byte // whole-object hash; nil for multipart objects (see parts)
 	ContentType  string
 	Headers      map[string]string // Cache-Control, Content-Disposition, Content-Encoding, Content-Language, Expires
 	UserMeta     map[string]string // lower-case names, without the x-amz-meta- prefix
 	Checksums    map[checksum.Algorithm]string
 	ChecksumType string
-	PartsCount   int
+	PartsCount   int // 0 for objects stored by a single PUT
 	ModTime      time.Time
 
-	blob string
+	blob  string     // single-PUT objects
+	parts []partData // multipart objects, in part order
+}
+
+// partData locates one stored part of a multipart object.
+type partData struct {
+	Number   int
+	Blob     string
+	Offset   int64
+	Size     int64
+	ETag     string
+	SHA256   []byte
+	Checksum string
+}
+
+// Part returns the byte range of part n (1-based). A single-PUT object has
+// exactly one part, the whole object.
+func (o ObjectInfo) Part(n int) (offset, size int64, ok bool) {
+	if o.PartsCount == 0 {
+		return 0, o.Size, n == 1
+	}
+	if n < 1 || n > len(o.parts) {
+		return 0, 0, false
+	}
+	p := o.parts[n-1]
+	return p.Offset, p.Size, true
+}
+
+// dataParts returns the blobs holding the object's bytes, in order.
+func (o ObjectInfo) dataParts() []partData {
+	if o.PartsCount == 0 {
+		return []partData{{Number: 1, Blob: o.blob, Size: o.Size, SHA256: o.SHA256}}
+	}
+	return o.parts
 }
 
 // Sums are the digests of uploaded data, handed to PutOptions.Verify.
@@ -89,9 +119,8 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 	if err != nil {
 		return ObjectInfo{}, err
 	}
-	public := Sums{MD5: sums.MD5, SHA256: sums.SHA256, Checksums: sums.Checksums}
 	if opts.Verify != nil {
-		if err := opts.Verify(public); err != nil {
+		if err := opts.Verify(Sums(sums)); err != nil {
 			s.removeBlob(blob)
 			return ObjectInfo{}, err
 		}
@@ -118,41 +147,49 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 		info.ChecksumType = "FULL_OBJECT"
 	}
 
-	var replaced string
+	var replaced []string
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		bid, err := bucketID(ctx, tx, bucket)
 		if err != nil {
 			return err
 		}
-		cur, err := latest(ctx, tx, bid, key)
-		if err != nil && !errors.Is(err, ErrNoSuchKey) {
+		if replaced, err = s.replaceLatest(ctx, tx, bid, key, opts.IfMatch, opts.IfNoneMatch); err != nil {
 			return err
 		}
-		exists := err == nil
-		if opts.IfNoneMatch != "" && exists && (opts.IfNoneMatch == "*" || etagMatches(opts.IfNoneMatch, cur.ETag)) {
-			return ErrPrecondition
-		}
-		if opts.IfMatch != "" {
-			if !exists {
-				return ErrNoSuchKey
-			}
-			if !etagMatches(opts.IfMatch, cur.ETag) {
-				return ErrPrecondition
-			}
-		}
-		if exists {
-			if replaced, err = dropVersion(ctx, tx, bid, key, "null", s.nowNanos()); err != nil {
-				return err
-			}
-		}
-		return insertObject(ctx, tx, bid, info)
+		_, err = insertObject(ctx, tx, bid, info)
+		return err
 	})
 	if err != nil {
 		s.removeBlob(blob)
 		return ObjectInfo{}, err
 	}
-	s.collect(ctx, replaced)
+	s.collect(ctx, replaced...)
 	return info, nil
+}
+
+// replaceLatest evaluates a conditional write against the current object and
+// drops it, returning the blobs queued for deletion.
+func (s *Store) replaceLatest(ctx context.Context, tx *sql.Tx, bid int64, key, ifMatch, ifNoneMatch string) ([]string, error) {
+	cur, err := latest(ctx, tx, bid, key)
+	if err != nil && !errors.Is(err, ErrNoSuchKey) {
+		return nil, err
+	}
+	exists := err == nil
+	if ifNoneMatch != "" && exists && (ifNoneMatch == "*" || etagMatches(ifNoneMatch, cur.ETag)) {
+		return nil, ErrPrecondition
+	}
+	if ifMatch != "" {
+		if !exists {
+			return nil, ErrNoSuchKey
+		}
+		if !etagMatches(ifMatch, cur.ETag) {
+			return nil, ErrPrecondition
+		}
+	}
+	if !exists {
+		return nil, nil
+	}
+	return dropVersion(ctx, tx, bid, key, "null", s.nowNanos())
 }
 
 // StatObject returns the metadata of bucket/key.
@@ -169,30 +206,9 @@ func (s *Store) StatObject(ctx context.Context, bucket, key string) (ObjectInfo,
 	return info, nil
 }
 
-// OpenObject returns the metadata of bucket/key and its data, positioned at
-// the start. The caller must close the file. Use NewVerifiedReader to check
-// the data's integrity while reading it whole.
-func (s *Store) OpenObject(ctx context.Context, bucket, key string) (ObjectInfo, *os.File, error) {
-	// The blob may be replaced and deleted between reading the metadata and
-	// opening the file; a fresh lookup then finds the new one.
-	for attempt := 0; ; attempt++ {
-		info, err := s.StatObject(ctx, bucket, key)
-		if err != nil {
-			return ObjectInfo{}, nil, err
-		}
-		f, err := os.Open(s.blobPath(info.blob))
-		if err == nil {
-			return info, f, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) || attempt == 2 {
-			return ObjectInfo{}, nil, err
-		}
-	}
-}
-
 // DeleteObject removes bucket/key. Deleting a missing key succeeds, as in S3.
 func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
-	var dropped string
+	var dropped []string
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		bid, err := bucketID(ctx, tx, bucket)
 		if err != nil {
@@ -207,7 +223,7 @@ func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
 	if err != nil {
 		return err
 	}
-	s.collect(ctx, dropped)
+	s.collect(ctx, dropped...)
 	return nil
 }
 
@@ -221,18 +237,20 @@ type CopyOptions struct {
 	ContentType     string
 	Headers         map[string]string
 	UserMeta        map[string]string
-	// Checksums to compute for the copy; the source's algorithms are always kept.
+	// Checksums to compute for the copy; full-object CRC algorithms of the
+	// source are kept.
 	Checksums []checksum.Algorithm
 }
 
-// CopyObject copies srcBucket/srcKey to dstBucket/dstKey. The source data is
-// verified against its SHA-256 while it is copied; corrupt data is not copied.
+// CopyObject copies srcBucket/srcKey to dstBucket/dstKey as a single-part
+// object. The source data is verified against its SHA-256 (per part for
+// multipart sources) while it is copied; corrupt data is not copied.
 func (s *Store) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey string, opts CopyOptions) (ObjectInfo, error) {
-	src, f, err := s.OpenObject(ctx, srcBucket, srcKey)
+	src, data, err := s.OpenObject(ctx, srcBucket, srcKey)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
-	defer f.Close()
+	defer data.Close()
 	if opts.Check != nil {
 		if err := opts.Check(src); err != nil {
 			return ObjectInfo{}, err
@@ -248,11 +266,11 @@ func (s *Store) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, ds
 		put.ContentType, put.Headers, put.UserMeta = opts.ContentType, opts.Headers, opts.UserMeta
 	}
 	for a := range src.Checksums {
-		if !containsAlg(put.Checksums, a) {
+		if !containsAlg(put.Checksums, a) && (src.ChecksumType == "FULL_OBJECT" || src.PartsCount == 0) {
 			put.Checksums = append(put.Checksums, a)
 		}
 	}
-	return s.PutObject(ctx, dstBucket, dstKey, NewVerifiedReader(f, src.SHA256), src.Size, put)
+	return s.PutObject(ctx, dstBucket, dstKey, data.Verified(), src.Size, put)
 }
 
 func containsAlg(list []checksum.Algorithm, a checksum.Algorithm) bool {
@@ -267,9 +285,8 @@ func containsAlg(list []checksum.Algorithm, a checksum.Algorithm) bool {
 // etagMatches compares an If-Match/If-None-Match value (possibly quoted, or a
 // comma-separated list) with an unquoted ETag.
 func etagMatches(header, etag string) bool {
-	for _, part := range bytes.Split([]byte(header), []byte(",")) {
-		v := string(bytes.TrimSpace(part))
-		v = trimQuotes(v)
+	for _, v := range strings.Split(header, ",") {
+		v = trimQuotes(strings.TrimSpace(v))
 		if v == "*" || v == etag {
 			return true
 		}
@@ -293,25 +310,26 @@ func nonNil(m map[string]string) map[string]string {
 
 // --- rows -------------------------------------------------------------------
 
-const objectColumns = `version_id, blob, size, etag, sha256, content_type, headers, user_meta,
-	checksums, checksum_type, parts, modified_at`
+const objectColumns = `id, version_id, blob, size, etag, sha256, content_type, headers, user_meta,
+	checksums, checksum_type, parts_count, modified_at`
 
-type rowQuerier interface {
+type rowsQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // latest returns the current, non-deleted version of a key.
-func latest(ctx context.Context, q rowQuerier, bucketID int64, key string) (ObjectInfo, error) {
+func latest(ctx context.Context, q rowsQuerier, bucketID int64, key string) (ObjectInfo, error) {
 	var (
-		info                       ObjectInfo
-		blob                       sql.NullString
-		headers, meta, sums, parts string
-		modified                   int64
+		info                ObjectInfo
+		id, modified        int64
+		blob                sql.NullString
+		headers, meta, sums string
 	)
 	err := q.QueryRowContext(ctx, `SELECT `+objectColumns+` FROM objects
 		WHERE bucket_id = ? AND key = ? AND is_latest = 1 AND delete_marker = 0`, bucketID, key).
-		Scan(&info.VersionID, &blob, &info.Size, &info.ETag, &info.SHA256, &info.ContentType,
-			&headers, &meta, &sums, &info.ChecksumType, &parts, &modified)
+		Scan(&id, &info.VersionID, &blob, &info.Size, &info.ETag, &info.SHA256, &info.ContentType,
+			&headers, &meta, &sums, &info.ChecksumType, &info.PartsCount, &modified)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ObjectInfo{}, ErrNoSuchKey
 	}
@@ -331,101 +349,96 @@ func latest(ctx context.Context, q rowQuerier, bucketID int64, key string) (Obje
 			return ObjectInfo{}, err
 		}
 	}
-	if parts != "" {
-		var p []json.RawMessage
-		if err := json.Unmarshal([]byte(parts), &p); err != nil {
+	if info.PartsCount > 0 {
+		if info.parts, err = objectParts(ctx, q, id); err != nil {
 			return ObjectInfo{}, err
 		}
-		info.PartsCount = len(p)
 	}
 	return info, nil
 }
 
-func insertObject(ctx context.Context, tx *sql.Tx, bucketID int64, o ObjectInfo) error {
+func objectParts(ctx context.Context, q rowsQuerier, objectID int64) ([]partData, error) {
+	rows, err := q.QueryContext(ctx, `SELECT part_number, blob, start_offset, size, etag, sha256, checksum
+		FROM object_parts WHERE object_id = ? ORDER BY part_number`, objectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var parts []partData
+	for rows.Next() {
+		var p partData
+		if err := rows.Scan(&p.Number, &p.Blob, &p.Offset, &p.Size, &p.ETag, &p.SHA256, &p.Checksum); err != nil {
+			return nil, err
+		}
+		parts = append(parts, p)
+	}
+	return parts, rows.Err()
+}
+
+// insertObject stores an object row (and its parts) and returns its row ID.
+func insertObject(ctx context.Context, tx *sql.Tx, bucketID int64, o ObjectInfo) (int64, error) {
 	headers, _ := json.Marshal(o.Headers)
 	meta, _ := json.Marshal(o.UserMeta)
 	sums, _ := json.Marshal(o.Checksums)
-	_, err := tx.ExecContext(ctx, `INSERT INTO objects (bucket_id, key, version_id, is_latest, blob,
-		size, etag, sha256, content_type, headers, user_meta, checksums, checksum_type, modified_at)
-		VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		bucketID, o.Key, o.VersionID, o.blob, o.Size, o.ETag, o.SHA256, o.ContentType,
-		string(headers), string(meta), string(sums), o.ChecksumType, o.ModTime.UnixNano())
-	return err
-}
-
-// dropVersion deletes one version row and queues its blob for removal. It
-// returns the queued blob ID.
-func dropVersion(ctx context.Context, tx *sql.Tx, bucketID int64, key, versionID string, now int64) (string, error) {
-	var blob sql.NullString
-	err := tx.QueryRowContext(ctx, `DELETE FROM objects WHERE bucket_id = ? AND key = ? AND version_id = ?
-		RETURNING blob`, bucketID, key, versionID).Scan(&blob)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNoSuchKey
+	var blob any
+	if o.blob != "" {
+		blob = o.blob
 	}
-	if err != nil || !blob.Valid {
-		return "", err
+	var id int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO objects (bucket_id, key, version_id, is_latest, blob,
+		size, etag, sha256, content_type, headers, user_meta, checksums, checksum_type, parts_count, modified_at)
+		VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		bucketID, o.Key, o.VersionID, blob, o.Size, o.ETag, o.SHA256, o.ContentType,
+		string(headers), string(meta), string(sums), o.ChecksumType, len(o.parts), o.ModTime.UnixNano()).Scan(&id)
+	if err != nil {
+		return 0, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO gc_blobs (blob, queued_at) VALUES (?, ?)`, blob.String, now)
-	return blob.String, err
-}
-
-// --- integrity ---------------------------------------------------------------
-
-// holdback is how much verified-but-unreleased data NewVerifiedReader keeps
-// until the whole blob has been checked.
-const holdback = 64 << 10
-
-// verifiedReader hashes data as it reads and withholds the last holdback
-// bytes until EOF, so a reader of corrupt data never receives the complete
-// object: it gets ErrCorrupt before the final bytes instead.
-type verifiedReader struct {
-	r    io.Reader
-	h    hash.Hash
-	want []byte
-	buf  []byte // read and hashed, not yet released
-	tmp  []byte
-	eof  bool
-	err  error
-}
-
-// NewVerifiedReader wraps r, whose full content must hash to sha256sum.
-func NewVerifiedReader(r io.Reader, sha256sum []byte) io.Reader {
-	return &verifiedReader{r: r, h: sha256.New(), want: sha256sum, tmp: make([]byte, 128<<10)}
-}
-
-func (v *verifiedReader) Read(p []byte) (int, error) {
-	if v.err != nil {
-		return 0, v.err
-	}
-	for !v.eof && len(v.buf) <= holdback+len(p) {
-		n, err := v.r.Read(v.tmp)
-		v.h.Write(v.tmp[:n])
-		v.buf = append(v.buf, v.tmp[:n]...)
-		if err == io.EOF {
-			v.eof = true
-			if !bytes.Equal(v.h.Sum(nil), v.want) {
-				v.err = ErrCorrupt
-				return 0, v.err
-			}
-		} else if err != nil {
-			v.err = err
+	for _, p := range o.parts {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO object_parts (object_id, part_number, blob,
+			start_offset, size, etag, sha256, checksum) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, p.Number, p.Blob, p.Offset, p.Size, p.ETag, p.SHA256, p.Checksum); err != nil {
 			return 0, err
 		}
 	}
-	avail := len(v.buf)
-	if !v.eof {
-		avail -= holdback
+	return id, nil
+}
+
+// dropVersion deletes one version row (its parts go with it) and queues its
+// blobs for removal, returning them.
+func dropVersion(ctx context.Context, tx *sql.Tx, bucketID int64, key, versionID string, now int64) ([]string, error) {
+	var id int64
+	var blob sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT id, blob FROM objects WHERE bucket_id = ? AND key = ? AND version_id = ?`,
+		bucketID, key, versionID).Scan(&id, &blob)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNoSuchKey
 	}
-	if avail <= 0 {
-		if v.eof {
-			return 0, io.EOF
+	if err != nil {
+		return nil, err
+	}
+	var blobs []string
+	if blob.Valid {
+		blobs = append(blobs, blob.String)
+	}
+	parts, err := objectParts(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range parts {
+		blobs = append(blobs, p.Blob)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM objects WHERE id = ?`, id); err != nil {
+		return nil, err
+	}
+	return blobs, queueBlobs(ctx, tx, blobs, now)
+}
+
+// queueBlobs records blobs for deletion once the transaction commits.
+func queueBlobs(ctx context.Context, tx *sql.Tx, blobs []string, now int64) error {
+	for _, b := range blobs {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO gc_blobs (blob, queued_at) VALUES (?, ?)`, b, now); err != nil {
+			return err
 		}
-		return 0, nil
 	}
-	n := copy(p, v.buf[:avail])
-	v.buf = v.buf[n:]
-	if cap(v.buf) > 4*holdback && len(v.buf) < holdback {
-		v.buf = append([]byte(nil), v.buf...) // let the old backing array go
-	}
-	return n, nil
+	return nil
 }

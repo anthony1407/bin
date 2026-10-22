@@ -43,7 +43,7 @@ func readAll(t *testing.T, s *Store, bucket, key string) (ObjectInfo, string) {
 		t.Fatalf("open %s/%s: %v", bucket, key, err)
 	}
 	defer f.Close()
-	data, err := io.ReadAll(NewVerifiedReader(f, info.SHA256))
+	data, err := io.ReadAll(f.Verified())
 	if err != nil {
 		t.Fatalf("read %s/%s: %v", bucket, key, err)
 	}
@@ -178,7 +178,7 @@ func TestCorruptionIsDetected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	got, err := io.ReadAll(NewVerifiedReader(f, info.SHA256))
+	got, err := io.ReadAll(f.Verified())
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("err = %v, want ErrCorrupt", err)
 	}

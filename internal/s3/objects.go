@@ -211,17 +211,18 @@ func (h *Handler) headObject(w http.ResponseWriter, r *http.Request, req Request
 }
 
 func (h *Handler) getObject(w http.ResponseWriter, r *http.Request, req Request) error {
-	info, f, err := h.opts.Store.OpenObject(r.Context(), req.Bucket, req.Key)
+	info, data, err := h.opts.Store.OpenObject(r.Context(), req.Bucket, req.Key)
 	if err != nil {
 		return storageError(err)
 	}
-	defer f.Close()
-	return h.respondObject(w, r, info, f)
+	defer data.Close()
+	return h.respondObject(w, r, info, data)
 }
 
 // respondObject writes the response for GET (data != nil) or HEAD. Whole
-// objects are streamed through the SHA-256 verifier; ranges are not verified.
-func (h *Handler) respondObject(w http.ResponseWriter, r *http.Request, info storage.ObjectInfo, data io.ReadSeeker) error {
+// objects are streamed through the SHA-256 verifier (per part for multipart
+// objects); ranges and single parts are not verified.
+func (h *Handler) respondObject(w http.ResponseWriter, r *http.Request, info storage.ObjectInfo, data *storage.ObjectData) error {
 	if status := evaluateConditions(r, info); status == http.StatusPreconditionFailed {
 		return s3err.ErrPreconditionFailed
 	} else if status == http.StatusNotModified {
@@ -237,10 +238,14 @@ func (h *Handler) respondObject(w http.ResponseWriter, r *http.Request, info sto
 		if err != nil || n < 1 || n > 10000 {
 			return s3err.ErrInvalidArgument.WithMessage("Part number must be an integer between 1 and 10000, inclusive")
 		}
-		if n != 1 { // single-PUT objects have exactly one part
+		off, size, ok := info.Part(n)
+		if !ok {
 			return s3err.ErrInvalidPartNumber
 		}
-		partial = true
+		start, length, partial = off, size, true
+		if info.PartsCount > 0 {
+			w.Header().Set("X-Amz-Mp-Parts-Count", strconv.Itoa(info.PartsCount))
+		}
 	} else if rh := r.Header.Get("Range"); rh != "" {
 		s, l, ok, satisfiable := parseRange(rh, info.Size)
 		if ok && !satisfiable {
@@ -283,14 +288,9 @@ func (h *Handler) respondObject(w http.ResponseWriter, r *http.Request, info sto
 		return nil
 	}
 
-	var body io.Reader
+	body := data.Verified()
 	if partial {
-		if _, err := data.Seek(start, io.SeekStart); err != nil {
-			panic(http.ErrAbortHandler)
-		}
-		body = io.LimitReader(data, length)
-	} else {
-		body = storage.NewVerifiedReader(data, info.SHA256)
+		body = data.Range(start, length)
 	}
 	if _, err := io.Copy(w, body); err != nil {
 		if errors.Is(err, storage.ErrCorrupt) {

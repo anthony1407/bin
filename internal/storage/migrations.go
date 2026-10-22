@@ -57,6 +57,49 @@ var migrations = []string{
 		blob      TEXT    PRIMARY KEY,
 		queued_at INTEGER NOT NULL
 	) WITHOUT ROWID;`,
+
+	// 3: multipart uploads. A completed multipart object keeps its parts as
+	// separate blobs (no concatenation), each with its own SHA-256; objects
+	// stored by a single PUT keep using objects.blob. The never-used JSON
+	// "parts" column is replaced by the object_parts table.
+	`ALTER TABLE objects DROP COLUMN parts;
+	ALTER TABLE objects ADD COLUMN parts_count INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE object_parts (
+		object_id    INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+		part_number  INTEGER NOT NULL,
+		blob         TEXT    NOT NULL,
+		start_offset INTEGER NOT NULL,             -- position of the part in the object
+		size         INTEGER NOT NULL,
+		etag         TEXT    NOT NULL,
+		sha256       BLOB    NOT NULL,
+		checksum     TEXT    NOT NULL DEFAULT '',  -- the upload's algorithm, base64
+		PRIMARY KEY (object_id, part_number)
+	) WITHOUT ROWID;
+	CREATE INDEX object_parts_blob ON object_parts (blob);
+	CREATE TABLE uploads (
+		id                 TEXT    PRIMARY KEY,
+		bucket_id          INTEGER NOT NULL REFERENCES buckets(id),
+		key                TEXT    NOT NULL,
+		created_at         INTEGER NOT NULL,
+		content_type       TEXT    NOT NULL DEFAULT '',
+		headers            TEXT    NOT NULL DEFAULT '{}',
+		user_meta          TEXT    NOT NULL DEFAULT '{}',
+		checksum_algorithm TEXT    NOT NULL DEFAULT '',
+		checksum_type      TEXT    NOT NULL DEFAULT ''  -- FULL_OBJECT or COMPOSITE
+	) WITHOUT ROWID;
+	CREATE INDEX uploads_key ON uploads (bucket_id, key, created_at);
+	CREATE TABLE upload_parts (
+		upload_id   TEXT    NOT NULL REFERENCES uploads(id) ON DELETE CASCADE,
+		part_number INTEGER NOT NULL,
+		blob        TEXT    NOT NULL,
+		size        INTEGER NOT NULL,
+		etag        TEXT    NOT NULL,
+		sha256      BLOB    NOT NULL,
+		checksum    TEXT    NOT NULL DEFAULT '',
+		modified_at INTEGER NOT NULL,
+		PRIMARY KEY (upload_id, part_number)
+	) WITHOUT ROWID;
+	CREATE INDEX upload_parts_blob ON upload_parts (blob);`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

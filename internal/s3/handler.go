@@ -65,6 +65,15 @@ func newHandler(opts Options) *Handler {
 		OpCopyObject:          h.copyObject,
 		OpListObjectsV2:       h.listObjectsV2,
 		OpListObjects:         h.listObjectsV1,
+
+		OpCreateMultipartUpload:   h.createMultipartUpload,
+		OpUploadPart:              h.uploadPart,
+		OpUploadPartCopy:          h.uploadPartCopy,
+		OpCompleteMultipartUpload: h.completeMultipartUpload,
+		OpAbortMultipartUpload:    h.abortMultipartUpload,
+		OpListParts:               h.listParts,
+		OpListMultipartUploads:    h.listMultipartUploads,
+		OpDeleteObjects:           h.deleteObjects,
 	}
 	return h
 }

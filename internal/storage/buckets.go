@@ -101,8 +101,10 @@ func (s *Store) ListBuckets(ctx context.Context) ([]Bucket, error) {
 }
 
 // DeleteBucket removes an empty bucket. Any object version, including delete
-// markers, makes it non-empty.
+// markers, makes it non-empty; in-progress multipart uploads are aborted.
 func (s *Store) DeleteBucket(ctx context.Context, name string) error {
+	var dropped []string
+	defer func() { s.collect(context.Background(), dropped...) }()
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		id, err := bucketID(ctx, tx, name)
 		if err != nil {
@@ -115,6 +117,27 @@ func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM uploads WHERE bucket_id = ?`, id)
+		if err != nil {
+			return err
+		}
+		var uploads []string
+		for rows.Next() {
+			var u string
+			if err := rows.Scan(&u); err != nil {
+				rows.Close()
+				return err
+			}
+			uploads = append(uploads, u)
+		}
+		rows.Close()
+		for _, u := range uploads {
+			blobs, err := s.dropUpload(ctx, tx, u)
+			if err != nil {
+				return err
+			}
+			dropped = append(dropped, blobs...)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_tags WHERE bucket_id = ?`, id); err != nil {
 			return err

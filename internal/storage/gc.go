@@ -11,16 +11,34 @@ import (
 	"time"
 )
 
-// collect deletes a blob queued in gc_blobs and dequeues it. Failures (for
-// example a file still open on Windows) leave it queued for the next sweep.
-func (s *Store) collect(ctx context.Context, blob string) {
-	if blob == "" {
-		return
+// UploadExpiry is how long an unfinished multipart upload may sit idle
+// before it is aborted and its parts deleted.
+const UploadExpiry = 7 * 24 * time.Hour
+
+// collect deletes queued blobs from disk and dequeues them. Blobs that are
+// not queued, or are being read (see acquire), are left alone; failures leave
+// them queued for the next sweep.
+func (s *Store) collect(ctx context.Context, blobs ...string) {
+	for _, b := range blobs {
+		s.mu.Lock()
+		busy := s.inUse[b] > 0
+		s.mu.Unlock()
+		if busy {
+			continue
+		}
+		var one int
+		err := s.read.QueryRowContext(ctx, `SELECT 1 FROM gc_blobs WHERE blob = ?`, b).Scan(&one)
+		if err != nil {
+			continue // not queued (still live) or transient error
+		}
+		s.mu.Lock()
+		if s.inUse[b] == 0 { // re-check: a reader may have arrived meanwhile
+			if s.removeBlob(b) == nil {
+				s.write.ExecContext(ctx, `DELETE FROM gc_blobs WHERE blob = ?`, b)
+			}
+		}
+		s.mu.Unlock()
 	}
-	if err := s.removeBlob(blob); err != nil {
-		return
-	}
-	s.write.ExecContext(ctx, `DELETE FROM gc_blobs WHERE blob = ?`, blob)
 }
 
 // collectQueued retries every queued blob.
@@ -39,10 +57,11 @@ func (s *Store) collectQueued(ctx context.Context) error {
 		queued = append(queued, b)
 	}
 	rows.Close()
-	for _, b := range queued {
-		s.collect(ctx, b)
+	if err := rows.Err(); err != nil {
+		return err
 	}
-	return rows.Err()
+	s.collect(ctx, queued...)
+	return nil
 }
 
 // recover runs at startup, before any request is served, and repairs what a
@@ -87,15 +106,20 @@ func (s *Store) recover(ctx context.Context, log *slog.Logger) error {
 // blobReferenced reports whether any metadata still points at a blob.
 func (s *Store) blobReferenced(ctx context.Context, blob string) (bool, error) {
 	var one int
-	err := s.read.QueryRowContext(ctx, `SELECT 1 FROM objects WHERE blob = ? LIMIT 1`, blob).Scan(&one)
+	err := s.read.QueryRowContext(ctx, `SELECT 1 FROM objects WHERE blob = ?1
+		UNION ALL SELECT 1 FROM object_parts WHERE blob = ?1
+		UNION ALL SELECT 1 FROM upload_parts WHERE blob = ?1
+		UNION ALL SELECT 1 FROM gc_blobs WHERE blob = ?1
+		LIMIT 1`, blob).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-// gcLoop retries queued deletions periodically until ctx ends.
-func (s *Store) gcLoop(ctx context.Context) {
+// gcLoop retries queued deletions and expires abandoned multipart uploads
+// periodically until ctx ends.
+func (s *Store) gcLoop(ctx context.Context, log *slog.Logger) {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for {
@@ -103,6 +127,11 @@ func (s *Store) gcLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if n, err := s.expireUploads(ctx, s.now().Add(-UploadExpiry)); err != nil {
+				log.Error("expiring multipart uploads", "err", err)
+			} else if n > 0 {
+				log.Info("aborted abandoned multipart uploads", "count", n)
+			}
 			s.collectQueued(ctx)
 		}
 	}

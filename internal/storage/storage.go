@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -48,6 +49,9 @@ type Store struct {
 	read   *sql.DB
 	now    func() time.Time
 	stopGC context.CancelFunc
+
+	mu    sync.Mutex
+	inUse map[string]int // blobs being read; never deleted meanwhile
 }
 
 // Open takes exclusive ownership of dir, creating it if needed, brings the
@@ -67,7 +71,7 @@ func Open(dir string, log *slog.Logger) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, lock: lock, now: time.Now}
+	s := &Store{dir: dir, lock: lock, now: time.Now, inUse: map[string]int{}}
 	if err := s.openDB(); err != nil {
 		s.Close()
 		return nil, err
@@ -78,7 +82,7 @@ func Open(dir string, log *slog.Logger) (*Store, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stopGC = cancel
-	go s.gcLoop(ctx)
+	go s.gcLoop(ctx, log)
 	return s, nil
 }
 
