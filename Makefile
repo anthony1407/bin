@@ -1,13 +1,16 @@
 GO      ?= go
 IMAGE   ?= bin:dev
-VERSION ?= dev
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X bin/internal/buildinfo.Version=$(VERSION) \
+           -X bin/internal/buildinfo.Commit=$(COMMIT) -X bin/internal/buildinfo.Date=$(DATE)
 
 .PHONY: build test vet image integration crash check
 
 ## build: compile the server into dist/
 build:
-	$(GO) build -trimpath -ldflags "-s -w -X bin/internal/buildinfo.Version=$(VERSION)" \
-		-o dist/bin$(shell $(GO) env GOEXE) ./cmd/bin
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o dist/bin$(shell $(GO) env GOEXE) ./cmd/bin
 
 ## test: unit and end-to-end tests (no Docker needed)
 test:
@@ -20,7 +23,7 @@ vet:
 
 ## image: build the container image used by the integration tests
 image:
-	docker build -t $(IMAGE) --build-arg VERSION=$(VERSION) .
+	docker build -t $(IMAGE) --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) .
 
 ## integration: real aws-cli and rclone against the image (needs Docker)
 integration: image

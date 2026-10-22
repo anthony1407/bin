@@ -26,8 +26,9 @@ type Config struct {
 	RootSecretKey string
 	MasterKey     string // key that encrypts secrets at rest; empty = generated inside the data dir
 
-	LogLevel  slog.Level
-	LogFormat string // "text" or "json"
+	LogLevel    slog.Level
+	LogFormat   string // "text" or "json"
+	LogRequests bool   // one log line per request
 }
 
 // Recognized variables. Listed here so the config file can be validated.
@@ -43,11 +44,85 @@ const (
 	envMasterKey     = "BIN_MASTER_KEY"
 	envLogLevel      = "BIN_LOG_LEVEL"
 	envLogFormat     = "BIN_LOG_FORMAT"
+	envLogRequests   = "BIN_LOG_REQUESTS"
 )
 
-var known = map[string]bool{
-	envDataDir: true, envS3Addr: true, envConsoleAddr: true, envRegion: true, envDomain: true,
-	envRootAccessKey: true, envRootSecretKey: true, envMasterKey: true, envLogLevel: true, envLogFormat: true,
+// Setting documents one configuration variable, for --help and validation.
+type Setting struct {
+	Name        string
+	Default     string
+	Description string
+}
+
+// Settings lists every variable bin reads, in the order --help shows them.
+var Settings = []Setting{
+	{envRootAccessKey, "(required)", "access key of the root account (3+ characters)"},
+	{envRootSecretKey, "(required)", "secret key of the root account (8+ characters, 16+ recommended)"},
+	{envDataDir, "./data", "directory holding objects and metadata"},
+	{envS3Addr, ":9000", "listen address of the S3 API"},
+	{envConsoleAddr, ":9001", "listen address of the web console and admin API"},
+	{envRegion, "us-east-1", "region reported to clients and required in signatures"},
+	{envDomain, "", "domain for virtual-host style requests (bucket.domain); empty = path style only"},
+	{envMasterKey, "(generated)", "key that encrypts secrets at rest; generated in the data directory if unset"},
+	{envLogLevel, "info", "debug, info, warn or error"},
+	{envLogFormat, "text", "text (readable) or json (for log collectors)"},
+	{envLogRequests, "true", "log one line per request"},
+	{envConfigFile, "bin.env", "optional KEY=VALUE file read before applying the environment"},
+}
+
+var known = func() map[string]bool {
+	m := map[string]bool{}
+	for _, s := range Settings {
+		if s.Name != envConfigFile {
+			m[s.Name] = true
+		}
+	}
+	return m
+}()
+
+// UnknownEnv returns BIN_* variables in environ (as from os.Environ) that bin
+// does not read, each with the closest known name: usually typos.
+func UnknownEnv(environ []string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strings.HasPrefix(name, "BIN_") || known[name] || name == envConfigFile {
+			continue
+		}
+		best, bestDist := "", 4 // suggest only close matches
+		for k := range known {
+			d := editDistance(name, k)
+			if strings.HasPrefix(k, name) || strings.HasPrefix(name, k) {
+				d = min(d, 1) // a missing or extra suffix, like BIN_ROOT_SECRET
+			}
+			if d < bestDist {
+				best, bestDist = k, d
+			}
+		}
+		out[name] = best
+	}
+	return out
+}
+
+// editDistance is the Levenshtein distance between a and b.
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // Load reads the configuration. getenv is usually os.Getenv; it is injected for tests.
@@ -84,6 +159,13 @@ func Load(getenv func(string) string) (*Config, error) {
 		RootSecretKey: get(envRootSecretKey, ""),
 		MasterKey:     get(envMasterKey, ""),
 		LogFormat:     get(envLogFormat, "text"),
+	}
+	switch v := strings.ToLower(get(envLogRequests, "true")); v {
+	case "true", "1", "yes", "on":
+		c.LogRequests = true
+	case "false", "0", "no", "off":
+	default:
+		return nil, fmt.Errorf("%s must be true or false, got %q", envLogRequests, v)
 	}
 	if err := c.LogLevel.UnmarshalText([]byte(get(envLogLevel, "info"))); err != nil {
 		return nil, fmt.Errorf("%s: %w", envLogLevel, err)

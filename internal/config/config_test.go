@@ -92,6 +92,47 @@ func TestErrors(t *testing.T) {
 	}
 }
 
+func TestUnknownEnv(t *testing.T) {
+	got := UnknownEnv([]string{
+		"PATH=/usr/bin",
+		"BIN_ROOT_ACCESS_KEY=admin",
+		"BIN_ROOT_SECRET=x",    // typo: suggests BIN_ROOT_SECRET_KEY
+		"BIN_LOGLEVEL=debug",   // typo: suggests BIN_LOG_LEVEL
+		"BIN_SOMETHING_ELSE=1", // no close match
+		"BIN_CONFIG_FILE=bin.env",
+	})
+	want := map[string]string{
+		"BIN_ROOT_SECRET":    "BIN_ROOT_SECRET_KEY",
+		"BIN_LOGLEVEL":       "BIN_LOG_LEVEL",
+		"BIN_SOMETHING_ELSE": "",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: suggestion %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestLogRequests(t *testing.T) {
+	t.Chdir(t.TempDir())
+	base := map[string]string{"BIN_ROOT_ACCESS_KEY": "admin", "BIN_ROOT_SECRET_KEY": "long-secret"}
+	c, err := Load(envOf(base))
+	if err != nil || !c.LogRequests {
+		t.Fatalf("default: %v %v", c, err)
+	}
+	base["BIN_LOG_REQUESTS"] = "off"
+	if c, _ := Load(envOf(base)); c.LogRequests {
+		t.Error("off not applied")
+	}
+	base["BIN_LOG_REQUESTS"] = "maybe"
+	if _, err := Load(envOf(base)); err == nil {
+		t.Error("invalid value accepted")
+	}
+}
+
 func TestFileUnknownKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bin.env")
 	if err := os.WriteFile(path, []byte("BIN_TYPO=1\n"), 0o600); err != nil {

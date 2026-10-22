@@ -29,7 +29,7 @@ func TestRunServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, discard, Listener{Name: "t", Addr: addr, Handler: http.HandlerFunc(
+		done <- Run(ctx, discard, nil, Listener{Name: "t", Addr: addr, Handler: http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })})
 	}()
 
@@ -69,7 +69,7 @@ func TestRunReportsBusyPort(t *testing.T) {
 	defer ln.Close()
 	free := freeAddr(t)
 
-	err = Run(context.Background(), discard,
+	err = Run(context.Background(), discard, nil,
 		Listener{Name: "first", Addr: free, Handler: http.NotFoundHandler()},
 		Listener{Name: "second", Addr: ln.Addr().String(), Handler: http.NotFoundHandler()},
 	)
@@ -86,7 +86,7 @@ func TestRunReportsBusyPort(t *testing.T) {
 
 func TestMiddlewareChain(t *testing.T) {
 	var seenID string
-	h := WithRequestID("X-Test-Id", AccessLog(discard, Recover(discard,
+	h := WithRequestID("X-Test-Id", AccessLog(discard, LogOptions{Requests: true}, Recover(discard,
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(599) },
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			seenID = RequestID(r.Context())
@@ -100,6 +100,49 @@ func TestMiddlewareChain(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Test-Id"); got == "" || got != seenID {
 		t.Errorf("request id header %q, context %q", got, seenID)
+	}
+}
+
+func TestAccessLogLine(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	h := WithRequestID("X-Id", AccessLog(log, LogOptions{
+		Requests: true,
+		Quiet:    func(r *http.Request) bool { return r.URL.Path == "/health" },
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/abort":
+			w.Write([]byte("partial"))
+			panic(http.ErrAbortHandler)
+		case "/fail":
+			w.WriteHeader(500)
+		default:
+			Annotate(r.Context(), slog.String("op", "GetObject"))
+			w.Write([]byte("hello"))
+		}
+	})))
+	serve := func(target string) {
+		defer func() { recover() }()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", target, nil))
+	}
+	serve("/b/k?X-Amz-Signature=secret")
+	serve("/health")
+	serve("/fail")
+	serve("/abort")
+	out := buf.String()
+	for _, want := range []string{
+		`msg="GET /b/k?X-Amz-Signature=REDACTED -> 200 (sent 5 B, `,
+		`op=GetObject id=`,
+		`level=ERROR msg="GET /fail -> 500 (`,
+		`level=ERROR msg="GET /abort -> 200 (sent 7 B, `,
+		`ABORTED: connection cut before the response completed`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "/health") || strings.Contains(out, "secret") {
+		t.Errorf("quiet request or secret logged:\n%s", out)
 	}
 }
 

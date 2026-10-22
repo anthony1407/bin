@@ -22,6 +22,8 @@ type Options struct {
 	Owner  Owner           // reported as the owner of every bucket
 	Auth   *sigv4.Verifier // authenticates every request
 	Log    *slog.Logger
+	// LogRequests logs one line per request (server errors are always logged).
+	LogRequests bool
 }
 
 // Owner identifies the account that owns the buckets.
@@ -81,7 +83,7 @@ func newHandler(opts Options) *Handler {
 func (h *Handler) withMiddleware() http.Handler {
 	var next http.Handler = http.HandlerFunc(h.serve)
 	next = server.Recover(h.opts.Log, h.panicResponse, next)
-	next = server.AccessLog(h.opts.Log, next)
+	next = server.AccessLog(h.opts.Log, server.LogOptions{Requests: h.opts.LogRequests}, next)
 	return server.WithRequestID("X-Amz-Request-Id", next)
 }
 
@@ -107,7 +109,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		r = r.WithContext(context.WithValue(r.Context(), authKey{}, auth.AccessKey))
+		server.Annotate(r.Context(), slog.String("access_key", auth.AccessKey))
 		req, err = Resolve(r, h.opts.Domain)
+	}
+	if req.Op != "" {
+		server.Annotate(r.Context(), slog.String("op", string(req.Op)))
 	}
 	if err == nil {
 		if fn := h.ops[req.Op]; fn != nil {
@@ -123,8 +129,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, req Request, err error) {
 	var apiErr *s3err.Error
-	if !errors.As(err, &apiErr) {
-		h.opts.Log.Error("internal error", "id", server.RequestID(r.Context()), "op", req.Op, "err", err)
+	if errors.As(err, &apiErr) {
+		server.Annotate(r.Context(), slog.String("error", apiErr.Code))
+	} else {
+		server.Annotate(r.Context(), slog.String("error", "InternalError"), slog.String("cause", err.Error()))
 	}
 	s3err.Write(w, r, err, s3err.Resource{Bucket: req.Bucket, Key: req.Key},
 		server.RequestID(r.Context()), h.opts.HostID)

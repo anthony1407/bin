@@ -4,7 +4,7 @@
 set -uo pipefail
 DIR=$(dirname "$0")
 failed=()
-for script in sigv4 buckets objects list multipart; do
+for script in cli sigv4 buckets objects list multipart; do
   echo "=== $script"
   WORK=$(mktemp -d) bash "$DIR/$script.sh" || failed+=("$script")
 done

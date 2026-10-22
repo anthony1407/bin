@@ -4,19 +4,48 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
+
+	"bin/internal/logging"
 )
 
 type ctxKey struct{}
 
+// requestInfo travels in the request context: the request ID and any
+// attributes handlers add for the access log line.
+type requestInfo struct {
+	id    string
+	mu    sync.Mutex
+	attrs []slog.Attr
+}
+
+func infoFrom(ctx context.Context) *requestInfo {
+	ri, _ := ctx.Value(ctxKey{}).(*requestInfo)
+	return ri
+}
+
 // RequestID returns the ID assigned to the request by WithRequestID, or "".
 func RequestID(ctx context.Context) string {
-	id, _ := ctx.Value(ctxKey{}).(string)
-	return id
+	if ri := infoFrom(ctx); ri != nil {
+		return ri.id
+	}
+	return ""
+}
+
+// Annotate adds attributes to the request's access log line, e.g. the S3
+// operation or the error code returned. It is a no-op outside a request.
+func Annotate(ctx context.Context, attrs ...slog.Attr) {
+	if ri := infoFrom(ctx); ri != nil {
+		ri.mu.Lock()
+		ri.attrs = append(ri.attrs, attrs...)
+		ri.mu.Unlock()
+	}
 }
 
 // NewRequestID returns 16 uppercase hex characters, the same shape AWS uses
@@ -31,9 +60,9 @@ func NewRequestID() string {
 // in the given response header.
 func WithRequestID(header string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := NewRequestID()
-		w.Header().Set(header, id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, id)))
+		ri := &requestInfo{id: NewRequestID()}
+		w.Header().Set(header, ri.id)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, ri)))
 	})
 }
 
@@ -63,25 +92,66 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 // Unwrap lets http.ResponseController reach Flush and friends.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// AccessLog logs one line per request once the handler returns.
-func AccessLog(log *slog.Logger, next http.Handler) http.Handler {
+// LogOptions controls AccessLog.
+type LogOptions struct {
+	// Requests logs every request; when false only server errors are logged.
+	Requests bool
+	// Quiet marks routine requests (health probes) that are logged at debug level.
+	Quiet func(*http.Request) bool
+}
+
+// AccessLog logs one line per request once the handler returns:
+//
+//	GET /photos/a.jpg -> 200 (sent 1.2 KB, 3ms) op=GetObject id=... remote=...
+//
+// Server errors are logged at ERROR, everything else at INFO (or DEBUG for
+// quiet requests). Requests aborted mid-response are logged as such.
+func AccessLog(log *slog.Logger, opts LogOptions, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w}
+		aborted := true
+		defer func() {
+			if sw.status == 0 {
+				sw.status = http.StatusOK
+			}
+			level := slog.LevelInfo
+			switch {
+			case aborted || sw.status >= 500:
+				level = slog.LevelError
+			case !opts.Requests:
+				return
+			case opts.Quiet != nil && opts.Quiet(r):
+				level = slog.LevelDebug
+			}
+			if !log.Enabled(r.Context(), level) {
+				return
+			}
+			target := r.URL.EscapedPath()
+			if q := redactQuery(r.URL.RawQuery); q != "" {
+				target += "?" + q
+			}
+			var detail string
+			switch {
+			case r.ContentLength > 0:
+				detail = "received " + logging.Size(r.ContentLength) + ", "
+			case sw.bytes > 0:
+				detail = "sent " + logging.Size(sw.bytes) + ", "
+			}
+			msg := fmt.Sprintf("%s %s -> %d (%s%s)", r.Method, target, sw.status, detail, time.Since(start).Round(time.Millisecond))
+			if aborted {
+				msg += " ABORTED: connection cut before the response completed"
+			}
+			attrs := []slog.Attr{slog.String("id", RequestID(r.Context())), slog.String("remote", r.RemoteAddr)}
+			if ri := infoFrom(r.Context()); ri != nil {
+				ri.mu.Lock()
+				attrs = append(ri.attrs, attrs...)
+				ri.mu.Unlock()
+			}
+			log.LogAttrs(r.Context(), level, msg, attrs...)
+		}()
 		next.ServeHTTP(sw, r)
-		if sw.status == 0 {
-			sw.status = http.StatusOK
-		}
-		log.LogAttrs(r.Context(), slog.LevelInfo, "request",
-			slog.String("id", RequestID(r.Context())),
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.EscapedPath()),
-			slog.String("query", redactQuery(r.URL.RawQuery)),
-			slog.Int("status", sw.status),
-			slog.Int64("bytes", sw.bytes),
-			slog.Duration("took", time.Since(start)),
-			slog.String("remote", r.RemoteAddr),
-		)
+		aborted = false
 	})
 }
 

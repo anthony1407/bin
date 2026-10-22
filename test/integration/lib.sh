@@ -126,7 +126,7 @@ random_file() { head -c "$2" /dev/urandom >"$WORK/$1"; }
 # finish prints the server's errors and a summary, and fails if any check failed.
 finish() {
   local errors
-  errors=$(docker logs "$HOST" 2>&1 | grep -E "level=(ERROR|WARN)" | head -n 5)
+  errors=$(docker logs "$HOST" 2>&1 | grep -E ' (ERROR|WARN) |"level":"(ERROR|WARN)"' | head -n 5)
   if [ -n "$errors" ]; then
     echo "--- server warnings and errors"
     echo "$errors"

@@ -14,6 +14,8 @@ import (
 // Options configures the console handler.
 type Options struct {
 	Log *slog.Logger
+	// LogRequests logs one line per request; health probes only at debug level.
+	LogRequests bool
 }
 
 // NewHandler returns the console HTTP handler.
@@ -29,7 +31,10 @@ func NewHandler(opts Options) http.Handler {
 	next = server.Recover(opts.Log, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiError{Error: "internal", Message: "Internal server error."})
 	}, next)
-	next = server.AccessLog(opts.Log, next)
+	next = server.AccessLog(opts.Log, server.LogOptions{
+		Requests: opts.LogRequests,
+		Quiet:    func(r *http.Request) bool { return r.URL.Path == "/api/v1/health" },
+	}, next)
 	return server.WithRequestID("X-Request-Id", next)
 }
 
@@ -39,7 +44,7 @@ type apiError struct {
 }
 
 func health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": buildinfo.Version})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": buildinfo.Version, "commit": buildinfo.Commit})
 }
 
 // placeholder stands in for the web panel until it is built.
