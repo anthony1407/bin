@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"bin/internal/buildinfo"
@@ -115,8 +116,8 @@ type corruptJSON struct {
 }
 
 type scrubStatus struct {
-	State      string        `json:"state"` // idle, running, done, failed
-	Bucket     string        `json:"bucket,omitempty"`
+	State      string        `json:"state"`             // idle, running, done, failed
+	Buckets    []string      `json:"buckets,omitempty"` // empty: all buckets
 	StartedAt  *time.Time    `json:"startedAt,omitempty"`
 	FinishedAt *time.Time    `json:"finishedAt,omitempty"`
 	Objects    int64         `json:"objects"`
@@ -138,20 +139,28 @@ func (h *Handler) scrubStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
-// startScrub reads every object (of one bucket, or all) in the background,
-// verifying its SHA-256; GET /scrub reports progress and corrupt objects.
+// startScrub reads every object (of the chosen buckets, or all) in the
+// background, verifying its SHA-256; GET /scrub reports progress and corrupt
+// objects.
 func (h *Handler) startScrub(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Bucket string `json:"bucket"`
+		Buckets []string `json:"buckets"`
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if in.Bucket != "" {
-		if _, err := h.opts.Store.GetBucket(r.Context(), in.Bucket); err != nil {
+	var buckets []string
+	seen := map[string]bool{}
+	for _, b := range in.Buckets {
+		if seen[b] {
+			continue
+		}
+		seen[b] = true
+		if _, err := h.opts.Store.GetBucket(r.Context(), b); err != nil {
 			h.storageError(w, r, err)
 			return
 		}
+		buckets = append(buckets, b)
 	}
 	h.scrubMu.Lock()
 	if h.scrub.State == "running" {
@@ -160,12 +169,16 @@ func (h *Handler) startScrub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	h.scrub = scrubStatus{State: "running", Bucket: in.Bucket, StartedAt: &now}
+	h.scrub = scrubStatus{State: "running", Buckets: buckets, StartedAt: &now}
 	h.scrubMu.Unlock()
 
-	h.opts.Log.Info("integrity scan started", "bucket", in.Bucket)
+	scope := "all"
+	if len(buckets) > 0 {
+		scope = strings.Join(buckets, ",")
+	}
+	h.opts.Log.Info("integrity scan started", "buckets", scope)
 	go func() {
-		res, err := h.opts.Store.Scrub(context.Background(), in.Bucket, func(p storage.ScrubResult) {
+		res, err := h.opts.Store.Scrub(context.Background(), buckets, func(p storage.ScrubResult) {
 			h.scrubMu.Lock()
 			h.scrub.Objects, h.scrub.Bytes = p.Objects, p.Bytes
 			h.scrubMu.Unlock()

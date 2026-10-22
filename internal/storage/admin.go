@@ -344,17 +344,15 @@ type ScrubResult struct {
 	Corrupt []ObjectInfo // Bucket and Key set
 }
 
-// Scrub reads every object in bucket ("" for all buckets) end to end,
-// verifying each SHA-256. progress, if set, is called after each object.
-func (s *Store) Scrub(ctx context.Context, bucket string, progress func(ScrubResult)) (ScrubResult, error) {
+// Scrub reads every object in the given buckets (none for all buckets) end
+// to end, verifying each SHA-256. progress, if set, is called after each object.
+func (s *Store) Scrub(ctx context.Context, buckets []string, progress func(ScrubResult)) (ScrubResult, error) {
 	var res ScrubResult
-	buckets := []string{bucket}
-	if bucket == "" {
+	if len(buckets) == 0 {
 		all, err := s.ListBuckets(ctx)
 		if err != nil {
 			return res, err
 		}
-		buckets = buckets[:0]
 		for _, b := range all {
 			buckets = append(buckets, b.Name)
 		}

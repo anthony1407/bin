@@ -4,7 +4,7 @@ import { CircleAlert, CircleCheck, Link2Off, Play, Save, ShieldCheck } from "luc
 import { api, type Bucket, type Info, type ScrubStatus, type Settings } from "../api";
 import { bytes, count, dateTime, duration } from "../lib/format";
 import { Button, Card, Field, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
-import { Select } from "../components/Select";
+import { MultiSelect } from "../components/Select";
 
 function Stat({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
@@ -156,7 +156,7 @@ function ShareSettings({ settings, onSaved }: { settings: Settings; onSaved: (s:
 
 function ScrubCard({ buckets }: { buckets: Bucket[] }) {
   const [scrub, setScrub] = useState<ScrubStatus | null>(null);
-  const [bucket, setBucket] = useState("");
+  const [chosen, setChosen] = useState<string[]>([]); // empty: all buckets
   const toast = useToast();
   const running = scrub?.state === "running";
 
@@ -171,32 +171,38 @@ function ScrubCard({ buckets }: { buckets: Bucket[] }) {
 
   async function start() {
     try {
-      setScrub(await api.startScrub(bucket));
+      setScrub(await api.startScrub(chosen));
     } catch (e) {
       toast("error", errorText(e));
     }
   }
 
-  const total = bucket ? buckets.find((b) => b.name === bucket)?.size : buckets.reduce((s, b) => s + b.size, 0);
+  // Progress is measured against the size of what is being scanned.
+  const scanning = scrub?.buckets?.length ? buckets.filter((b) => scrub.buckets!.includes(b.name)) : buckets;
+  const total = scanning.reduce((s, b) => s + b.size, 0);
   const pct = running && total ? Math.min(100, (scrub!.bytes / total) * 100) : 0;
+  const scope = scrub?.buckets?.length ? (
+    <>
+      in <span className="font-mono">{scrub.buckets.join(", ")}</span>{" "}
+    </>
+  ) : (
+    ""
+  );
 
   return (
     <Card>
-      <div className="flex flex-wrap items-center gap-2 p-5">
-        <Select
-          searchable
+      <div className="flex flex-wrap items-start gap-2 p-5">
+        <MultiSelect
           mono
-          aria-label="Bucket to scan"
-          value={bucket}
-          onChange={setBucket}
+          aria-label="Buckets to scan"
+          values={chosen}
+          onChange={setChosen}
           disabled={running}
-          placeholder="Search buckets"
+          noneLabel="All buckets"
+          noneHint={`${count(buckets.length)} buckets`}
           emptyText="No bucket matches"
-          className="w-full sm:w-72"
-          options={[
-            { value: "", label: "All buckets", mono: false, hint: `${count(buckets.length)} buckets` },
-            ...buckets.map((b) => ({ value: b.name, label: b.name, hint: bytes(b.size) })),
-          ]}
+          className="w-full sm:w-96"
+          options={buckets.map((b) => ({ value: b.name, label: b.name, hint: bytes(b.size) }))}
         />
         <Button variant="primary" busy={running} icon={<Play className="size-4" />} onClick={start}>
           {running ? "Scanning…" : "Start scan"}
@@ -225,8 +231,7 @@ function ScrubCard({ buckets }: { buckets: Bucket[] }) {
             <div className="flex gap-2.5 text-sm">
               <CircleCheck className="mt-0.5 size-4 shrink-0 text-ok" />
               <span>
-                All {count(scrub.objects)} objects ({bytes(scrub.bytes)}) {scrub.bucket ? <>in <span className="font-mono">{scrub.bucket}</span> </> : ""}match their
-                checksums.
+                All {count(scrub.objects)} objects ({bytes(scrub.bytes)}) {scope}match their checksums.
                 {scrub.finishedAt && <span className="text-muted"> Finished {dateTime(scrub.finishedAt)}.</span>}
               </span>
             </div>

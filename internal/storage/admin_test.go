@@ -144,19 +144,25 @@ func TestScrub(t *testing.T) {
 	s := openTest(t, t.TempDir())
 	mustCreate(t, s, "aaa")
 	mustCreate(t, s, "bbb")
+	mustCreate(t, s, "ccc")
 	put(t, s, "aaa", "good", "fine data", PutOptions{})
 	bad := put(t, s, "bbb", "bad", strings.Repeat("rot", 1000), PutOptions{})
+	put(t, s, "ccc", "also-good", "more data", PutOptions{})
 	raw, _ := os.ReadFile(s.blobPath(bad.blob))
 	raw[10] ^= 1
 	os.WriteFile(s.blobPath(bad.blob), raw, 0o640)
 
 	calls := 0
-	res, err := s.Scrub(ctx, "", func(ScrubResult) { calls++ })
-	if err != nil || res.Objects != 2 || calls != 2 || len(res.Corrupt) != 1 || res.Corrupt[0].Key != "bad" || res.Corrupt[0].Bucket != "bbb" {
+	res, err := s.Scrub(ctx, nil, func(ScrubResult) { calls++ })
+	if err != nil || res.Objects != 3 || calls != 3 || len(res.Corrupt) != 1 || res.Corrupt[0].Key != "bad" || res.Corrupt[0].Bucket != "bbb" {
 		t.Errorf("scrub: %+v, %v", res, err)
 	}
-	res, _ = s.Scrub(ctx, "aaa", nil)
+	res, _ = s.Scrub(ctx, []string{"aaa"}, nil)
 	if res.Objects != 1 || len(res.Corrupt) != 0 {
 		t.Errorf("scrub one bucket: %+v", res)
+	}
+	res, _ = s.Scrub(ctx, []string{"aaa", "bbb"}, nil)
+	if res.Objects != 2 || len(res.Corrupt) != 1 {
+		t.Errorf("scrub two buckets: %+v", res)
 	}
 }

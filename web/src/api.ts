@@ -121,7 +121,7 @@ export interface Settings {
 
 export interface ScrubStatus {
   state: "idle" | "running" | "done" | "failed";
-  bucket?: string;
+  buckets?: string[]; // missing: all buckets
   startedAt?: string;
   finishedAt?: string;
   objects: number;
@@ -185,7 +185,8 @@ export const api = {
   saveSettings: (shareMaxExpirySeconds: number) => request<Settings>("PUT", "/settings", { shareMaxExpirySeconds }),
   revokeShareLinks: () => request<void>("POST", "/settings/revoke-share-links"),
   scrub: () => request<ScrubStatus>("GET", "/scrub"),
-  startScrub: (bucket = "") => request<ScrubStatus>("POST", "/scrub", { bucket }),
+  /** Scans the given buckets, or all of them when the list is empty. */
+  startScrub: (buckets: string[] = []) => request<ScrubStatus>("POST", "/scrub", { buckets }),
 };
 
 // --- downloads ------------------------------------------------------------------------

@@ -439,6 +439,9 @@ export function ExplorerPage() {
   const load = useCallback(
     async (after?: string) => {
       setLoading(true);
+      // A fresh listing also refreshes the object count and size in the
+      // header, so they follow uploads, deletes and the refresh button.
+      if (!after) api.bucket(bucket).then(setMeta).catch((e) => toast("error", errorText(e)));
       try {
         const page = await api.objects(bucket, { prefix, after, search: search || undefined, limit: 200 });
         const files = page.objects.filter((o) => o.key !== prefix); // the folder marker itself
@@ -454,9 +457,6 @@ export function ExplorerPage() {
     [bucket, prefix, search, toast],
   );
 
-  useEffect(() => {
-    api.bucket(bucket).then(setMeta).catch((e) => toast("error", errorText(e)));
-  }, [bucket, toast, jobs.length]);
   useEffect(() => {
     setSelected(new Set());
     const t = setTimeout(() => load(), search ? 250 : 0);

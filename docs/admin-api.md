@@ -36,8 +36,8 @@ Errors always look like `{"error": "<code>", "message": "<human text>"}`.
 | `GET /api/v1/settings` | | `{"shareMaxExpirySeconds","publicUrl","region"}` |
 | `PUT /api/v1/settings` | `{"shareMaxExpirySeconds": 60..604800}` | settings |
 | `POST /api/v1/settings/revoke-share-links` | | `204`; every share link issued so far stops working |
-| `POST /api/v1/scrub` | `{"bucket": ""}` (empty: all buckets) | starts an integrity scan in the background |
-| `GET /api/v1/scrub` | | `{"state": idle/running/done/failed, "objects", "bytes", "corrupt": [{"bucket","key"}]}` |
+| `POST /api/v1/scrub` | `{"buckets": [...]}` (empty or missing: all buckets) | starts an integrity scan in the background; `404` for an unknown bucket, `409` if one is running |
+| `GET /api/v1/scrub` | | `{"state": idle/running/done/failed, "buckets", "objects", "bytes", "corrupt": [{"bucket","key"}]}` |
 
 ### Buckets
 

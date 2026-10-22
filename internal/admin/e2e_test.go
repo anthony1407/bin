@@ -380,6 +380,22 @@ func TestScrubFindsCorruption(t *testing.T) {
 	if st.State != "done" || st.Objects != 1 || len(st.Corrupt) != 1 || st.Corrupt[0].Key != "precious.bin" {
 		t.Errorf("scrub result: %+v", st)
 	}
+
+	// Chosen buckets only; duplicates are ignored and unknown names refused.
+	e.call("POST", "/api/v1/buckets", map[string]string{"name": "other"}, nil)
+	if code := e.call("POST", "/api/v1/scrub", map[string]any{"buckets": []string{"other", "missing"}}, nil); code != 404 {
+		t.Errorf("unknown bucket: %d", code)
+	}
+	if code := e.call("POST", "/api/v1/scrub", map[string]any{"buckets": []string{"other", "other"}}, &st); code != 200 || len(st.Buckets) != 1 {
+		t.Fatalf("scrub chosen buckets: %d %+v", code, st)
+	}
+	for i := 0; i < 100 && st.State == "running"; i++ {
+		time.Sleep(20 * time.Millisecond)
+		e.call("GET", "/api/v1/scrub", nil, &st)
+	}
+	if st.State != "done" || st.Objects != 0 || len(st.Corrupt) != 0 {
+		t.Errorf("scrub of the empty bucket: %+v", st)
+	}
 }
 
 func TestInfoAndSettings(t *testing.T) {
