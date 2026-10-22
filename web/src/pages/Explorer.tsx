@@ -63,11 +63,44 @@ interface UploadJob {
   abort: AbortController;
 }
 
+// Once every upload has finished the panel closes itself: soon when all went
+// well, later when something failed (so the error can be read), and never
+// while the pointer is over it.
+const CLOSE_AFTER_MS = 4000;
+const CLOSE_AFTER_FAILURE_MS = 10000;
+const FADE_MS = 300;
+
 function UploadPanel({ jobs, onClear }: { jobs: UploadJob[]; onClear: () => void }) {
-  if (jobs.length === 0) return null;
+  const [hover, setHover] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const onClearRef = useRef(onClear);
+  onClearRef.current = onClear;
   const active = jobs.filter((j) => j.state === "uploading").length;
+  const failed = jobs.some((j) => j.state === "error");
+
+  useEffect(() => {
+    setLeaving(false);
+    if (jobs.length === 0 || active > 0 || hover) return;
+    const t = setTimeout(() => setLeaving(true), failed ? CLOSE_AFTER_FAILURE_MS : CLOSE_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [jobs, active, hover, failed]);
+  useEffect(() => {
+    if (!leaving) return;
+    const t = setTimeout(() => onClearRef.current(), FADE_MS);
+    return () => clearTimeout(t);
+  }, [leaving]);
+
+  if (jobs.length === 0) return null;
   return (
-    <div className="fixed right-4 bottom-4 left-4 z-40 rounded-card border border-line bg-surface shadow-xl sm:left-auto sm:w-96">
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ transitionDuration: `${FADE_MS}ms` }}
+      className={cx(
+        "fixed right-4 bottom-4 left-4 z-40 rounded-card border border-line bg-surface shadow-xl transition-all sm:left-auto sm:w-96",
+        leaving && "translate-y-2 opacity-0",
+      )}
+    >
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
         <span className="text-sm font-medium">{active ? `Uploading ${active} file${active > 1 ? "s" : ""}…` : "Uploads finished"}</span>
         {!active && (
