@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"bin/internal/admin"
+	"bin/internal/audit"
 	"bin/internal/auth"
 	"bin/internal/buildinfo"
 	"bin/internal/config"
@@ -176,6 +177,10 @@ func runServer(args []string) error {
 		return err
 	}
 
+	// Closed before the store (defers run in reverse), so queued entries are written.
+	auditLog := audit.New(store, log.With("component", "audit"))
+	defer auditLog.Close()
+
 	panel := webui.New()
 	if !panel.Built() {
 		log.Warn("this binary was built without the web panel; the console serves only the admin API (run make web, then rebuild)")
@@ -203,12 +208,14 @@ func runServer(args []string) error {
 			Owner:       owner(cfg),
 			Auth:        &sigv4.Verifier{Region: cfg.Region, Store: keys},
 			Keys:        keys,
+			Audit:       auditLog,
 			Log:         log.With("api", "s3"),
 			LogRequests: cfg.LogRequests,
 		})},
 		server.Listener{Name: "console", Addr: cfg.ConsoleAddr, Handler: admin.NewHandler(admin.Options{
 			Store:       store,
 			Keys:        keys,
+			Audit:       auditLog,
 			Region:      cfg.Region,
 			DataDir:     cfg.DataDir,
 			S3Addr:      cfg.S3Addr,

@@ -58,6 +58,7 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
+	setAuditBucket(r, in.Name)
 	if err := h.opts.Store.CreateBucket(r.Context(), in.Name); err != nil {
 		h.storageError(w, r, err)
 		return

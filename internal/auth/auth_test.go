@@ -121,8 +121,8 @@ func TestKeyring(t *testing.T) {
 	if key, _ := store.GetAccessKey(ctx, ak); key.LastUsed.IsZero() {
 		t.Error("last use not recorded")
 	}
-	if sc, _ := k.Scope(ctx, ak); !sc.ReadOnly {
-		t.Errorf("scope %+v", sc)
+	if g, _ := k.Grants(ctx, ak); g.Allows(WriteObject, "b") || !g.Allows(ReadObject, "b") {
+		t.Errorf("grants %+v", g)
 	}
 
 	store.UpdateAccessKey(ctx, ak, func(a *storage.AccessKey) error { a.Enabled = false; return nil })
@@ -141,6 +141,55 @@ func TestKeyring(t *testing.T) {
 	}
 }
 
+func TestGroupGrants(t *testing.T) {
+	ctx := context.Background()
+	k, store := newKeyring(t)
+	ak, sk := NewCredentials()
+	// Own scope: full access, until the key joins a group.
+	store.CreateAccessKey(ctx, storage.AccessKey{AccessKey: ak, SecretEnc: k.Box.Encrypt(sk), Enabled: true})
+	if g, _ := k.Grants(ctx, ak); !g.Allows(ManageBucket, "any") {
+		t.Fatalf("own scope: %+v", g)
+	}
+
+	store.CreateGroup(ctx, storage.Group{Name: "readers", Enabled: true,
+		Scope: Scope{Buckets: []string{"photos"}, ReadOnly: true}.String(), Members: []string{ak}})
+	store.CreateGroup(ctx, storage.Group{Name: "writers", Enabled: true,
+		Scope: Scope{Buckets: []string{"inbox"}}.String(), Members: []string{ak}})
+	g, err := k.Grants(ctx, ak)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		a      Action
+		bucket string
+		want   bool
+	}{
+		{ReadObject, "photos", true},
+		{WriteObject, "photos", false}, // readers is read-only
+		{WriteObject, "inbox", true},   // writers grants it
+		{ReadObject, "backups", false}, // the key's own full scope no longer applies
+		{ListBuckets, "", true},
+	} {
+		if got := g.Allows(tc.a, tc.bucket); got != tc.want {
+			t.Errorf("Allows(%v, %q) = %v", tc.a, tc.bucket, got)
+		}
+	}
+
+	// Disabled groups grant nothing; a member of only disabled groups has no access.
+	for _, name := range []string{"readers", "writers"} {
+		store.UpdateGroup(ctx, name, func(g *storage.Group) error { g.Enabled = false; return nil })
+	}
+	if g, _ := k.Grants(ctx, ak); g.Allows(ReadObject, "photos") || g.Allows(ListBuckets, "") {
+		t.Errorf("disabled groups still grant: %+v", g)
+	}
+
+	// Leaving every group restores the key's own scope.
+	store.SetKeyGroups(ctx, ak, nil)
+	if g, _ := k.Grants(ctx, ak); !g.Allows(ManageBucket, "any") {
+		t.Errorf("own scope not restored: %+v", g)
+	}
+}
+
 func TestShareKeyAndMasterCheck(t *testing.T) {
 	ctx := context.Background()
 	k, store := newKeyring(t)
@@ -151,7 +200,7 @@ func TestShareKeyAndMasterCheck(t *testing.T) {
 	if a2, s2, _ := k.ShareCredentials(ctx); a2 != a1 || s2 != s1 {
 		t.Error("share key must be stable until rotated")
 	}
-	if sc, _ := k.Scope(ctx, a1); !sc.ReadOnly {
+	if g, _ := k.Grants(ctx, a1); g.Allows(WriteObject, "b") {
 		t.Error("share key must be read-only")
 	}
 	if list, _ := store.ListAccessKeys(ctx); len(list) != 0 {

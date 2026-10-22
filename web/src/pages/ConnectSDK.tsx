@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useSearchParams, Link } from "react-router";
 import { Check, Copy, Terminal, KeyRound } from "lucide-react";
-import Editor from "@monaco-editor/react";
+import Editor from "../components/CodeEditor";
 import { api, type AccessKey, type Bucket, type Info } from "../api";
 import { PageHeader, Card, Button, Input, Spinner, useToast } from "../components/ui";
 import { Select } from "../components/Select";
@@ -187,7 +187,7 @@ const s3 = new S3Client({
     accessKeyId: "${accessKeyId}",
     secretAccessKey: "${secretKey}",
   },
-  forcePathStyle: true, // Always required for bin / MinIO / path-style
+  forcePathStyle: true, // Always required for bin / path-style
 });
 
 async function main() {
@@ -300,8 +300,10 @@ print("\\nPresigned URL:", url)`;
 
     if (lang === "go") {
       return `// ==========================================
-// bin S3 Client - Go (minio-go/v7)
-// Install: go get github.com/minio/minio-go/v7
+// bin S3 Client - Go (AWS SDK for Go v2)
+// Install: go get github.com/aws/aws-sdk-go-v2/config \\
+//            github.com/aws/aws-sdk-go-v2/credentials \\
+//            github.com/aws/aws-sdk-go-v2/service/s3
 // ==========================================
 
 package main
@@ -312,30 +314,33 @@ import (
 	"log"
 	"strings"
 
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Target endpoint (strip http:// or https:// for minio-go client)
-	endpoint := "${endpoint.replace(/^https?:\/\//, "")}"
-	useSSL := ${endpoint.startsWith("https://") ? "true" : "false"}
-
-	minioClient, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4("${accessKeyId}", "${secretKey}", ""),
-		Secure: useSSL,
-	})
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion("${region}"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("${accessKeyId}", "${secretKey}", "")),
+	)
 	if err != nil {
 		log.Fatalln(err)
 	}
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String("${endpoint}")
+		o.UsePathStyle = true // Always required for bin / path-style
+	})
 
 	// 1. Put Object
-	content := "Hello from bin Go Client!"
-	reader := strings.NewReader(content)
-	_, err = minioClient.PutObject(ctx, "${bucketName}", "${objectKey}", reader, int64(len(content)), minio.PutObjectOptions{
-		ContentType: "text/plain",
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String("${bucketName}"),
+		Key:         aws.String("${objectKey}"),
+		Body:        strings.NewReader("Hello from bin Go Client!"),
+		ContentType: aws.String("text/plain"),
 	})
 	if err != nil {
 		log.Fatalln("Upload failed:", err)
@@ -344,16 +349,17 @@ func main() {
 
 	// 2. List Objects
 	fmt.Println("\\nObjects in ${bucketName}:")
-	objectCh := minioClient.ListObjects(ctx, "${bucketName}", minio.ListObjectsOptions{
-		Prefix:    "",
-		Recursive: true,
+	pages := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket: aws.String("${bucketName}"),
 	})
-	for object := range objectCh {
-		if object.Err != nil {
-			log.Println(object.Err)
-			continue
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			log.Fatalln("List failed:", err)
 		}
-		fmt.Printf("  - %s (%d bytes)\\n", object.Key, object.Size)
+		for _, object := range page.Contents {
+			fmt.Printf("  - %s (%d bytes)\\n", aws.ToString(object.Key), aws.ToInt64(object.Size))
+		}
 	}
 }`;
     }
@@ -414,17 +420,20 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
   }
 
   return (
-    <div className="space-y-6 max-w-6xl pb-16">
+    <div className="space-y-6 pb-16">
       <PageHeader
         title="Connect SDK & Client Code Generator"
         subtitle="Ready-to-use snippets with active credentials and your S3 endpoint for any language."
       />
 
       {/* Top Configuration Bar */}
+      {/* A form only so the browser accepts the password field; it never submits. */}
+      <form onSubmit={(e) => e.preventDefault()}>
       <Card className="p-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 bg-sunken/40">
         <div>
-          <label className="label-strip mb-1.5 block">Target Bucket</label>
+          <label htmlFor="connectsdk-target-bucket" className="label-strip mb-1.5 block">Target Bucket</label>
           <Select
+            id="connectsdk-target-bucket"
             aria-label="Target Bucket"
             value={selectedBucket}
             onChange={setSelectedBucket}
@@ -434,8 +443,9 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
         </div>
 
         <div>
-          <label className="label-strip mb-1.5 block">Object Key (Sample)</label>
+          <label htmlFor="connectsdk-object-key" className="label-strip mb-1.5 block">Object Key (Sample)</label>
           <Input
+            id="connectsdk-object-key"
             value={selectedKey}
             onChange={(e) => setSelectedKey(e.target.value)}
             placeholder="folder/file.ext"
@@ -444,9 +454,10 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
         </div>
 
         <div>
-          <label className="label-strip mb-1.5 block">Access Key</label>
+          <label htmlFor="connectsdk-access-key" className="label-strip mb-1.5 block">Access Key</label>
           {keys.length > 0 ? (
             <Select
+              id="connectsdk-access-key"
               aria-label="Access Key"
               value={selectedAccessKey}
               onChange={(val) => {
@@ -458,6 +469,7 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
             />
           ) : (
             <Input
+              id="connectsdk-access-key"
               value={selectedAccessKey}
               onChange={(e) => setSelectedAccessKey(e.target.value)}
               placeholder="BIN_ROOT_ACCESS_KEY"
@@ -467,10 +479,12 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
         </div>
 
         <div>
-          <label className="label-strip mb-1.5 block">Secret Key</label>
+          <label htmlFor="connectsdk-secret-key" className="label-strip mb-1.5 block">Secret Key</label>
           <div className="relative">
             <Input
+              id="connectsdk-secret-key"
               type="password"
+              autoComplete="off"
               value={secretKey}
               onChange={(e) => setSecretKey(e.target.value)}
               className="font-mono text-xs pr-10"
@@ -481,6 +495,7 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
           </div>
         </div>
       </Card>
+      </form>
 
       {/* Main Code View */}
       <div className="rounded-xl border border-line bg-card overflow-hidden shadow-sm">
@@ -515,7 +530,7 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
                   : "text-muted hover:text-ink hover:bg-sunken"
               }`}
             >
-              <span>Go (minio-go)</span>
+              <span>Go (aws-sdk-go-v2)</span>
             </button>
             <button
               onClick={() => setLang("cli")}

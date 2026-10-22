@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"bin/internal/audit"
 	"bin/internal/buildinfo"
 	"bin/internal/storage"
 )
@@ -69,10 +70,14 @@ func (h *Handler) shareMaxExpiry(r *http.Request) (time.Duration, error) {
 }
 
 type settingsJSON struct {
-	ShareMaxExpiry int64  `json:"shareMaxExpirySeconds"`
-	PublicURL      string `json:"publicUrl"` // read-only: BIN_PUBLIC_URL
-	Region         string `json:"region"`    // read-only: BIN_REGION
+	ShareMaxExpiry     int64  `json:"shareMaxExpirySeconds"`
+	AuditRetentionDays int    `json:"auditRetentionDays"` // 0: keep forever
+	PublicURL          string `json:"publicUrl"`          // read-only: BIN_PUBLIC_URL
+	Region             string `json:"region"`             // read-only: BIN_REGION
 }
+
+// maxAuditRetentionDays bounds the audit retention setting (ten years).
+const maxAuditRetentionDays = 3650
 
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	max, err := h.shareMaxExpiry(r)
@@ -80,25 +85,48 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, settingsJSON{ShareMaxExpiry: int64(max / time.Second), PublicURL: h.opts.PublicURL, Region: h.opts.Region})
+	days, err := audit.RetentionDays(r.Context(), h.opts.Store)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settingsJSON{
+		ShareMaxExpiry: int64(max / time.Second), AuditRetentionDays: days,
+		PublicURL: h.opts.PublicURL, Region: h.opts.Region,
+	})
 }
 
+// putSettings changes the settings present in the body.
 func (h *Handler) putSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		ShareMaxExpiry int64 `json:"shareMaxExpirySeconds"`
+		ShareMaxExpiry     *int64 `json:"shareMaxExpirySeconds"`
+		AuditRetentionDays *int   `json:"auditRetentionDays"`
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if in.ShareMaxExpiry < 60 || time.Duration(in.ShareMaxExpiry)*time.Second > defaultShareMaxExpiry {
+	if v := in.ShareMaxExpiry; v != nil && (*v < 60 || time.Duration(*v)*time.Second > defaultShareMaxExpiry) {
 		writeError(w, http.StatusBadRequest, "invalid_share_expiry", "The maximum share link expiry must be between 1 minute and 7 days.")
 		return
 	}
-	if err := h.opts.Store.SetSetting(r.Context(), settingShareMaxExpiry, strconv.FormatInt(in.ShareMaxExpiry, 10)); err != nil {
-		h.storageError(w, r, err)
+	if v := in.AuditRetentionDays; v != nil && (*v < 0 || *v > maxAuditRetentionDays) {
+		writeError(w, http.StatusBadRequest, "invalid_audit_retention", "The audit retention must be between 0 (forever) and 3650 days.")
 		return
 	}
-	h.opts.Log.Info("settings updated", "share_max_expiry", (time.Duration(in.ShareMaxExpiry) * time.Second).String())
+	if v := in.ShareMaxExpiry; v != nil {
+		if err := h.opts.Store.SetSetting(r.Context(), settingShareMaxExpiry, strconv.FormatInt(*v, 10)); err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		h.opts.Log.Info("settings updated", "share_max_expiry", (time.Duration(*v) * time.Second).String())
+	}
+	if v := in.AuditRetentionDays; v != nil {
+		if err := h.opts.Store.SetSetting(r.Context(), audit.RetentionSetting, strconv.Itoa(*v)); err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		h.opts.Log.Info("settings updated", "audit_retention_days", *v)
+	}
 	h.getSettings(w, r)
 }
 

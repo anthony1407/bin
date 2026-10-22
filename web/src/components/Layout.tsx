@@ -92,7 +92,26 @@ function NavItem({ to, label, icon: Icon, collapsed, onNavigate }: NavItemProps)
   );
 }
 
-function MinioSidebarContent({
+/** An entry of an expanded submenu (Identity, Monitoring). */
+function SubNavItem({ to, label, icon: Icon, onNavigate }: Omit<NavItemProps, "collapsed">) {
+  return (
+    <NavLink
+      to={to}
+      onClick={onNavigate}
+      className={({ isActive }) =>
+        cx(
+          "flex h-7 items-center gap-2 rounded px-2 text-xs font-medium transition-colors",
+          isActive ? "bg-accent-soft text-accent-ink font-semibold" : "text-muted hover:bg-sunken hover:text-ink",
+        )
+      }
+    >
+      <Icon className="size-3" />
+      <span>{label}</span>
+    </NavLink>
+  );
+}
+
+function SidebarContent({
   collapsed,
   onToggleCollapse,
   onNavigate,
@@ -105,10 +124,10 @@ function MinioSidebarContent({
   const [monitoringOpen, setMonitoringOpen] = useState<boolean>(true);
 
   return (
-    <div className="flex h-full flex-col justify-between">
-      {/* Top Header */}
-      <div>
-        <div className="flex items-center justify-between border-b border-line px-2 pb-3.5 pt-1">
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Header and footer stay put; only the navigation list scrolls between them. */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-center justify-between border-b border-line px-2 pb-3.5 pt-1">
           {!collapsed ? (
             <div className="flex items-center gap-2.5 overflow-hidden">
               <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent text-white shadow-sm">
@@ -138,7 +157,7 @@ function MinioSidebarContent({
         </div>
 
         {/* Navigation list */}
-        <nav className="mt-4 flex flex-col gap-5 overflow-y-auto pr-0.5">
+        <nav className="flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden overflow-y-auto pt-4 pb-3 pr-0.5">
           {/* User Section */}
           <div className="space-y-1">
             {!collapsed && (
@@ -240,33 +259,10 @@ function MinioSidebarContent({
 
                 {identityOpen && !collapsed && (
                   <div className="ml-5 flex flex-col gap-0.5 border-l border-line pl-2 pt-0.5">
-                    <NavLink
-                      to="/identity/users"
-                      onClick={onNavigate}
-                      className={({ isActive }) =>
-                        cx(
-                          "flex h-7 items-center gap-2 rounded px-2 text-xs font-medium transition-colors",
-                          isActive
-                            ? "bg-accent-soft text-accent-ink font-semibold"
-                            : "text-muted hover:bg-sunken hover:text-ink",
-                        )
-                      }
-                    >
-                      <User className="size-3" />
-                      <span>Users</span>
-                    </NavLink>
-                    <div className="flex h-7 items-center gap-2 rounded px-2 text-xs text-faint cursor-not-allowed">
-                      <Users className="size-3" />
-                      <span>Groups</span>
-                    </div>
-                    <div className="flex h-7 items-center gap-2 rounded px-2 text-xs text-faint cursor-not-allowed">
-                      <KeyRound className="size-3" />
-                      <span>OpenID</span>
-                    </div>
-                    <div className="flex h-7 items-center gap-2 rounded px-2 text-xs text-faint cursor-not-allowed">
-                      <LogIn className="size-3" />
-                      <span>LDAP</span>
-                    </div>
+                    <SubNavItem to="/identity/users" label="Users" icon={User} onNavigate={onNavigate} />
+                    <SubNavItem to="/identity/groups" label="Groups" icon={Users} onNavigate={onNavigate} />
+                    <SubNavItem to="/identity/openid" label="OpenID" icon={KeyRound} onNavigate={onNavigate} />
+                    <SubNavItem to="/identity/ldap" label="LDAP" icon={LogIn} onNavigate={onNavigate} />
                   </div>
                 )}
               </div>
@@ -310,55 +306,10 @@ function MinioSidebarContent({
 
                 {monitoringOpen && !collapsed && (
                   <div className="ml-5 flex flex-col gap-0.5 border-l border-line pl-2 pt-0.5">
-                    <NavLink
-                      to="/monitoring/metrics"
-                      onClick={onNavigate}
-                      className={({ isActive }) =>
-                        cx(
-                          "flex h-7 items-center gap-2 rounded px-2 text-xs font-medium transition-colors",
-                          isActive
-                            ? "bg-accent-soft text-accent-ink font-semibold"
-                            : "text-muted hover:bg-sunken hover:text-ink",
-                        )
-                      }
-                    >
-                      <Activity className="size-3" />
-                      <span>Metrics</span>
-                    </NavLink>
-                    <NavLink
-                      to="/monitoring/logs"
-                      onClick={onNavigate}
-                      className={({ isActive }) =>
-                        cx(
-                          "flex h-7 items-center gap-2 rounded px-2 text-xs font-medium transition-colors",
-                          isActive
-                            ? "bg-accent-soft text-accent-ink font-semibold"
-                            : "text-muted hover:bg-sunken hover:text-ink",
-                        )
-                      }
-                    >
-                      <FileText className="size-3" />
-                      <span>Logs</span>
-                    </NavLink>
-                    <NavLink
-                      to="/monitoring/speedtest"
-                      onClick={onNavigate}
-                      className={({ isActive }) =>
-                        cx(
-                          "flex h-7 items-center gap-2 rounded px-2 text-xs font-medium transition-colors",
-                          isActive
-                            ? "bg-accent-soft text-accent-ink font-semibold"
-                            : "text-muted hover:bg-sunken hover:text-ink",
-                        )
-                      }
-                    >
-                      <Zap className="size-3 text-accent" />
-                      <span>Speedtest</span>
-                    </NavLink>
-                    <div className="flex h-7 items-center gap-2 rounded px-2 text-xs text-faint cursor-not-allowed">
-                      <SearchCheck className="size-3" />
-                      <span>Audit</span>
-                    </div>
+                    <SubNavItem to="/monitoring/metrics" label="Metrics" icon={Activity} onNavigate={onNavigate} />
+                    <SubNavItem to="/monitoring/logs" label="Logs" icon={FileText} onNavigate={onNavigate} />
+                    <SubNavItem to="/monitoring/speedtest" label="Speedtest" icon={Zap} onNavigate={onNavigate} />
+                    <SubNavItem to="/monitoring/audit" label="Audit" icon={SearchCheck} onNavigate={onNavigate} />
                   </div>
                 )}
               </div>
@@ -401,7 +352,7 @@ function Footer({ collapsed }: { collapsed: boolean }) {
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center gap-1.5 border-t border-line pt-3">
+      <div className="flex shrink-0 flex-col items-center gap-1.5 border-t border-line pt-3">
         <IconButton label={dark ? "Light theme" : "Dark theme"} onClick={toggle}>
           {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
         </IconButton>
@@ -413,7 +364,7 @@ function Footer({ collapsed }: { collapsed: boolean }) {
   }
 
   return (
-    <div className="flex items-center justify-between border-t border-line pt-3 px-1">
+    <div className="flex shrink-0 items-center justify-between border-t border-line pt-3 px-1">
       <div className="min-w-0">
         <div className="label-strip text-[9.5px]">signed in as</div>
         <div className="truncate font-mono text-xs text-ink font-semibold">{session?.user}</div>
@@ -462,7 +413,7 @@ export function Layout({ children }: { children: ReactNode }) {
           collapsed ? "w-16" : "w-64",
         )}
       >
-        <MinioSidebarContent
+        <SidebarContent
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
         />
@@ -492,8 +443,8 @@ export function Layout({ children }: { children: ReactNode }) {
                 <X className="size-5" />
               </IconButton>
             </div>
-            <div className="flex-1 overflow-y-auto pt-3">
-              <MinioSidebarContent
+            <div className="min-h-0 flex-1 pt-3">
+              <SidebarContent
                 collapsed={false}
                 onToggleCollapse={() => {}}
                 onNavigate={() => setMobileOpen(false)}

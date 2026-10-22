@@ -156,11 +156,11 @@ export function ReplicationPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl pb-16">
+    <div className="space-y-6 pb-16">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
           title="Bucket Replication & Backup"
-          subtitle="Configure continuous, one-way asynchronous replication to remote S3 targets (AWS S3, Cloudflare R2, MinIO, Wasabi, Backblaze B2)."
+          subtitle="Configure continuous, one-way asynchronous replication to remote S3 targets (AWS S3, Cloudflare R2, Wasabi, Backblaze B2 or any S3-compatible server)."
         />
         <Button
           variant="primary"
@@ -276,8 +276,9 @@ export function ReplicationPage() {
       >
         <div className="space-y-4">
           <div>
-            <label className="label-strip mb-1.5 block">Rule Name</label>
+            <label htmlFor="replication-rule-name" className="label-strip mb-1.5 block">Rule Name</label>
             <Input
+              id="replication-rule-name"
               value={ruleName}
               onChange={(e) => setRuleName(e.target.value)}
               placeholder="e.g. AWS S3 Disaster Recovery"
@@ -286,8 +287,9 @@ export function ReplicationPage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label-strip mb-1.5 block">Source Bucket</label>
+              <label htmlFor="replication-source-bucket" className="label-strip mb-1.5 block">Source Bucket</label>
               <Select
+                id="replication-source-bucket"
                 aria-label="Source Bucket"
                 value={sourceBucket}
                 onChange={setSourceBucket}
@@ -296,8 +298,9 @@ export function ReplicationPage() {
             </div>
 
             <div>
-              <label className="label-strip mb-1.5 block">Destination Cloud</label>
+              <label htmlFor="replication-destination-cloud" className="label-strip mb-1.5 block">Destination Cloud</label>
               <Select
+                id="replication-destination-cloud"
                 aria-label="Destination Cloud"
                 value={destProvider}
                 onChange={(val) => {
@@ -310,7 +313,7 @@ export function ReplicationPage() {
                 options={[
                   { value: "AWS S3", label: "Amazon Web Services (S3)" },
                   { value: "Cloudflare R2", label: "Cloudflare R2" },
-                  { value: "MinIO Remote", label: "Remote MinIO Cluster" },
+                  { value: "S3 Compatible", label: "Other S3-compatible server" },
                   { value: "Wasabi", label: "Wasabi Hot Cloud Storage" },
                   { value: "Backblaze B2", label: "Backblaze B2" },
                 ]}
@@ -319,8 +322,9 @@ export function ReplicationPage() {
           </div>
 
           <div>
-            <label className="label-strip mb-1.5 block">Destination Endpoint URL</label>
+            <label htmlFor="replication-destination-endpoint-url" className="label-strip mb-1.5 block">Destination Endpoint URL</label>
             <Input
+              id="replication-destination-endpoint-url"
               value={destEndpoint}
               onChange={(e) => setDestEndpoint(e.target.value)}
               className="font-mono text-xs"
@@ -329,8 +333,9 @@ export function ReplicationPage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label-strip mb-1.5 block">Remote Bucket Name</label>
+              <label htmlFor="replication-remote-bucket-name" className="label-strip mb-1.5 block">Remote Bucket Name</label>
               <Input
+                id="replication-remote-bucket-name"
                 value={destBucket}
                 onChange={(e) => setDestBucket(e.target.value)}
                 placeholder="remote-backup-bucket"
@@ -338,8 +343,9 @@ export function ReplicationPage() {
               />
             </div>
             <div>
-              <label className="label-strip mb-1.5 block">Region</label>
+              <label htmlFor="replication-region" className="label-strip mb-1.5 block">Region</label>
               <Input
+                id="replication-region"
                 value={destRegion}
                 onChange={(e) => setDestRegion(e.target.value)}
                 placeholder="us-east-1"
@@ -350,8 +356,9 @@ export function ReplicationPage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label-strip mb-1.5 block">Remote Access Key ID</label>
+              <label htmlFor="replication-remote-access-key-id" className="label-strip mb-1.5 block">Remote Access Key ID</label>
               <Input
+                id="replication-remote-access-key-id"
                 value={accessKey}
                 onChange={(e) => setAccessKey(e.target.value)}
                 placeholder="AKIA..."
@@ -359,8 +366,9 @@ export function ReplicationPage() {
               />
             </div>
             <div>
-              <label className="label-strip mb-1.5 block">Remote Secret Key</label>
+              <label htmlFor="replication-remote-secret-key" className="label-strip mb-1.5 block">Remote Secret Key</label>
               <Input
+                id="replication-remote-secret-key"
                 type="password"
                 value={secretKey}
                 onChange={(e) => setSecretKey(e.target.value)}

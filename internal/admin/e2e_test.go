@@ -22,6 +22,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
+	"bin/internal/audit"
 	"bin/internal/auth"
 	"bin/internal/s3"
 	"bin/internal/s3/sigv4"
@@ -54,13 +55,15 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(func() { store.Close() })
 	box, _ := secrets.New(bytes.Repeat([]byte{3}, 32))
 	keys := &auth.Keyring{RootAccessKey: rootAK, RootSecretKey: rootSK, Store: store, Box: box, Log: log}
+	rec := audit.New(store, log)
+	t.Cleanup(rec.Close) // before the store closes
 	s3srv := httptest.NewServer(s3.NewHandler(s3.Options{
 		Store: store, Region: "us-east-1", HostID: "h", Owner: s3.Owner{ID: "o", DisplayName: "bin"},
-		Auth: &sigv4.Verifier{Region: "us-east-1", Store: keys}, Keys: keys, Log: log,
+		Auth: &sigv4.Verifier{Region: "us-east-1", Store: keys}, Keys: keys, Audit: rec, Log: log,
 	}))
 	t.Cleanup(s3srv.Close)
 	console := httptest.NewServer(NewHandler(Options{
-		Store: store, Keys: keys, Region: "us-east-1", DataDir: dir, PublicURL: s3srv.URL, Log: log,
+		Store: store, Keys: keys, Audit: rec, Region: "us-east-1", DataDir: dir, PublicURL: s3srv.URL, Log: log,
 	}))
 	t.Cleanup(console.Close)
 	jar, _ := cookiejar.New(nil)
@@ -416,6 +419,149 @@ func TestInfoAndSettings(t *testing.T) {
 	}
 	if code := e.call("PUT", "/api/v1/settings", map[string]int64{"shareMaxExpirySeconds": 10}, nil); code != 400 {
 		t.Errorf("too short accepted: %d", code)
+	}
+	if s.AuditRetentionDays != audit.DefaultRetentionDays {
+		t.Errorf("default audit retention %d", s.AuditRetentionDays)
+	}
+	// Each setting can change alone.
+	if code := e.call("PUT", "/api/v1/settings", map[string]int{"auditRetentionDays": 90}, &s); code != 200 ||
+		s.AuditRetentionDays != 90 || s.ShareMaxExpiry != 7*24*3600 {
+		t.Errorf("audit retention: %d %+v", code, s)
+	}
+	if code := e.call("PUT", "/api/v1/settings", map[string]int{"auditRetentionDays": -1}, nil); code != 400 {
+		t.Errorf("negative retention accepted: %d", code)
+	}
+}
+
+func TestGroups(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.login()
+	for _, b := range []string{"photos", "inbox"} {
+		e.call("POST", "/api/v1/buckets", map[string]string{"name": b}, nil)
+	}
+	e.call("PUT", "/api/v1/buckets/photos/upload?key=cat.jpg", "meow", nil)
+
+	var key keyJSON
+	e.call("POST", "/api/v1/access-keys", map[string]any{"name": "app"}, &key)
+	c := s3Client(e.s3URL, key.AccessKey, key.SecretKey)
+
+	var g groupJSON
+	if code := e.call("POST", "/api/v1/groups", map[string]any{
+		"name": "viewers", "description": "Read photos", "buckets": []string{"photos"}, "readOnly": true,
+		"members": []string{key.AccessKey},
+	}, &g); code != 201 || !g.Enabled || len(g.Members) != 1 {
+		t.Fatalf("create group: %d %+v", code, g)
+	}
+	for _, bad := range []map[string]any{
+		{"name": "bad name!"},
+		{"name": "ghosts", "buckets": []string{"nope"}},
+		{"name": "strangers", "members": []string{"NOSUCHKEY"}},
+		{"name": "viewers"},
+	} {
+		if code := e.call("POST", "/api/v1/groups", bad, nil); code < 400 {
+			t.Errorf("%v accepted: %d", bad, code)
+		}
+	}
+
+	// The group now decides what the key may do.
+	if _, err := c.GetObject(ctx, &awss3.GetObjectInput{Bucket: aws.String("photos"), Key: aws.String("cat.jpg")}); err != nil {
+		t.Errorf("member cannot read: %v", err)
+	}
+	_, err := c.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("inbox"), Key: aws.String("x"), Body: strings.NewReader("x")})
+	if smithyCode(err) != "AccessDenied" {
+		t.Errorf("member wrote outside the group: %v", err)
+	}
+	var list struct{ AccessKeys []keyJSON }
+	e.call("GET", "/api/v1/access-keys", nil, &list)
+	if len(list.AccessKeys) != 1 || len(list.AccessKeys[0].Groups) != 1 || list.AccessKeys[0].Groups[0] != "viewers" {
+		t.Errorf("key groups: %+v", list.AccessKeys)
+	}
+
+	// Widen the group; then disable it.
+	e.call("PATCH", "/api/v1/groups/viewers", map[string]any{"buckets": []string{"photos", "inbox"}, "readOnly": false}, &g)
+	if _, err := c.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("inbox"), Key: aws.String("x"), Body: strings.NewReader("x")}); err != nil {
+		t.Errorf("widened group: %v", err)
+	}
+	e.call("PATCH", "/api/v1/groups/viewers", map[string]any{"enabled": false}, nil)
+	_, err = c.GetObject(ctx, &awss3.GetObjectInput{Bucket: aws.String("photos"), Key: aws.String("cat.jpg")})
+	if smithyCode(err) != "AccessDenied" {
+		t.Errorf("disabled group still grants: %v", err)
+	}
+
+	// Membership can also be set from the key; deleting the group frees the key.
+	if code := e.call("PATCH", "/api/v1/access-keys/"+key.AccessKey, map[string]any{"groups": []string{"ghost"}}, nil); code != 400 {
+		t.Errorf("unknown group accepted: %d", code)
+	}
+	if code := e.call("DELETE", "/api/v1/groups/viewers", nil, nil); code != 204 {
+		t.Errorf("delete group: %d", code)
+	}
+	if _, err := c.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("photos"), Key: aws.String("y"), Body: strings.NewReader("y")}); err != nil {
+		t.Errorf("own full scope not back: %v", err)
+	}
+	var groups struct{ Groups []groupJSON }
+	if e.call("GET", "/api/v1/groups", nil, &groups); len(groups.Groups) != 0 {
+		t.Errorf("groups left: %+v", groups)
+	}
+}
+
+func TestAuditLog(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	// A failed sign-in does not record the key that was typed.
+	e.call("POST", "/api/v1/login", loginRequest{"typo", "x"}, nil)
+	e.login()
+	e.call("POST", "/api/v1/buckets", map[string]string{"name": "logs"}, nil)
+	var key keyJSON
+	e.call("POST", "/api/v1/access-keys", map[string]any{"name": "writer", "buckets": []string{"logs"}}, &key)
+	c := s3Client(e.s3URL, key.AccessKey, key.SecretKey)
+	c.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("logs"), Key: aws.String("a.txt"), Body: strings.NewReader("a")})
+	c.GetObject(ctx, &awss3.GetObjectInput{Bucket: aws.String("logs"), Key: aws.String("a.txt")}) // reads are not recorded
+	c.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String("other")})                    // refused: recorded
+
+	type page struct {
+		Entries    []auditJSON
+		NextBefore int64
+	}
+	var all page
+	if code := e.call("GET", "/api/v1/audit", nil, &all); code != 200 {
+		t.Fatalf("list audit: %d", code)
+	}
+	var got []string
+	for _, en := range all.Entries {
+		got = append(got, fmt.Sprintf("%s %s %s %d", en.Source, en.Actor, en.Action, en.Status))
+	}
+	want := []string{
+		"s3 " + key.AccessKey + " CreateBucket 403",
+		"s3 " + key.AccessKey + " PutObject 200",
+		"console " + rootAK + " CreateAccessKey 201",
+		"console " + rootAK + " CreateBucket 201",
+		"console " + rootAK + " Login 200",
+		"console (unknown) Login 401",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("audit log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if all.Entries[1].Bucket != "logs" || all.Entries[1].Resource != "a.txt" || all.Entries[0].Error != "AccessDenied" {
+		t.Errorf("S3 entry details: %+v %+v", all.Entries[1], all.Entries[0])
+	}
+	if all.Entries[2].Resource != key.AccessKey || all.Entries[3].Bucket != "logs" || all.Entries[5].Error != "invalid_credentials" {
+		t.Errorf("console entry details: %+v", all.Entries)
+	}
+
+	var filtered page
+	e.call("GET", "/api/v1/audit?source=console&failed=true", nil, &filtered)
+	if len(filtered.Entries) != 1 || filtered.Entries[0].Action != "Login" {
+		t.Errorf("filtered: %+v", filtered.Entries)
+	}
+	var first, second page
+	e.call("GET", "/api/v1/audit?limit=4", nil, &first)
+	e.call("GET", fmt.Sprintf("/api/v1/audit?limit=4&before=%d", first.NextBefore), nil, &second)
+	if len(first.Entries) != 4 || first.NextBefore == 0 || len(second.Entries) != 2 || second.NextBefore != 0 {
+		t.Errorf("paging: %d entries next %d, then %d next %d", len(first.Entries), first.NextBefore, len(second.Entries), second.NextBefore)
+	}
+	if code := e.call("GET", "/api/v1/audit?limit=9999", nil, nil); code != 400 {
+		t.Errorf("huge limit accepted: %d", code)
 	}
 }
 

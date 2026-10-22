@@ -22,6 +22,7 @@ var dist embed.FS
 
 // Content-Security-Policy for the panel. Inline styles are needed for the
 // progress bars React renders with style attributes; scripts are files only.
+// The code editor (Monaco) is bundled, so its scripts and workers are 'self' too.
 const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; " +
 	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"bin/internal/audit"
 	"bin/internal/auth"
 	"bin/internal/s3/s3err"
 	"bin/internal/s3/sigv4"
@@ -23,6 +24,7 @@ type Options struct {
 	Owner  Owner           // reported as the owner of every bucket
 	Auth   *sigv4.Verifier // authenticates every request
 	Keys   *auth.Keyring   // scopes of access keys; nil gives every signed request full access
+	Audit  *audit.Recorder // records changes and refused requests; nil records nothing
 	Log    *slog.Logger
 	// LogRequests logs one line per request (server errors are always logged).
 	LogRequests bool
@@ -121,14 +123,27 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	// not allowed by the bucket policy only ever see AccessDenied.
 	bucket, key := parseTarget(r, h.opts.Domain)
 	req := Request{Bucket: bucket, Key: key}
+	sw := &statusRecorder{ResponseWriter: w}
+	w = sw
+	actor := unauthenticated
+	var err error
+	defer func() {
+		status := sw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		h.record(r, req, actor, status, err)
+	}()
+
 	auth, err := h.opts.Auth.Verify(r)
 	if err == nil {
 		r = r.WithContext(context.WithValue(r.Context(), authKey{}, auth.AccessKey))
 		if auth.Anonymous() {
-			server.Annotate(r.Context(), slog.String("access_key", "(anonymous)"))
+			actor = audit.Anonymous
 		} else {
-			server.Annotate(r.Context(), slog.String("access_key", auth.AccessKey))
+			actor = auth.AccessKey
 		}
+		server.Annotate(r.Context(), slog.String("access_key", actor))
 		req, err = Resolve(r, h.opts.Domain)
 		if err != nil && auth.Anonymous() {
 			err = s3err.ErrAccessDenied

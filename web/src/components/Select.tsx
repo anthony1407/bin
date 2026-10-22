@@ -22,6 +22,8 @@ interface SelectProps {
   disabled?: boolean;
   mono?: boolean;
   className?: string;
+  /** Id of the field, for a visible <label htmlFor>. */
+  id?: string;
   "aria-label": string;
 }
 
@@ -43,6 +45,7 @@ export function Select({
   disabled,
   mono,
   className,
+  id: fieldId,
   "aria-label": label,
 }: SelectProps) {
   const id = useId();
@@ -138,6 +141,7 @@ export function Select({
     mono && "font-mono",
   );
   const comboboxProps = {
+    id: fieldId ?? `${id}-field`,
     role: "combobox" as const,
     "aria-label": label,
     "aria-expanded": open,
@@ -369,6 +373,7 @@ export function MultiSelect({
         ))}
         <input
           ref={input}
+          id={`${id}-field`}
           role="combobox"
           aria-label={label}
           aria-expanded={open}

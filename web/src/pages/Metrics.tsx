@@ -192,7 +192,7 @@ export function MetricsPage() {
         </div>
       </div>
 
-      {/* Servers Table Section (MinIO style) */}
+      {/* Servers Table Section */}
       <div className="space-y-3">
         <h2 className="text-base font-semibold text-ink">Servers (1)</h2>
         <div className="overflow-hidden rounded-card border border-line bg-surface">
@@ -236,7 +236,7 @@ export function MetricsPage() {
         </div>
       </div>
 
-      {/* Drives Section (MinIO style) */}
+      {/* Drives Section */}
       <div className="space-y-3">
         <h2 className="text-base font-semibold text-ink">Drives (1)</h2>
         <div className="rounded-card border border-line bg-surface p-5 shadow-sm">

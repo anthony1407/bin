@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check, Copy, FileText, Plus, Search, ShieldCheck, Trash2 } from "lucide-react";
-import Editor from "@monaco-editor/react";
+import Editor from "../components/CodeEditor";
 import { Button, IconButton, Input, Modal, useToast } from "../components/ui";
 
 interface PolicyItem {
@@ -301,8 +301,9 @@ export function PoliciesPage() {
       >
         <div className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-ink">Policy Name</label>
+            <label htmlFor="policies-policy-name" className="mb-1.5 block text-sm font-medium text-ink">Policy Name</label>
             <Input
+              id="policies-policy-name"
               autoFocus
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
@@ -310,7 +311,7 @@ export function PoliciesPage() {
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-ink">Policy JSON</label>
+            <span className="mb-1.5 block text-sm font-medium text-ink">Policy JSON</span>
             <div className="relative overflow-hidden rounded-md border border-line-strong bg-[#1e1e1e]">
               <Editor
                 height="280px"

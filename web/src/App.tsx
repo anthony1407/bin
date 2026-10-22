@@ -17,6 +17,9 @@ import { SpeedtestPage } from "./pages/Speedtest";
 import { DropzonePage } from "./pages/Dropzone";
 import { TerminalPage } from "./pages/Terminal";
 import { ReplicationPage } from "./pages/Replication";
+import { GroupsPage } from "./pages/Groups";
+import { AuditPage } from "./pages/Audit";
+import { LDAPPage, OpenIDPage } from "./pages/IdentityProviders";
 
 function Routed() {
   const { session, loading } = useAuth();
@@ -48,6 +51,10 @@ function Routed() {
         <Route path="/access-keys" element={<AccessKeysPage />} />
         <Route path="/policies" element={<PoliciesPage />} />
         <Route path="/identity/users" element={<UsersPage />} />
+        <Route path="/identity/groups" element={<GroupsPage />} />
+        <Route path="/identity/openid" element={<OpenIDPage />} />
+        <Route path="/identity/ldap" element={<LDAPPage />} />
+        <Route path="/monitoring/audit" element={<AuditPage />} />
         <Route path="/monitoring/metrics" element={<MetricsPage />} />
         <Route path="/monitoring/logs" element={<LogsPage />} />
         <Route path="/monitoring/speedtest" element={<SpeedtestPage />} />

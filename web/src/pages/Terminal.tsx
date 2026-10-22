@@ -329,7 +329,7 @@ export function TerminalPage() {
   }
 
   return (
-    <div className="space-y-4 max-w-5xl pb-16">
+    <div className="space-y-4 pb-16">
       <PageHeader
         title="S3 Interactive Shell"
         subtitle="Execute immediate S3 commands, inspect buckets, read object streams, and benchmark your cluster directly from the web console."
@@ -402,6 +402,9 @@ export function TerminalPage() {
           <input
             ref={inputRef}
             type="text"
+            name="command"
+            aria-label="Command"
+            autoComplete="off"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}

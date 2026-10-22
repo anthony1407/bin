@@ -44,12 +44,14 @@ var anonymousNever = map[Op]bool{
 	OpListMultipartUploads: true,
 }
 
-type scopeKey struct{}
+type grantsKey struct{}
 
-// scopeFrom returns the scope of the signed request (full access if unknown).
-func scopeFrom(ctx context.Context) auth.Scope {
-	s, _ := ctx.Value(scopeKey{}).(auth.Scope)
-	return s
+// grantsFrom returns the grants of the signed request (full access if unknown).
+func grantsFrom(ctx context.Context) auth.Grants {
+	if g, ok := ctx.Value(grantsKey{}).(auth.Grants); ok {
+		return g
+	}
+	return auth.FullAccess
 }
 
 // authorize decides whether the authenticated (or anonymous) caller may
@@ -86,17 +88,17 @@ func (h *Handler) authorize(r *http.Request, req Request, accessKey string) (con
 	if h.opts.Keys == nil {
 		return ctx, nil
 	}
-	scope, err := h.opts.Keys.Scope(ctx, accessKey)
+	grants, err := h.opts.Keys.Grants(ctx, accessKey)
 	if err != nil {
 		return ctx, s3err.ErrAccessDenied
 	}
-	if !scope.Allows(action, req.Bucket) {
+	if !grants.Allows(action, req.Bucket) {
 		return ctx, s3err.ErrAccessDenied
 	}
 	if req.Op == OpCopyObject || req.Op == OpUploadPartCopy {
-		if src, _, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source")); err == nil && !scope.Allows(auth.ReadObject, src) {
+		if src, _, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source")); err == nil && !grants.Allows(auth.ReadObject, src) {
 			return ctx, s3err.ErrAccessDenied
 		}
 	}
-	return context.WithValue(ctx, scopeKey{}, scope), nil
+	return context.WithValue(ctx, grantsKey{}, grants), nil
 }

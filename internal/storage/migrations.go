@@ -126,6 +126,36 @@ var migrations = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	) WITHOUT ROWID;`,
+
+	// 5: groups and the audit log. A key that belongs to a group gets its
+	// access from its enabled groups instead of its own scope.
+	`CREATE TABLE groups (
+		name        TEXT    PRIMARY KEY,
+		description TEXT    NOT NULL DEFAULT '',
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		created_at  INTEGER NOT NULL,
+		scope       TEXT    NOT NULL DEFAULT ''  -- JSON, interpreted by package auth; '' = full access
+	) WITHOUT ROWID;
+	CREATE TABLE group_members (
+		group_name TEXT NOT NULL REFERENCES groups(name) ON DELETE CASCADE,
+		access_key TEXT NOT NULL REFERENCES access_keys(access_key) ON DELETE CASCADE,
+		PRIMARY KEY (group_name, access_key)
+	) WITHOUT ROWID;
+	CREATE INDEX group_members_key ON group_members (access_key);
+	CREATE TABLE audit_log (
+		id         INTEGER PRIMARY KEY,
+		at         INTEGER NOT NULL,              -- unix nanoseconds
+		source     TEXT    NOT NULL,              -- 'console' or 's3'
+		actor      TEXT    NOT NULL,              -- access key or console user; '(anonymous)'
+		action     TEXT    NOT NULL,              -- e.g. PutObject, CreateAccessKey, Login
+		bucket     TEXT    NOT NULL DEFAULT '',
+		resource   TEXT    NOT NULL DEFAULT '',   -- object key, access key, group, ...
+		status     INTEGER NOT NULL,              -- HTTP status of the response
+		error      TEXT    NOT NULL DEFAULT '',   -- error code, '' on success
+		remote     TEXT    NOT NULL DEFAULT '',   -- client IP
+		request_id TEXT    NOT NULL DEFAULT ''
+	);
+	CREATE INDEX audit_log_at ON audit_log (at);`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

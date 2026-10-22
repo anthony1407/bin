@@ -381,8 +381,9 @@ function TLSSection({ info }: { info: Info }) {
           </p>
 
           <div>
-            <label className="label-strip mb-1 block">Public Certificate (cert.pem / fullchain.pem)</label>
+            <label htmlFor="settings-public-certificate" className="label-strip mb-1 block">Public Certificate (cert.pem / fullchain.pem)</label>
             <textarea
+              id="settings-public-certificate"
               rows={4}
               value={certText}
               onChange={(e) => setCertText(e.target.value)}
@@ -392,8 +393,9 @@ function TLSSection({ info }: { info: Info }) {
           </div>
 
           <div>
-            <label className="label-strip mb-1 block">Private Key (key.pem)</label>
+            <label htmlFor="settings-private-key" className="label-strip mb-1 block">Private Key (key.pem)</label>
             <textarea
+              id="settings-private-key"
               rows={4}
               value={keyText}
               onChange={(e) => setKeyText(e.target.value)}
@@ -443,15 +445,38 @@ function LimitsAndSpecs() {
 
 // --- Audit & Logging Section -----------------------------------------------------------
 
-function AuditSection({ info }: { info: Info }) {
+const RETENTION_OPTIONS = [
+  { value: "7", label: "7 Days" },
+  { value: "30", label: "30 Days (Default)" },
+  { value: "90", label: "90 Days" },
+  { value: "180", label: "180 Days" },
+  { value: "365", label: "365 Days (1 Year)" },
+  { value: "0", label: "Keep Forever" },
+];
+
+function AuditSection({ info, settings, onSaved }: { info: Info; settings: Settings; onSaved: (s: Settings) => void }) {
   const [logLevel, setLogLevel] = useState("info");
   const [logFormat, setLogFormat] = useState("text");
   const [logRequests, setLogRequests] = useState(info.logRequests ?? true);
-  const [retentionDays, setRetentionDays] = useState("90");
+  const [retentionDays, setRetentionDays] = useState(String(settings.auditRetentionDays));
+  const [saving, setSaving] = useState(false);
   const toast = useToast();
+  const retentionOptions = RETENTION_OPTIONS.some((o) => o.value === retentionDays)
+    ? RETENTION_OPTIONS
+    : [...RETENTION_OPTIONS, { value: retentionDays, label: `${retentionDays} Days` }];
 
-  function saveAudit() {
-    toast("ok", "Logging configuration saved.");
+  // Only the audit retention is a runtime setting; the log options come from
+  // the BIN_LOG_* environment at startup.
+  async function saveAudit() {
+    setSaving(true);
+    try {
+      onSaved(await api.saveAuditRetention(Number(retentionDays)));
+      toast("ok", "Audit log retention saved.");
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -463,15 +488,16 @@ function AuditSection({ info }: { info: Info }) {
             Configure S3 request logs, administrative audit trails, and output formats.
           </p>
         </div>
-        <Button variant="primary" icon={<Save className="size-3.5" />} onClick={saveAudit}>
+        <Button variant="primary" busy={saving} icon={<Save className="size-3.5" />} onClick={saveAudit}>
           Save Settings
         </Button>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <div>
-          <label className="label-strip mb-1.5 block">Log Level</label>
+          <label htmlFor="settings-log-level" className="label-strip mb-1.5 block">Log Level</label>
           <Select
+            id="settings-log-level"
             aria-label="Log Level"
             value={logLevel}
             onChange={setLogLevel}
@@ -485,8 +511,9 @@ function AuditSection({ info }: { info: Info }) {
         </div>
 
         <div>
-          <label className="label-strip mb-1.5 block">Log Format</label>
+          <label htmlFor="settings-log-format" className="label-strip mb-1.5 block">Log Format</label>
           <Select
+            id="settings-log-format"
             aria-label="Log Format"
             value={logFormat}
             onChange={setLogFormat}
@@ -498,9 +525,11 @@ function AuditSection({ info }: { info: Info }) {
         </div>
 
         <div>
-          <label className="label-strip mb-1.5 block">Log Every API Request</label>
+          <label htmlFor="settings-log-requests" className="label-strip mb-1.5 block">Log Every API Request</label>
           <button
+            id="settings-log-requests"
             type="button"
+            aria-pressed={logRequests}
             onClick={() => setLogRequests(!logRequests)}
             className={cx(
               "flex h-9 w-full items-center justify-between rounded-lg border px-3 text-xs font-medium transition-colors",
@@ -513,17 +542,13 @@ function AuditSection({ info }: { info: Info }) {
         </div>
 
         <div>
-          <label className="label-strip mb-1.5 block">Audit Log Retention</label>
+          <label htmlFor="settings-audit-log-retention" className="label-strip mb-1.5 block">Audit Log Retention</label>
           <Select
+            id="settings-audit-log-retention"
             aria-label="Audit Log Retention"
             value={retentionDays}
             onChange={setRetentionDays}
-            options={[
-              { value: "30", label: "30 Days" },
-              { value: "90", label: "90 Days" },
-              { value: "180", label: "180 Days" },
-              { value: "365", label: "365 Days (1 Year)" },
-            ]}
+            options={retentionOptions}
           />
         </div>
       </div>
@@ -569,7 +594,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl pb-16">
+    <div className="space-y-6 pb-16">
       <PageHeader
         title="Server Configuration"
         subtitle="Manage ports, backend storage, TLS/SSL security, upload specifications, and audit options."
@@ -707,7 +732,7 @@ export function SettingsPage() {
 
       {activeTab === "tls" && <TLSSection info={info} />}
 
-      {activeTab === "audit" && <AuditSection info={info} />}
+      {activeTab === "audit" && <AuditSection info={info} settings={settings} onSaved={setSettings} />}
 
       {activeTab === "share" && (
         <div className="space-y-4">

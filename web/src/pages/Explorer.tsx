@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
+  Archive,
+  BarChart3,
   Check,
   ChevronLeft,
   Code2,
@@ -15,25 +17,30 @@ import {
   FileImage,
   FileText,
   FileVideo,
+  Filter,
   Folder,
   FolderInput,
   FolderPlus,
   History,
   Info,
+  LayoutGrid,
+  LayoutList,
   Maximize2,
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Settings2,
   Share2,
   Tag,
   Trash2,
+  Undo2,
   Upload,
   X,
 } from "lucide-react";
 import JSZip from "jszip";
-import Editor from "@monaco-editor/react";
+import Editor from "../components/CodeEditor";
 import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo } from "../api";
 import { baseName, bytes, count, dateTime, relative } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
@@ -267,7 +274,7 @@ function ShareModal({ bucket, object, onClose }: { bucket: string; object: Objec
                 <p className="mt-1.5 text-xs text-muted">The maximum allowed is set in Settings.</p>
               </div>
               <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={download} onChange={(e) => setDownload(e.target.checked)} className="size-4 accent-[var(--accent)]" />
+                <input type="checkbox" name="download" checked={download} onChange={(e) => setDownload(e.target.checked)} className="size-4 accent-[var(--accent)]" />
                 Download instead of opening in the browser
               </label>
             </>
@@ -297,40 +304,156 @@ function ShareModal({ bucket, object, onClose }: { bucket: string; object: Objec
 
 const MAX_PREVIEW_BYTES = 512 * 1024; // 512 KiB text/code preview limit
 
-function MonacoPreview({ url, objectKey, contentType }: { url: string; objectKey: string; contentType: string }) {
-  const [text, setText] = useState<string | null>(null);
+function MonacoPreview({
+  bucket,
+  url,
+  objectKey,
+  contentType,
+  onSaved,
+}: {
+  bucket?: string;
+  url: string;
+  objectKey: string;
+  contentType: string;
+  onSaved?: () => void;
+}) {
+  const [content, setContent] = useState<string | null>(null);
+  const [currentVal, setCurrentVal] = useState<string>("");
+  const [isEditing, setIsEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const toast = useToast();
+
   useEffect(() => {
     fetch(url, { headers: { Range: `bytes=0-${MAX_PREVIEW_BYTES - 1}` } })
       .then((r) => r.text())
-      .then(setText)
-      .catch(() => setText("(preview unavailable)"));
+      .then((txt) => {
+        setContent(txt);
+        setCurrentVal(txt);
+      })
+      .catch(() => {
+        setContent("(preview unavailable)");
+        setCurrentVal("");
+      });
   }, [url]);
-  if (text === null) return <Spinner className="m-6" />;
+
+  async function handleSave() {
+    if (!bucket) return;
+    setSaving(true);
+    try {
+      const blob = new Blob([currentVal], { type: contentType || "text/plain" });
+      const f = Object.assign(blob, { name: baseName(objectKey) }) as unknown as File;
+      const abortCtrl = new AbortController();
+      await uploadFile(bucket, objectKey, f, () => {}, abortCtrl.signal);
+      setContent(currentVal);
+      setIsEditing(false);
+      toast("ok", `Saved changes to ${baseName(objectKey)} on S3.`);
+      onSaved?.();
+    } catch (e: any) {
+      toast("error", e.message || "Failed to save file.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (content === null) return <Spinner className="m-6" />;
   const lang = getMonacoLanguage(objectKey, contentType);
+  const isDirty = isEditing && currentVal !== content;
+
   return (
-    <div className="h-80 overflow-hidden rounded-md border border-line">
-      <Editor
-        height="100%"
-        language={lang}
-        value={text}
-        theme="vs-dark"
-        options={{
-          readOnly: true,
-          minimap: { enabled: false },
-          scrollBeyondLastLine: false,
-          fontSize: 12,
-          lineNumbers: "on",
-          wordWrap: "on",
-          domReadOnly: true,
-          renderLineHighlight: "none",
-          padding: { top: 8 },
-        }}
-      />
+    <div className="overflow-hidden rounded-md border border-line">
+      {bucket && (
+        <div className="flex items-center justify-between border-b border-line bg-sunken/60 px-3 py-1.5 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] text-accent uppercase font-bold">{lang}</span>
+            {isDirty && (
+              <span className="flex items-center gap-1 text-[10px] text-warn font-semibold">
+                <span className="size-1.5 rounded-full bg-warn animate-pulse" />
+                Unsaved changes
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {!isEditing ? (
+              <button
+                type="button"
+                onClick={() => setIsEditing(true)}
+                className="flex items-center gap-1 rounded bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent hover:bg-accent/25 transition-colors"
+              >
+                <span>Edit File</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCurrentVal(content);
+                    setIsEditing(false);
+                  }}
+                  disabled={saving}
+                  className="rounded px-2 py-0.5 text-[11px] text-muted hover:text-ink transition-colors"
+                >
+                  Cancel
+                </button>
+                <Button
+                  variant="primary"
+                  busy={saving}
+                  icon={<Save className="size-3" />}
+                  onClick={handleSave}
+                  className="h-6 px-2 text-[11px]"
+                >
+                  Save (S3)
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="h-80">
+        <Editor
+          height="100%"
+          language={lang}
+          value={isEditing ? currentVal : content}
+          onChange={(v) => {
+            if (isEditing) setCurrentVal(v || "");
+          }}
+          theme="vs-dark"
+          onMount={(editor) => {
+            // Ctrl+S / Cmd+S → save
+            editor.addCommand(
+              // eslint-disable-next-line no-bitwise
+              (window.navigator.platform.includes("Mac") ? 2048 : 2048) | 49, // CtrlCmd + S
+              () => {
+                if (isEditing && bucket) handleSave();
+              },
+            );
+          }}
+          options={{
+            readOnly: !isEditing,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            fontSize: 12,
+            lineNumbers: "on",
+            wordWrap: "on",
+            renderLineHighlight: isEditing ? "line" : "none",
+            padding: { top: 8 },
+          }}
+        />
+      </div>
     </div>
   );
 }
 
-function Preview({ bucket, object, compact }: { bucket: string; object: ObjectInfo; compact?: boolean }) {
+function Preview({
+  bucket,
+  object,
+  compact,
+  onSaved,
+}: {
+  bucket: string;
+  object: ObjectInfo;
+  compact?: boolean;
+  onSaved?: () => void;
+}) {
   const kind = kindOf(object.key, object.contentType);
   const url = api.downloadURL(bucket, object.key, true);
   const Icon = kindIcons[kind];
@@ -341,7 +464,15 @@ function Preview({ bucket, object, compact }: { bucket: string; object: ObjectIn
   else if (kind === "audio") body = <audio src={url} controls className="w-full p-3" />;
   else if (kind === "pdf") body = <iframe src={url} title={object.key} className="h-80 w-full border-0" />;
   else if ((kind === "text" || kind === "code") && object.size > 0)
-    body = <MonacoPreview url={url} objectKey={object.key} contentType={object.contentType ?? ""} />;
+    body = (
+      <MonacoPreview
+        bucket={bucket}
+        url={url}
+        objectKey={object.key}
+        contentType={object.contentType ?? ""}
+        onSaved={onSaved}
+      />
+    );
   else
     body = (
       <div className="flex flex-col items-center gap-2 py-10 text-muted">
@@ -458,6 +589,218 @@ function ChecksumsPanel({ checksums }: { checksums: Record<string, string> }) {
         ))}
       </div>
     </div>
+  );
+}
+
+// --- bucket analytics modal -------------------------------------------------------------
+
+const DONUT_COLORS = ["#3b82f6","#a855f7","#10b981","#f59e0b","#ec4899","#64748b"];
+
+function DonutChart({ data, size = 160 }: { data: { label: string; value: number; color: string }[]; size?: number }) {
+  const total = data.reduce((a, b) => a + b.value, 0) || 1;
+  const r = size / 2 - 12;
+  const c = 2 * Math.PI * r;
+  let offset = 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="mx-auto">
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--sunken)" strokeWidth={20} />
+      {data.map((d) => {
+        const pct = d.value / total;
+        if (pct < 0.005) { offset += pct * c; return null; }
+        const dash = pct * c;
+        const el = (
+          <circle
+            key={d.label}
+            cx={size/2} cy={size/2} r={r}
+            fill="none"
+            stroke={d.color}
+            strokeWidth={20}
+            strokeDasharray={`${dash} ${c - dash}`}
+            strokeDashoffset={-offset}
+            strokeLinecap="butt"
+            transform={`rotate(-90 ${size/2} ${size/2})`}
+            className="transition-all duration-500"
+          >
+            <title>{d.label}: {Math.round(pct * 100)}%</title>
+          </circle>
+        );
+        offset += dash;
+        return el;
+      })}
+      <text x={size/2} y={size/2 - 6} textAnchor="middle" className="fill-ink text-lg font-bold" fontSize="18">{data.reduce((a,b) => a + (b.value > 0 ? 1 : 0), 0)}</text>
+      <text x={size/2} y={size/2 + 12} textAnchor="middle" className="fill-muted text-[10px]" fontSize="10">categories</text>
+    </svg>
+  );
+}
+
+function BucketAnalyticsModal({
+  open,
+  onClose,
+  bucket,
+  objects,
+  meta,
+}: {
+  open: boolean;
+  onClose: () => void;
+  bucket: string;
+  objects: ObjectInfo[];
+  meta: Bucket | null;
+}) {
+  const breakdown = useMemo(() => {
+    const cats: { label: string; count: number; bytes: number; color: string }[] = [
+      { label: "Images", count: 0, bytes: 0, color: DONUT_COLORS[0] },
+      { label: "Video & Audio", count: 0, bytes: 0, color: DONUT_COLORS[1] },
+      { label: "Documents", count: 0, bytes: 0, color: DONUT_COLORS[2] },
+      { label: "Code & Data", count: 0, bytes: 0, color: DONUT_COLORS[3] },
+      { label: "Archives", count: 0, bytes: 0, color: DONUT_COLORS[4] },
+      { label: "Other", count: 0, bytes: 0, color: DONUT_COLORS[5] },
+    ];
+    for (const o of objects) {
+      const k = kindOf(o.key, o.contentType);
+      const idx = k === "image" ? 0 : (k === "video" || k === "audio") ? 1 : (k === "pdf" || k === "text") ? 2 : k === "code" ? 3 : k === "archive" ? 4 : 5;
+      cats[idx].count++;
+      cats[idx].bytes += o.size;
+    }
+    return cats;
+  }, [objects]);
+
+  const totalBytes = useMemo(() => objects.reduce((a, b) => a + b.size, 0) || 1, [objects]);
+  const topObjects = useMemo(() => [...objects].sort((a, b) => b.size - a.size).slice(0, 10), [objects]);
+  const avgSize = objects.length > 0 ? Math.round(totalBytes / objects.length) : 0;
+
+  // Growth projection: estimate based on average file age
+  const growthEstimate = useMemo(() => {
+    if (objects.length < 2) return null;
+    const now = Date.now();
+    const ages = objects.map((o) => now - new Date(o.lastModified).getTime()).filter((a) => a > 0);
+    if (ages.length === 0) return null;
+    const oldestMs = Math.max(...ages);
+    const daysActive = Math.max(oldestMs / 86400000, 1);
+    const bytesPerDay = totalBytes / daysActive;
+    return {
+      perDay: bytesPerDay,
+      in30d: totalBytes + bytesPerDay * 30,
+      in90d: totalBytes + bytesPerDay * 90,
+    };
+  }, [objects, totalBytes]);
+
+  const donutData = breakdown.map((c) => ({ label: c.label, value: c.bytes, color: c.color }));
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Storage Analytics: s3://${bucket}`}
+      footer={<Button onClick={onClose}>Close</Button>}
+    >
+      <div className="space-y-6">
+        {/* Metric stats */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-lg border border-line bg-sunken/40 p-3 text-center">
+            <span className="label-strip text-[10px] block">total stored</span>
+            <span className="font-mono text-base font-bold text-ink">
+              {bytes(meta?.size ?? totalBytes)}
+            </span>
+          </div>
+          <div className="rounded-lg border border-line bg-sunken/40 p-3 text-center">
+            <span className="label-strip text-[10px] block">total objects</span>
+            <span className="font-mono text-base font-bold text-ink">
+              {count(meta?.objects ?? objects.length)}
+            </span>
+          </div>
+          <div className="rounded-lg border border-line bg-sunken/40 p-3 text-center">
+            <span className="label-strip text-[10px] block">avg file size</span>
+            <span className="font-mono text-base font-bold text-ink">
+              {bytes(avgSize)}
+            </span>
+          </div>
+        </div>
+
+        {/* Donut chart + Legend */}
+        <div className="flex flex-col sm:flex-row items-center gap-4">
+          <DonutChart data={donutData} />
+          <div className="flex-1 space-y-1.5">
+            <span className="label-strip text-[10px] block">type breakdown</span>
+            {breakdown.map((cat) => {
+              const pct = Math.round((cat.bytes / totalBytes) * 100);
+              return (
+                <div key={cat.label} className="flex items-center gap-2 text-xs">
+                  <span className="size-2.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                  <span className="truncate text-muted">{cat.label}</span>
+                  <span className="font-mono text-[10px] text-muted ml-auto">{count(cat.count)} files</span>
+                  <span className="font-mono font-semibold text-ink w-9 text-right">{pct}%</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Breakdown bar */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs font-semibold text-ink">
+            <span>Storage Distribution</span>
+            <span className="text-muted font-normal text-[11px] font-mono">{objects.length} files analyzed</span>
+          </div>
+          <div className="flex h-3 w-full overflow-hidden rounded-full bg-sunken">
+            {breakdown.map((cat) => {
+              const pct = (cat.bytes / totalBytes) * 100;
+              if (pct < 0.5) return null;
+              return (
+                <div
+                  key={cat.label}
+                  className="h-full transition-all"
+                  style={{ width: `${pct}%`, backgroundColor: cat.color }}
+                  title={`${cat.label}: ${bytes(cat.bytes)} (${Math.round(pct)}%)`}
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Growth projection */}
+        {growthEstimate && (
+          <div className="space-y-2">
+            <span className="label-strip text-[10px] block">growth projection (estimated)</span>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-lg border border-line bg-sunken/40 p-2.5 text-center">
+                <span className="text-[10px] text-muted block">~per day</span>
+                <span className="font-mono text-xs font-bold text-ink">{bytes(growthEstimate.perDay)}</span>
+              </div>
+              <div className="rounded-lg border border-line bg-sunken/40 p-2.5 text-center">
+                <span className="text-[10px] text-muted block">est. 30 days</span>
+                <span className="font-mono text-xs font-bold text-ink">{bytes(growthEstimate.in30d)}</span>
+              </div>
+              <div className="rounded-lg border border-line bg-sunken/40 p-2.5 text-center">
+                <span className="text-[10px] text-muted block">est. 90 days</span>
+                <span className="font-mono text-xs font-bold text-ink">{bytes(growthEstimate.in90d)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Top 10 largest files */}
+        <div className="space-y-2">
+          <span className="label-strip text-[10px] block">Top 10 Largest Objects</span>
+          <div className="divide-y divide-line rounded-lg border border-line text-xs font-mono max-h-52 overflow-y-auto">
+            {topObjects.map((o, idx) => (
+              <div key={o.key} className="flex items-center justify-between p-2.5 hover:bg-sunken/40">
+                <div className="flex items-center gap-2 truncate pr-4">
+                  <span className="text-muted text-[10px] w-4 shrink-0 font-bold">#{idx + 1}</span>
+                  <span className="truncate text-ink">{o.key}</span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0 text-muted">
+                  <span className="text-ink font-semibold">{bytes(o.size)}</span>
+                  <span className="text-[10px] hidden sm:inline">{relative(o.lastModified)}</span>
+                </div>
+              </div>
+            ))}
+            {topObjects.length === 0 && (
+              <div className="p-4 text-center text-muted italic">No objects in this bucket yet</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -579,7 +922,11 @@ function Detail({
               {/* Preview tab */}
               {tab === "preview" && (
                 <div className="space-y-4">
-                  <Preview bucket={bucket} object={info} />
+                  <Preview
+                    bucket={bucket}
+                    object={info}
+                    onSaved={() => api.stat(bucket, objectKey).then(setInfo)}
+                  />
                   <div className="grid grid-cols-3 gap-2">
                     <Button icon={<Download className="size-4" />} busy={downloaded !== null} disabled={deleting} onClick={() => download(info)}>
                       {downloaded === null ? "Download" : info.size ? `${Math.floor((downloaded / info.size) * 100)}%` : "Download"}
@@ -826,6 +1173,12 @@ export function ExplorerPage() {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [dragging, setDragging] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [filterKind, setFilterKind] = useState<Kind | "large" | "today" | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
+  const [trashObjects, setTrashObjects] = useState<ObjectInfo[]>([]);
+  const [restoringTrash, setRestoringTrash] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const toast = useToast();
@@ -1029,16 +1382,46 @@ export function ExplorerPage() {
       else n.add(k);
       return n;
     });
-  const allKeys = [...prefixes, ...objects.map((o) => o.key)];
+  // --- filter logic ---
+  const filteredObjects = useMemo(() => {
+    if (!filterKind) return objects;
+    const now = Date.now();
+    return objects.filter((o) => {
+      if (filterKind === "large") return o.size > 100 * 1024 * 1024;
+      if (filterKind === "today") return now - new Date(o.lastModified).getTime() < 86400000;
+      return kindOf(o.key, o.contentType) === filterKind;
+    });
+  }, [objects, filterKind]);
+
+  const displayedObjects = filteredObjects;
+  const displayedPrefixes = filterKind ? [] : prefixes;
+
+  const allKeys = [...displayedPrefixes, ...displayedObjects.map((o) => o.key)];
   const allSelected = allKeys.length > 0 && allKeys.every((k) => selected.has(k));
 
-  async function deleteSelected() {
-    const keys = [...selected].filter((k) => !k.endsWith("/"));
-    const folders = [...selected].filter((k) => k.endsWith("/"));
+  // --- trash helpers ---
+  async function loadTrash() {
     try {
-      setDeletingSelected(true);
-      const { deleted } = await api.deleteObjects(bucket, keys, folders);
-      toast("ok", `${count(deleted)} object${deleted === 1 ? "" : "s"} deleted.`);
+      const page = await api.objects(bucket, { prefix: ".trash/", limit: 500 });
+      setTrashObjects(page.objects.filter((o) => o.key !== ".trash/"));
+    } catch { setTrashObjects([]); }
+  }
+  async function softDeleteSelected() {
+    setDeletingSelected(true);
+    try {
+      const keys = [...selected].filter((k) => !k.endsWith("/"));
+      for (const k of keys) {
+        const url = api.downloadURL(bucket, k);
+        const res = await fetch(url);
+        const blob = await res.blob();
+        const f = Object.assign(blob, { name: baseName(k) }) as unknown as globalThis.File;
+        const abortCtrl = new AbortController();
+        await uploadFile(bucket, ".trash/" + k, f, () => {}, abortCtrl.signal);
+        await api.deleteObjects(bucket, [k], []);
+      }
+      const folders = [...selected].filter((k) => k.endsWith("/"));
+      if (folders.length > 0) await api.deleteObjects(bucket, [], folders);
+      toast("ok", `Moved ${count(keys.length)} item${keys.length === 1 ? "" : "s"} to trash.`);
       setConfirmDelete(false);
       setSelected(new Set());
       load();
@@ -1048,6 +1431,39 @@ export function ExplorerPage() {
       setDeletingSelected(false);
     }
   }
+  async function restoreFromTrash(trashKey: string) {
+    setRestoringTrash(true);
+    try {
+      const originalKey = trashKey.replace(/^\.trash\//, "");
+      const url = api.downloadURL(bucket, trashKey);
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const f = Object.assign(blob, { name: baseName(originalKey) }) as unknown as globalThis.File;
+      const abortCtrl = new AbortController();
+      await uploadFile(bucket, originalKey, f, () => {}, abortCtrl.signal);
+      await api.deleteObjects(bucket, [trashKey], []);
+      toast("ok", `Restored ${baseName(originalKey)}.`);
+      loadTrash();
+      load();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setRestoringTrash(false);
+    }
+  }
+  async function emptyTrash() {
+    try {
+      const keys = trashObjects.map((o) => o.key);
+      if (keys.length === 0) return;
+      await api.deleteObjects(bucket, keys, [".trash/"]);
+      toast("ok", `Permanently deleted ${count(keys.length)} item${keys.length === 1 ? "" : "s"}.`);
+      setTrashObjects([]);
+      setShowTrash(false);
+    } catch (e) {
+      toast("error", errorText(e));
+    }
+  }
+
 
   async function createFolder() {
     const name = folderName.trim().replace(/^\/+|\/+$/g, "");
@@ -1063,11 +1479,21 @@ export function ExplorerPage() {
   }
 
   const access = meta ? accessLabel(meta) : null;
-  const empty = !loading && objects.length === 0 && prefixes.length === 0;
+  const empty = !loading && displayedObjects.length === 0 && displayedPrefixes.length === 0;
+
+  const FILTER_CHIPS: { id: Kind | "large" | "today"; label: string; icon: typeof FileImage }[] = [
+    { id: "image", label: "Images", icon: FileImage },
+    { id: "pdf", label: "PDFs", icon: FileText },
+    { id: "video", label: "Videos", icon: FileVideo },
+    { id: "code", label: "Code", icon: FileCode },
+    { id: "archive", label: "Archives", icon: FileArchive },
+    { id: "large", label: "> 100 MB", icon: Filter },
+    { id: "today", label: "Modified today", icon: History },
+  ];
 
   return (
     <div className="relative">
-      {/* MinIO style Bucket Header */}
+      {/* Bucket Header */}
       <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2.5">
@@ -1103,6 +1529,13 @@ export function ExplorerPage() {
           <Link to={`/connect?bucket=${encodeURIComponent(bucket)}`} className="contents">
             <Button icon={<Code2 className="size-4 text-accent" />}>Connect SDK</Button>
           </Link>
+          <Button icon={<BarChart3 className="size-4 text-emerald-400" />} onClick={() => setAnalyticsOpen(true)}>Analytics</Button>
+          <Button
+            icon={<Archive className="size-4 text-amber-400" />}
+            onClick={() => { setShowTrash(!showTrash); if (!showTrash) loadTrash(); }}
+          >
+            Trash
+          </Button>
           <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="contents">
             <Button icon={<Settings2 className="size-4" />}>Settings</Button>
           </Link>
@@ -1111,9 +1544,9 @@ export function ExplorerPage() {
           </Button>
         </div>
       </div>
-      <input ref={fileInput} type="file" multiple hidden onChange={(e) => e.target.files && upload(e.target.files)} />
+      <input ref={fileInput} type="file" name="files" multiple hidden onChange={(e) => e.target.files && upload(e.target.files)} />
 
-      {/* MinIO style Navigation / Path Toolbar */}
+      {/* Navigation / Path Toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {/* Back button */}
         <button
@@ -1185,6 +1618,96 @@ export function ExplorerPage() {
         </div>
       </div>
 
+      {/* Filter chips + view toggle */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {FILTER_CHIPS.map((chip) => (
+          <button
+            key={chip.id}
+            type="button"
+            onClick={() => setFilterKind(filterKind === chip.id ? null : chip.id)}
+            className={cx(
+              "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+              filterKind === chip.id
+                ? "border-accent bg-accent/15 text-accent"
+                : "border-line bg-surface text-muted hover:text-ink hover:bg-sunken",
+            )}
+          >
+            <chip.icon className="size-3" />
+            {chip.label}
+          </button>
+        ))}
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setViewMode("list")}
+            title="List view"
+            className={cx(
+              "flex size-8 items-center justify-center rounded-md border transition-colors",
+              viewMode === "list" ? "border-accent bg-accent/15 text-accent" : "border-line text-muted hover:text-ink",
+            )}
+          >
+            <LayoutList className="size-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("grid")}
+            title="Grid / Gallery view"
+            className={cx(
+              "flex size-8 items-center justify-center rounded-md border transition-colors",
+              viewMode === "grid" ? "border-accent bg-accent/15 text-accent" : "border-line text-muted hover:text-ink",
+            )}
+          >
+            <LayoutGrid className="size-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Trash panel */}
+      {showTrash && (
+        <div className="mb-4 rounded-card border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <Archive className="size-4 text-amber-400" />
+              Recycle Bin ({count(trashObjects.length)} items)
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={() => setShowTrash(false)}>Close</Button>
+              {trashObjects.length > 0 && (
+                <Button variant="danger" icon={<Trash2 className="size-3.5" />} onClick={emptyTrash}>
+                  Empty Trash
+                </Button>
+              )}
+            </div>
+          </div>
+          {trashObjects.length === 0 ? (
+            <div className="py-4 text-center text-sm text-muted">Trash is empty.</div>
+          ) : (
+            <div className="divide-y divide-line rounded-md border border-line max-h-60 overflow-y-auto text-xs">
+              {trashObjects.map((o) => {
+                const original = o.key.replace(/^\.trash\//, "");
+                return (
+                  <div key={o.key} className="flex items-center justify-between px-3 py-2 hover:bg-sunken/40">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Trash2 className="size-3.5 text-muted shrink-0" />
+                      <span className="truncate font-mono text-ink" title={original}>{original}</span>
+                      <span className="text-[10px] text-muted shrink-0">{bytes(o.size)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={restoringTrash}
+                      onClick={() => restoreFromTrash(o.key)}
+                      className="flex items-center gap-1 text-[11px] font-medium text-accent hover:underline shrink-0 ml-2"
+                    >
+                      <Undo2 className="size-3" /> Restore
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Selection bar */}
       {selected.size > 0 && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent/30 bg-accent-soft px-4 py-2 text-sm">
@@ -1231,6 +1754,91 @@ export function ExplorerPage() {
               )
             }
           />
+        ) : viewMode === "grid" ? (
+          <div className="p-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+              {displayedPrefixes.map((p) => (
+                <div
+                  key={p}
+                  onClick={() => goTo(p)}
+                  className="group relative flex cursor-pointer flex-col items-center justify-center rounded-lg border border-line bg-surface p-4 text-center transition-colors hover:border-accent/40 hover:bg-sunken/60"
+                >
+                  <div
+                    className="absolute top-2 left-2"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      name="selected"
+                      aria-label={`Select ${p}`}
+                      checked={selected.has(p)}
+                      onChange={() => toggle(p)}
+                      className="size-4 accent-[var(--accent)]"
+                    />
+                  </div>
+                  <Folder className="size-10 fill-amber-400 text-amber-500 mb-2" />
+                  <span className="w-full truncate text-xs font-medium text-ink group-hover:text-accent-ink" title={p}>
+                    {search ? p : baseName(p)}/
+                  </span>
+                </div>
+              ))}
+              {displayedObjects.map((o) => {
+                const kind = kindOf(o.key, o.contentType);
+                const Icon = kindIcons[kind];
+                const isImg = kind === "image";
+                const isSelected = selected.has(o.key);
+                return (
+                  <div
+                    key={o.key}
+                    onClick={() => setDetail(o.key)}
+                    className={cx(
+                      "group relative flex cursor-pointer flex-col overflow-hidden rounded-lg border transition-all hover:shadow-md",
+                      isSelected
+                        ? "border-accent bg-accent/5 ring-1 ring-accent"
+                        : detail === o.key
+                        ? "border-accent bg-accent-soft/40"
+                        : "border-line bg-surface hover:border-line-strong hover:bg-sunken/40"
+                    )}
+                  >
+                    <div
+                      className="absolute top-2 left-2 z-10"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        name="selected"
+                        aria-label={`Select ${o.key}`}
+                        checked={isSelected}
+                        onChange={() => toggle(o.key)}
+                        className="size-4 accent-[var(--accent)]"
+                      />
+                    </div>
+                    <div className="flex h-28 w-full items-center justify-center overflow-hidden bg-sunken/80">
+                      {isImg ? (
+                        <img
+                          src={api.downloadURL(bucket, o.key)}
+                          alt={baseName(o.key)}
+                          loading="lazy"
+                          className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+                        />
+                      ) : (
+                        <Icon className="size-10 text-muted transition-colors group-hover:text-accent" />
+                      )}
+                    </div>
+                    <div className="p-2.5">
+                      <div className="truncate text-xs font-medium text-ink" title={o.key}>
+                        {search ? o.key : baseName(o.key)}
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[11px] text-muted">
+                        <span>{bytes(o.size)}</span>
+                        <span>{relative(o.lastModified)}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="border-b border-line bg-sunken/60 text-left">
@@ -1238,6 +1846,7 @@ export function ExplorerPage() {
                 <th className="w-10 py-2 pl-4">
                   <input
                     type="checkbox"
+                    name="select-all"
                     aria-label="Select all"
                     checked={allSelected}
                     onChange={() => setSelected(allSelected ? new Set() : new Set(allKeys))}
@@ -1250,10 +1859,10 @@ export function ExplorerPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {prefixes.map((p) => (
+              {displayedPrefixes.map((p) => (
                 <tr key={p} className="group hover:bg-sunken/60">
                   <td className="py-2.5 pl-4">
-                    <input type="checkbox" aria-label={`Select ${p}`} checked={selected.has(p)} onChange={() => toggle(p)} className="size-4 accent-[var(--accent)]" />
+                    <input type="checkbox" name="selected" aria-label={`Select ${p}`} checked={selected.has(p)} onChange={() => toggle(p)} className="size-4 accent-[var(--accent)]" />
                   </td>
                   <td className="py-2.5 pr-3">
                     <button onClick={() => goTo(p)} className="flex max-w-full items-center gap-2.5 text-left">
@@ -1265,12 +1874,12 @@ export function ExplorerPage() {
                   <td className="hidden py-2.5 pr-4 text-right text-faint sm:table-cell">-</td>
                 </tr>
               ))}
-              {objects.map((o) => {
-                const Icon = kindIcons[kindOf(o.key)];
+              {displayedObjects.map((o) => {
+                const Icon = kindIcons[kindOf(o.key, o.contentType)];
                 return (
                   <tr key={o.key} className={cx("group cursor-pointer hover:bg-sunken/60", detail === o.key && "bg-accent-soft/60")} onClick={() => setDetail(o.key)}>
                     <td className="py-2.5 pl-4" onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" aria-label={`Select ${o.key}`} checked={selected.has(o.key)} onChange={() => toggle(o.key)} className="size-4 accent-[var(--accent)]" />
+                      <input type="checkbox" name="selected" aria-label={`Select ${o.key}`} checked={selected.has(o.key)} onChange={() => toggle(o.key)} className="size-4 accent-[var(--accent)]" />
                     </td>
                     <td className="max-w-0 py-2.5 pr-3">
                       <div className="flex items-center gap-2.5">
@@ -1293,7 +1902,7 @@ export function ExplorerPage() {
             </tbody>
           </table>
         )}
-        {loading && objects.length + prefixes.length === 0 && !empty && (
+        {loading && displayedObjects.length + displayedPrefixes.length === 0 && !empty && (
           <div className="flex justify-center py-10">
             <Spinner />
           </div>
@@ -1362,16 +1971,17 @@ export function ExplorerPage() {
             <Button disabled={deletingSelected} onClick={() => setConfirmDelete(false)}>
               Cancel
             </Button>
-            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={deleteSelected}>
-              {deletingSelected ? "Deleting…" : `Delete ${count(selected.size)}`}
+            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={softDeleteSelected}>
+              {deletingSelected ? "Moving to trash…" : `Move to Trash (${count(selected.size)})`}
             </Button>
           </>
         }
       >
         <p className="text-sm">
-          Delete {count(selected.size)} selected item{selected.size === 1 ? "" : "s"}?
-          {[...selected].some((k) => k.endsWith("/")) && " Folders are deleted with everything inside them."} This cannot be undone.
+          Move {count(selected.size)} selected item{selected.size === 1 ? "" : "s"} to trash?
+          {[...selected].some((k) => k.endsWith("/")) && " Folders are deleted with everything inside them."}
         </p>
+        <p className="text-xs text-muted mt-2">Files will be moved to <span className="font-mono">.trash/</span> and can be restored later.</p>
       </Modal>
 
       <Modal
@@ -1396,7 +2006,7 @@ export function ExplorerPage() {
       >
         <div className="space-y-4">
           <div>
-            <label className="label-strip mb-1.5 block">Transfer Action</label>
+            <span className="label-strip mb-1.5 block">Transfer Action</span>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <button
                 type="button"
@@ -1426,8 +2036,9 @@ export function ExplorerPage() {
           </div>
 
           <div>
-            <label className="label-strip mb-1.5 block">Destination Bucket</label>
+            <label htmlFor="explorer-destination-bucket" className="label-strip mb-1.5 block">Destination Bucket</label>
             <Select
+              id="explorer-destination-bucket"
               aria-label="Destination Bucket"
               value={transferTargetBucket}
               onChange={setTransferTargetBucket}
@@ -1436,8 +2047,9 @@ export function ExplorerPage() {
           </div>
 
           <div>
-            <label className="label-strip mb-1.5 block">Destination Folder Prefix (Optional)</label>
+            <label htmlFor="explorer-destination-folder-prefix" className="label-strip mb-1.5 block">Destination Folder Prefix (Optional)</label>
             <Input
+              id="explorer-destination-folder-prefix"
               value={transferPrefix}
               onChange={(e) => setTransferPrefix(e.target.value)}
               placeholder="e.g. archive/2026/ or leave empty for root"
@@ -1453,6 +2065,7 @@ export function ExplorerPage() {
           </div>
         </div>
       </Modal>
+      <BucketAnalyticsModal open={analyticsOpen} onClose={() => setAnalyticsOpen(false)} bucket={bucket} objects={objects} meta={meta} />
     </div>
   );
 }

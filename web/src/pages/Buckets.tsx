@@ -41,7 +41,7 @@ function validateBucketName(name: string): string {
   return "";
 }
 
-function minioAccessLabel(b: Bucket): string {
+function bucketAccessLabel(b: Bucket): string {
   if (b.policy.mode === "public") return "R/W";
   if (b.policy.mode === "custom") return "CUSTOM";
   return "PRIVATE";
@@ -113,21 +113,27 @@ function CreateBucketModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="" wide={true}>
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3 -mt-2">
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="xl"
+      title={
+        <span className="flex items-center gap-2">
+          <Archive className="size-5 text-accent" />
+          Create Bucket
+        </span>
+      }
+    >
+      <div className="grid grid-cols-1 gap-8 py-1 lg:grid-cols-3">
         {/* Left column: Form */}
         <form onSubmit={handleSubmit} className="space-y-6 lg:col-span-2">
-          <div className="flex items-center gap-2 text-lg font-bold text-ink">
-            <Archive className="size-5 text-accent" />
-            <span>Create Bucket</span>
-          </div>
-
-          {/* Bucket Name input with MinIO validation */}
+          {/* Bucket Name input with naming-rule validation */}
           <div>
-            <label className="mb-1.5 block text-xs font-semibold text-ink">
+            <label htmlFor="bucket-name" className="mb-1.5 block text-xs font-semibold text-ink">
               Bucket Name*
             </label>
             <Input
+              id="bucket-name"
               autoFocus
               value={name}
               onChange={(e) => setName(e.target.value.toLowerCase().trim())}
@@ -244,6 +250,8 @@ function CreateBucketModal({
                     className="w-24 h-8 text-xs font-mono"
                   />
                   <select
+                    name="quota-unit"
+                    aria-label="Quota unit"
                     value={quotaUnit}
                     onChange={(e) => setQuotaUnit(e.target.value as "GiB" | "TiB")}
                     className="h-8 rounded-md border border-line-strong bg-surface px-2 text-xs text-ink"
@@ -313,14 +321,14 @@ function CreateBucketModal({
           </div>
         </form>
 
-        {/* Right column: Explanatory MinIO sidebar */}
+        {/* Right column: explanatory sidebar */}
         <div className="space-y-4 rounded-xl border border-line bg-surface p-5 text-xs text-muted shadow-sm">
           <div className="flex items-center gap-2 font-bold text-ink text-sm">
             <Archive className="size-4 text-accent" />
             <span>Buckets</span>
           </div>
           <p className="leading-relaxed">
-            MinIO uses buckets to organize objects. A bucket is similar to a folder or directory in a
+            bin uses buckets to organize objects. A bucket is similar to a folder or directory in a
             filesystem, where each bucket can hold an arbitrary number of objects.
           </p>
           <div className="space-y-3 pt-2">
@@ -382,7 +390,7 @@ export function BucketsPage() {
 
   return (
     <div className="space-y-5">
-      {/* MinIO style Header */}
+      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold tracking-tight text-ink">Object Browser</h1>
         <Button
@@ -410,7 +418,7 @@ export function BucketsPage() {
         </IconButton>
       </div>
 
-      {/* MinIO style Buckets Table */}
+      {/* Buckets Table */}
       <div className="overflow-hidden rounded-card border border-line bg-surface shadow-sm">
         {buckets === null ? (
           <div className="flex justify-center py-20">
@@ -449,7 +457,7 @@ export function BucketsPage() {
                   <td className="py-3 pr-3 font-mono text-xs text-muted">{count(b.objects)}</td>
                   <td className="py-3 pr-3 font-mono text-xs text-muted">{bytes(b.size)}</td>
                   <td className="py-3 pr-4 font-mono text-xs font-semibold text-ink">
-                    {minioAccessLabel(b)}
+                    {bucketAccessLabel(b)}
                   </td>
                   <td className="py-3 pr-4 text-right">
                     <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>

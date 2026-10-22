@@ -65,6 +65,24 @@ func (s Scope) Allows(a Action, bucket string) bool {
 	return a == ListBuckets || s.AllowsBucket(bucket)
 }
 
+// Grants is the effective access of a key: everything any one of its scopes
+// allows. A key outside groups has its own scope; a group member has the
+// scopes of its enabled groups. No grants means no access.
+type Grants []Scope
+
+// FullAccess is what root has.
+var FullAccess = Grants{{}}
+
+// AllowsBucket reports whether some scope lets the key touch bucket.
+func (g Grants) AllowsBucket(bucket string) bool {
+	return slices.ContainsFunc(g, func(s Scope) bool { return s.AllowsBucket(bucket) })
+}
+
+// Allows reports whether some scope lets the key perform a on bucket.
+func (g Grants) Allows(a Action, bucket string) bool {
+	return slices.ContainsFunc(g, func(s Scope) bool { return s.Allows(a, bucket) })
+}
+
 // --- bucket policy ---------------------------------------------------------------
 
 // Access is what an anonymous rule grants under its prefix.

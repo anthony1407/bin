@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -88,10 +89,13 @@ export function Field({ label, hint, error, children }: { label: string; hint?: 
   );
 }
 
-export function Input({ className, mono, ...rest }: ComponentProps<"input"> & { mono?: boolean }) {
+export function Input({ className, mono, id, ...rest }: ComponentProps<"input"> & { mono?: boolean }) {
+  // Browsers want an id (or name) on every field, for autofill and labels.
+  const autoId = useId();
   return (
     <input
       {...rest}
+      id={id ?? autoId}
       className={cx(
         // Full width unless the caller sets one (two width classes would conflict).
         !/(^|\s)w-/.test(className ?? "") && "w-full",
@@ -162,10 +166,10 @@ export function PageHeader({ title, subtitle, actions }: { title: ReactNode; sub
 const CUBE_LID = "M50 13 L73 25.5 L50 38 L27 25.5 Z";
 const CUBE_BOX = "M20 31 L37 40 L37 60 L53 68.5 L53 46 L80 31 L80 66 L50 84 L20 66 Z";
 
-/** The bin mark, in the brand indigo unless a text colour is given. */
+/** The bin mark, drawn in the current text colour so it reads on any badge behind it. */
 export function BinMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="12 8 76 81" className={cx("text-accent", className)} aria-hidden="true">
+    <svg viewBox="12 8 76 81" className={className} aria-hidden="true">
       <g fill="currentColor" stroke="currentColor" strokeWidth="5" strokeLinejoin="round">
         <path d={CUBE_LID} />
         <path d={CUBE_BOX} />
@@ -217,13 +221,16 @@ export function Modal({
   children,
   footer,
   wide,
+  size = wide ? "lg" : "md",
 }: {
   open: boolean;
   onClose: () => void;
   title: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  /** Shorthand for size="lg". */
   wide?: boolean;
+  size?: "md" | "lg" | "xl";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const openRef = useRef(open);
@@ -254,7 +261,7 @@ export function Modal({
       onClick={(e) => e.target === ref.current && onClose()}
       className={cx(
         "m-auto w-[calc(100%-2rem)] rounded-card border border-line bg-surface p-0 text-ink shadow-xl backdrop:bg-black/40",
-        wide ? "max-w-2xl" : "max-w-md",
+        { md: "max-w-md", lg: "max-w-2xl", xl: "max-w-5xl" }[size],
       )}
     >
       {open && (

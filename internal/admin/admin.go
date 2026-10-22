@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"bin/internal/audit"
 	"bin/internal/auth"
 	"bin/internal/buildinfo"
 	"bin/internal/server"
@@ -26,6 +27,7 @@ import (
 type Options struct {
 	Store   *storage.Store
 	Keys    *auth.Keyring
+	Audit   *audit.Recorder // records console changes and sign-ins; nil records nothing
 	Region  string
 	DataDir string
 	// S3Addr is the S3 listen address, used to build share links when
@@ -59,8 +61,10 @@ func NewHandler(opts Options) http.Handler {
 	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter()}
 
 	mux := http.NewServeMux()
-	public := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, fn) }
-	private := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, h.requireSession(fn)) }
+	public := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, h.audited(pattern, fn)) }
+	private := func(pattern string, fn http.HandlerFunc) {
+		mux.Handle(pattern, h.requireSession(h.audited(pattern, fn)))
+	}
 
 	public("GET /api/v1/health", h.health)
 	public("POST /api/v1/login", h.login)
@@ -92,6 +96,13 @@ func NewHandler(opts Options) http.Handler {
 	private("POST /api/v1/access-keys", h.createKey)
 	private("PATCH /api/v1/access-keys/{key}", h.updateKey)
 	private("DELETE /api/v1/access-keys/{key}", h.deleteKey)
+
+	private("GET /api/v1/groups", h.listGroups)
+	private("POST /api/v1/groups", h.createGroup)
+	private("PATCH /api/v1/groups/{name}", h.updateGroup)
+	private("DELETE /api/v1/groups/{name}", h.deleteGroup)
+
+	private("GET /api/v1/audit", h.listAudit)
 
 	private("GET /api/v1/settings", h.getSettings)
 	private("PUT /api/v1/settings", h.putSettings)
@@ -142,6 +153,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
+	if sw, ok := w.(*statusWriter); ok {
+		sw.errCode = code // for the audit log
+	}
 	writeJSON(w, status, apiError{Error: code, Message: message})
 }
 
@@ -182,6 +196,8 @@ func (h *Handler) storageError(w http.ResponseWriter, r *http.Request, err error
 		{storage.ErrIncompleteBody, 400, "incomplete_body", "The upload ended before all the announced bytes arrived."},
 		{storage.ErrNoSuchAccessKey, 404, "no_such_access_key", "The access key does not exist."},
 		{storage.ErrAccessKeyExists, 409, "access_key_exists", "The access key already exists."},
+		{storage.ErrNoSuchGroup, 404, "no_such_group", "The group does not exist."},
+		{storage.ErrGroupExists, 409, "group_exists", "A group with this name already exists."},
 	} {
 		if errors.Is(err, m.err) {
 			writeError(w, m.status, m.code, m.message)

@@ -75,16 +75,36 @@ func (k *Keyring) touch(ctx context.Context, accessKey string) {
 	k.Store.TouchAccessKey(ctx, accessKey, now)
 }
 
-// Scope returns what accessKey may do; root has full access.
-func (k *Keyring) Scope(ctx context.Context, accessKey string) (Scope, error) {
+// Grants returns what accessKey may do; root has full access. A key that
+// belongs to groups gets the scopes of its enabled groups instead of its own.
+func (k *Keyring) Grants(ctx context.Context, accessKey string) (Grants, error) {
 	if accessKey == k.RootAccessKey {
-		return Scope{}, nil
+		return FullAccess, nil
 	}
 	key, err := k.Store.GetAccessKey(ctx, accessKey)
 	if err != nil {
-		return Scope{}, err
+		return nil, err
 	}
-	return ParseScope(key.Scope)
+	groups, err := k.Store.KeyGroups(ctx, accessKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) == 0 {
+		own, err := ParseScope(key.Scope)
+		return Grants{own}, err
+	}
+	grants := Grants{}
+	for _, g := range groups {
+		if !g.Enabled {
+			continue
+		}
+		sc, err := ParseScope(g.Scope)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, sc)
+	}
+	return grants, nil
 }
 
 // --- key generation ---------------------------------------------------------------

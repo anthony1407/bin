@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  Check,
+  Copy,
   Eye,
   EyeOff,
   Plus,
@@ -13,8 +15,53 @@ import {
   UserPlus,
   Users as UsersIcon,
 } from "lucide-react";
-import { api, type AccessKey } from "../api";
+import { api, type AccessKey, type Group } from "../api";
 import { Button, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+
+function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator?.clipboard?.writeText && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => fallbackCopy(text),
+    );
+  }
+  return Promise.resolve(fallbackCopy(text));
+}
+
+function fallbackCopy(text: string): boolean {
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.style.position = "fixed";
+    el.style.opacity = "0";
+    document.body.appendChild(el);
+    el.select();
+    const successful = document.execCommand("copy");
+    document.body.removeChild(el);
+    return successful;
+  } catch {
+    return false;
+  }
+}
+
+function CopyButton({ text, label = "Copy to clipboard" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <IconButton
+      label={copied ? "Copied!" : label}
+      onClick={(e) => {
+        e.stopPropagation();
+        copyToClipboard(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+      className="text-muted hover:text-ink transition-colors"
+    >
+      {copied ? <Check className="size-4 text-ok" /> : <Copy className="size-4" />}
+    </IconButton>
+  );
+}
 
 const AVAILABLE_POLICIES = [
   { name: "consoleAdmin", desc: "Full administrative access to console and S3 APIs" },
@@ -38,12 +85,20 @@ export function UsersPage() {
   const [view, setView] = useState<"list" | "create">("list");
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
 
+  // Delete Confirmation State
+  const [deleteTarget, setDeleteTarget] = useState<
+    { type: "single"; user: AccessKey } | { type: "bulk"; count: number } | null
+  >(null);
+  const [deleting, setDeleting] = useState(false);
+
   // Create User Form State
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [policySearch, setPolicySearch] = useState("");
   const [assignedPolicies, setAssignedPolicies] = useState<string[]>(["readwrite"]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [assignedGroups, setAssignedGroups] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [createdUser, setCreatedUser] = useState<AccessKey | null>(null);
   const toast = useToast();
@@ -59,6 +114,7 @@ export function UsersPage() {
 
   useEffect(() => {
     load();
+    api.groups().then(setGroups).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -82,6 +138,7 @@ export function UsersPage() {
     setUsername("");
     setPassword("");
     setAssignedPolicies(["readwrite"]);
+    setAssignedGroups([]);
     setPolicySearch("");
   }
 
@@ -100,6 +157,7 @@ export function UsersPage() {
         name: trimmedUser,
         readOnly: isReadOnly,
         buckets: [],
+        groups: assignedGroups,
       });
       setCreatedUser(res);
       toast("ok", `User ${trimmedUser} created successfully.`);
@@ -113,17 +171,31 @@ export function UsersPage() {
     }
   }
 
-  async function handleDeleteSelected() {
-    if (selectedUsers.size === 0) return;
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      for (const ak of selectedUsers) {
-        await api.deleteAccessKey(ak);
+      if (deleteTarget.type === "single") {
+        await api.deleteAccessKey(deleteTarget.user.accessKey);
+        toast("ok", `User ${deleteTarget.user.name || deleteTarget.user.accessKey} deleted.`);
+        setSelectedUsers((prev) => {
+          const next = new Set(prev);
+          next.delete(deleteTarget.user.accessKey);
+          return next;
+        });
+      } else {
+        for (const ak of selectedUsers) {
+          await api.deleteAccessKey(ak);
+        }
+        toast("ok", `${selectedUsers.size} user(s) deleted.`);
+        setSelectedUsers(new Set());
       }
-      toast("ok", `${selectedUsers.size} user(s) deleted.`);
-      setSelectedUsers(new Set());
+      setDeleteTarget(null);
       load();
     } catch (e) {
       toast("error", errorText(e));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -158,11 +230,18 @@ export function UsersPage() {
               <h1 className="text-xl font-bold tracking-tight text-ink">Create User</h1>
             </div>
 
-            <div className="space-y-5 rounded-card border border-line bg-surface p-5 shadow-sm">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSaveUser();
+              }}
+              className="space-y-5 rounded-card border border-line bg-surface p-5 shadow-sm"
+            >
               {/* User Name */}
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-ink">User Name</label>
+                <label htmlFor="users-user-name" className="mb-1.5 block text-sm font-medium text-ink">User Name</label>
                 <Input
+                  id="users-user-name"
                   autoFocus
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -173,7 +252,7 @@ export function UsersPage() {
               {/* Password */}
               <div>
                 <div className="mb-1.5 flex items-center justify-between">
-                  <label className="text-sm font-medium text-ink">Password</label>
+                  <label htmlFor="users-password" className="text-sm font-medium text-ink">Password</label>
                   <button
                     type="button"
                     onClick={() => setPassword(generateSecret())}
@@ -184,7 +263,9 @@ export function UsersPage() {
                 </div>
                 <div className="relative">
                   <Input
+                    id="users-password"
                     type={showPassword ? "text" : "password"}
+                    autoComplete="new-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Enter password or leave blank for auto-generation"
@@ -202,13 +283,15 @@ export function UsersPage() {
 
               {/* Assign Policies */}
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-ink">Assign Policies</label>
+                <span className="mb-1.5 block text-sm font-medium text-ink">Assign Policies</span>
                 <div className="rounded-md border border-line bg-surface overflow-hidden">
                   <div className="border-b border-line p-2">
                     <div className="relative">
                       <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
                       <input
-                        type="text"
+                        type="search"
+                        name="policy-search"
+                        aria-label="Search policies"
                         value={policySearch}
                         onChange={(e) => setPolicySearch(e.target.value)}
                         placeholder="Start typing to search for a Policy"
@@ -228,6 +311,8 @@ export function UsersPage() {
                       >
                         <input
                           type="checkbox"
+                          name="policies"
+                          value={p.name}
                           checked={assignedPolicies.includes(p.name)}
                           onChange={() => togglePolicy(p.name)}
                           className="size-4 accent-[var(--accent)]"
@@ -242,16 +327,58 @@ export function UsersPage() {
                 </div>
               </div>
 
-              <div className="text-xs text-faint">No Groups Available</div>
+              {/* Groups */}
+              <div>
+                <span className="mb-1.5 block text-sm font-medium text-ink">Groups</span>
+                {groups.length === 0 ? (
+                  <div className="text-xs text-faint">
+                    No groups yet. Create them in Identity → Groups.
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      {groups.map((g) => (
+                        <label
+                          key={g.name}
+                          className={cx(
+                            "flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs",
+                            assignedGroups.includes(g.name) ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            name="groups"
+                            value={g.name}
+                            checked={assignedGroups.includes(g.name)}
+                            onChange={() =>
+                              setAssignedGroups((prev) =>
+                                prev.includes(g.name) ? prev.filter((x) => x !== g.name) : [...prev, g.name],
+                              )
+                            }
+                            className="size-3.5 accent-[var(--accent)]"
+                          />
+                          <span className="font-mono">{g.name}</span>
+                          {!g.enabled && <span className="text-faint">(disabled)</span>}
+                        </label>
+                      ))}
+                    </div>
+                    {assignedGroups.length > 0 && (
+                      <p className="mt-1.5 text-xs text-muted">
+                        With groups, the user's access comes from the groups and the policies above are not used.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
 
               {/* Actions */}
               <div className="flex justify-end gap-2.5 pt-2">
-                <Button onClick={handleClear}>Clear</Button>
-                <Button variant="primary" busy={saving} onClick={handleSaveUser}>
+                <Button type="button" onClick={handleClear}>Clear</Button>
+                <Button type="submit" variant="primary" busy={saving}>
                   Save
                 </Button>
               </div>
-            </div>
+            </form>
           </div>
 
           {/* Learn More Sidebar (1 col) */}
@@ -263,7 +390,7 @@ export function UsersPage() {
               Learn more about the Users feature
             </h3>
             <p className="text-xs leading-relaxed text-muted">
-              A MinIO user consists of a unique access key (username) and corresponding secret key
+              A bin user consists of a unique access key (username) and corresponding secret key
               (password). Clients must authenticate their identity by specifying both a valid
               access key and secret key of an existing user.
             </p>
@@ -300,7 +427,7 @@ export function UsersPage() {
             <Button
               variant="danger"
               icon={<Trash2 className="size-4" />}
-              onClick={handleDeleteSelected}
+              onClick={() => setDeleteTarget({ type: "bulk", count: selectedUsers.size })}
             >
               Delete Selected ({selectedUsers.size})
             </Button>
@@ -327,7 +454,7 @@ export function UsersPage() {
         </IconButton>
       </div>
 
-      {/* Educational Banner (MinIO style) */}
+      {/* Educational Banner */}
       <div className="rounded-card border border-line bg-surface p-5 shadow-sm space-y-3">
         <div className="flex items-center gap-2.5">
           <div className="flex size-7 items-center justify-center rounded bg-accent/10 text-accent">
@@ -342,7 +469,7 @@ export function UsersPage() {
           shared permissions among users.
         </p>
         <p className="text-xs leading-relaxed text-muted">
-          MinIO uses Policy-Based Access Control (PBAC) to define the authorized actions and resources
+          bin uses Policy-Based Access Control (PBAC) to define the authorized actions and resources
           to which an authenticated user has access. Each policy describes one or more actions and
           conditions that outline permissions.
         </p>
@@ -372,6 +499,8 @@ export function UsersPage() {
                 <th className="w-10 py-2.5 pl-4">
                   <input
                     type="checkbox"
+                    name="select-all"
+                    aria-label="Select all users"
                     checked={selectedUsers.size === filteredUsers.length && filteredUsers.length > 0}
                     onChange={(e) =>
                       setSelectedUsers(
@@ -398,6 +527,9 @@ export function UsersPage() {
                     <td className="py-3 pl-4">
                       <input
                         type="checkbox"
+                        name="selected-users"
+                        value={u.accessKey}
+                        aria-label={`Select ${u.name || u.accessKey}`}
                         checked={isSelected}
                         onChange={(e) => {
                           const next = new Set(selectedUsers);
@@ -414,7 +546,12 @@ export function UsersPage() {
                         <span>{u.name || "Untitled"}</span>
                       </div>
                     </td>
-                    <td className="py-3 pr-3 font-mono text-xs text-muted">{u.accessKey}</td>
+                    <td className="py-3 pr-3 font-mono text-xs text-muted">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate">{u.accessKey}</span>
+                        <CopyButton text={u.accessKey} label="Copy access key" />
+                      </div>
+                    </td>
                     <td className="py-3 pr-3">
                       <button
                         type="button"
@@ -431,18 +568,24 @@ export function UsersPage() {
                       </button>
                     </td>
                     <td className="py-3 pr-3">
-                      <span className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-muted">
-                        {u.readOnly ? "readonly" : "readwrite"}
-                      </span>
+                      {u.groups.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {u.groups.map((g) => (
+                            <span key={g} className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] text-accent-ink" title="Access from this group">
+                              group: {g}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-muted">
+                          {u.readOnly ? "readonly" : "readwrite"}
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 pr-4 text-right">
                       <IconButton
                         label="Delete User"
-                        onClick={async () => {
-                          await api.deleteAccessKey(u.accessKey);
-                          toast("ok", `User deleted.`);
-                          load();
-                        }}
+                        onClick={() => setDeleteTarget({ type: "single", user: u })}
                         className="hover:text-danger"
                       >
                         <Trash2 className="size-4" />
@@ -464,9 +607,21 @@ export function UsersPage() {
           title="User Created Successfully"
           wide={true}
           footer={
-            <Button variant="primary" onClick={() => setCreatedUser(null)}>
-              I saved the credentials
-            </Button>
+            <div className="flex w-full items-center justify-between">
+              <Button
+                variant="secondary"
+                icon={<Copy className="size-4" />}
+                onClick={() => {
+                  const creds = `Access Key (Username): ${createdUser.accessKey}\nSecret Key (Password): ${createdUser.secretKey ?? ""}`;
+                  copyToClipboard(creds).then(() => toast("ok", "Credentials copied to clipboard."));
+                }}
+              >
+                Copy Credentials
+              </Button>
+              <Button variant="primary" onClick={() => setCreatedUser(null)}>
+                I saved the credentials
+              </Button>
+            </div>
           }
         >
           <div className="space-y-4">
@@ -477,16 +632,58 @@ export function UsersPage() {
             <div>
               <div className="mb-1 text-xs font-medium text-muted">Access Key (Username)</div>
               <div className="flex items-center gap-2 rounded-md border border-line bg-sunken px-3 py-1.5 font-mono text-sm">
-                <span className="flex-1 truncate">{createdUser.accessKey}</span>
+                <span className="flex-1 truncate select-all">{createdUser.accessKey}</span>
+                <CopyButton text={createdUser.accessKey} label="Copy access key" />
               </div>
             </div>
             <div>
               <div className="mb-1 text-xs font-medium text-muted">Secret Key (Password)</div>
               <div className="flex items-center gap-2 rounded-md border border-line bg-sunken px-3 py-1.5 font-mono text-sm">
-                <span className="flex-1 truncate">{createdUser.secretKey}</span>
+                <span className="flex-1 truncate select-all">{createdUser.secretKey ?? ""}</span>
+                <CopyButton text={createdUser.secretKey ?? ""} label="Copy secret key" />
               </div>
             </div>
           </div>
+        </Modal>
+      )}
+
+      {/* Delete User Confirmation Modal */}
+      {deleteTarget && (
+        <Modal
+          open={!!deleteTarget}
+          onClose={() => !deleting && setDeleteTarget(null)}
+          title={deleteTarget.type === "bulk" ? `Delete ${deleteTarget.count} Users` : "Delete User"}
+          footer={
+            <div className="flex w-full items-center justify-end gap-2">
+              <Button disabled={deleting} onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                icon={<Trash2 className="size-4" />}
+                busy={deleting}
+                onClick={confirmDelete}
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </Button>
+            </div>
+          }
+        >
+          {deleteTarget.type === "single" ? (
+            <p className="text-sm text-muted">
+              Are you sure you want to delete user{" "}
+              <span className="font-semibold text-ink font-mono">{deleteTarget.user.name || deleteTarget.user.accessKey}</span>
+              {deleteTarget.user.name && (
+                <> (<span className="font-mono text-xs">{deleteTarget.user.accessKey}</span>)</>
+              )}
+              ? Applications or clients using these credentials will immediately lose access.
+            </p>
+          ) : (
+            <p className="text-sm text-muted">
+              Are you sure you want to delete <span className="font-semibold text-ink">{deleteTarget.count}</span> selected users?
+              This action cannot be undone and any applications or clients using these credentials will immediately lose access.
+            </p>
+          )}
         </Modal>
       )}
     </div>

@@ -45,7 +45,7 @@ LOG=$(docker logs "$HOST" 2>&1)
 check "json: startup record" '"msg":"bin started"' "$LOG"
 check "json: request record" '"op":"ListBuckets"' "$LOG"
 
-# Custom ports, MinIO style: bin server /data --address ... --console-address ...
+# Custom ports: bin server /data --address ... --console-address ...
 SERVER_ARGS=(server /data --address :9100 --console-address :9101)
 S3_PORT=9100
 CONSOLE_PORT=9101

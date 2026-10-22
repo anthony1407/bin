@@ -172,7 +172,7 @@ export function SpeedtestPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl pb-16">
+    <div className="space-y-6 pb-16">
       <PageHeader
         title="Network & Storage Speedtest"
         subtitle="Benchmark real-time transfer bandwidth, latency, and disk write throughput directly with your bin S3 server."

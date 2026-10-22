@@ -350,7 +350,7 @@ export function BucketSettingsPage() {
   const access = accessLabel(bucket);
 
   return (
-    <div className="max-w-5xl">
+    <div>
       <div className="mb-8">
         <Link to={`/buckets/${encodeURIComponent(name)}`} className="label-strip hover:text-ink">
           ← {name}
@@ -752,6 +752,7 @@ function LifecycleEditor({ bucket }: { bucket: Bucket }) {
                   <label className="flex items-center gap-2 text-xs">
                     <input
                       type="checkbox"
+                      name="abort-multipart"
                       checked={rule.abortMultipart}
                       onChange={(e) => updateRule(rule.id, { abortMultipart: e.target.checked })}
                       className="size-4 accent-[var(--accent)]"

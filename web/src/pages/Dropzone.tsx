@@ -210,6 +210,7 @@ export function DropzonePage() {
               <input
                 ref={fileInputRef}
                 type="file"
+                name="files"
                 multiple
                 hidden
                 onChange={(e) => handleFileSelect(e.target.files)}
@@ -275,7 +276,7 @@ export function DropzonePage() {
 
   // --- Admin Manager View ---
   return (
-    <div className="space-y-6 max-w-5xl pb-16">
+    <div className="space-y-6 pb-16">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
           title="Upload Dropzone Links"
@@ -384,8 +385,9 @@ export function DropzonePage() {
       >
         <div className="space-y-4">
           <div>
-            <label className="label-strip mb-1.5 block">Target Bucket</label>
+            <label htmlFor="dropzone-target-bucket" className="label-strip mb-1.5 block">Target Bucket</label>
             <Select
+              id="dropzone-target-bucket"
               aria-label="Target Bucket"
               value={selectedBucket}
               onChange={setSelectedBucket}
@@ -394,8 +396,9 @@ export function DropzonePage() {
           </div>
 
           <div>
-            <label className="label-strip mb-1.5 block">Folder Prefix (Optional)</label>
+            <label htmlFor="dropzone-folder-prefix" className="label-strip mb-1.5 block">Folder Prefix (Optional)</label>
             <Input
+              id="dropzone-folder-prefix"
               value={selectedPrefix}
               onChange={(e) => setSelectedPrefix(e.target.value)}
               placeholder="e.g. client-submissions/2026/"
@@ -405,8 +408,9 @@ export function DropzonePage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label-strip mb-1.5 block">Link Expiration</label>
+              <label htmlFor="dropzone-link-expiration" className="label-strip mb-1.5 block">Link Expiration</label>
               <Select
+                id="dropzone-link-expiration"
                 aria-label="Link Expiration"
                 value={expiryHours}
                 onChange={setExpiryHours}
@@ -420,8 +424,9 @@ export function DropzonePage() {
             </div>
 
             <div>
-              <label className="label-strip mb-1.5 block">Max File Size</label>
+              <label htmlFor="dropzone-max-file-size" className="label-strip mb-1.5 block">Max File Size</label>
               <Select
+                id="dropzone-max-file-size"
                 aria-label="Max File Size"
                 value={maxSizeMB}
                 onChange={setMaxSizeMB}
@@ -436,8 +441,9 @@ export function DropzonePage() {
           </div>
 
           <div>
-            <label className="label-strip mb-1.5 block">Note / Instructions for Uploader</label>
+            <label htmlFor="dropzone-note-instructions-for-uploader" className="label-strip mb-1.5 block">Note / Instructions for Uploader</label>
             <Input
+              id="dropzone-note-instructions-for-uploader"
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="e.g. Please upload your documents for verification"

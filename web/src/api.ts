@@ -115,10 +115,45 @@ export interface AccessKey {
   expired: boolean;
   buckets: string[];
   readOnly: boolean;
+  /** When non-empty, these groups decide the key's access instead of buckets/readOnly. */
+  groups: string[];
+}
+
+export interface Group {
+  name: string;
+  description: string;
+  enabled: boolean;
+  createdAt: string;
+  buckets: string[];
+  readOnly: boolean;
+  members: string[];
+}
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  source: "console" | "s3";
+  actor: string;
+  action: string;
+  bucket?: string;
+  resource?: string;
+  status: number;
+  error?: string;
+  remote?: string;
+  requestId?: string;
+}
+
+export interface AuditFilter {
+  source?: "" | "console" | "s3";
+  q?: string;
+  failed?: boolean;
+  before?: number;
+  limit?: number;
 }
 
 export interface Settings {
   shareMaxExpirySeconds: number;
+  auditRetentionDays: number;
   publicUrl: string;
   region: string;
 }
@@ -179,14 +214,34 @@ export const api = {
     `/api/v1/buckets/${enc(bucket)}/download?key=${enc(key)}${inline ? "&inline=1" : ""}`,
 
   accessKeys: () => request<{ accessKeys: AccessKey[] }>("GET", "/access-keys").then((r) => r.accessKeys),
-  createAccessKey: (body: { name: string; expiresAt?: string; buckets?: string[]; readOnly?: boolean }) =>
+  createAccessKey: (body: { name: string; expiresAt?: string; buckets?: string[]; readOnly?: boolean; groups?: string[] }) =>
     request<AccessKey>("POST", "/access-keys", body),
-  updateAccessKey: (key: string, body: Partial<{ name: string; enabled: boolean; expiresAt: string; noExpiry: boolean; buckets: string[]; readOnly: boolean }>) =>
-    request<AccessKey>("PATCH", `/access-keys/${enc(key)}`, body),
+  updateAccessKey: (
+    key: string,
+    body: Partial<{ name: string; enabled: boolean; expiresAt: string; noExpiry: boolean; buckets: string[]; readOnly: boolean; groups: string[] }>,
+  ) => request<AccessKey>("PATCH", `/access-keys/${enc(key)}`, body),
   deleteAccessKey: (key: string) => request<void>("DELETE", `/access-keys/${enc(key)}`),
+
+  groups: () => request<{ groups: Group[] }>("GET", "/groups").then((r) => r.groups),
+  createGroup: (body: { name: string; description?: string; buckets?: string[]; readOnly?: boolean; members?: string[] }) =>
+    request<Group>("POST", "/groups", body),
+  updateGroup: (name: string, body: Partial<{ description: string; enabled: boolean; buckets: string[]; readOnly: boolean; members: string[] }>) =>
+    request<Group>("PATCH", `/groups/${enc(name)}`, body),
+  deleteGroup: (name: string) => request<void>("DELETE", `/groups/${enc(name)}`),
+
+  audit: (f: AuditFilter) => {
+    const q = new URLSearchParams();
+    if (f.source) q.set("source", f.source);
+    if (f.q) q.set("q", f.q);
+    if (f.failed) q.set("failed", "true");
+    if (f.before) q.set("before", String(f.before));
+    if (f.limit) q.set("limit", String(f.limit));
+    return request<{ entries: AuditEntry[]; nextBefore?: number }>("GET", `/audit?${q}`);
+  },
 
   settings: () => request<Settings>("GET", "/settings"),
   saveSettings: (shareMaxExpirySeconds: number) => request<Settings>("PUT", "/settings", { shareMaxExpirySeconds }),
+  saveAuditRetention: (auditRetentionDays: number) => request<Settings>("PUT", "/settings", { auditRetentionDays }),
   revokeShareLinks: () => request<void>("POST", "/settings/revoke-share-links"),
   scrub: () => request<ScrubStatus>("GET", "/scrub"),
   /** Scans the given buckets, or all of them when the list is empty. */

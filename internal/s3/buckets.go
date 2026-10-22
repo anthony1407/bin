@@ -34,9 +34,9 @@ func (h *Handler) listBuckets(w http.ResponseWriter, r *http.Request, _ Request)
 		return err
 	}
 	res := listAllMyBucketsResult{Owner: ownerXML(h.opts.Owner)}
-	scope := scopeFrom(r.Context())
+	grants := grantsFrom(r.Context())
 	for _, b := range buckets {
-		if scope.AllowsBucket(b.Name) {
+		if grants.AllowsBucket(b.Name) {
 			res.Buckets.Bucket = append(res.Buckets.Bucket, bucketXML{Name: b.Name, CreationDate: timeXML(b.CreatedAt)})
 		}
 	}

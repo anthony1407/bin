@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Copy, KeyRound, Pencil, Plus, Trash2, TriangleAlert } from "lucide-react";
-import Editor from "@monaco-editor/react";
+import Editor from "../components/CodeEditor";
 import { api, type AccessKey, type Bucket } from "../api";
 import { date, relative } from "../lib/format";
 import { Badge, Button, EmptyState, Field, IconButton, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
@@ -88,7 +88,7 @@ function parsePolicyJson(json: string): { buckets?: string[]; readOnly?: boolean
   }
 }
 
-// --- create / edit form (MinIO style with Monaco Editor) --------------------------------
+// --- create / edit form (with the Monaco editor) ---------------------------------------
 
 interface Draft {
   name: string;
@@ -153,7 +153,7 @@ function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Dra
       {/* 1. Access Key Policy with Monaco Editor */}
       <div>
         <div className="mb-1.5 flex items-center justify-between">
-          <label className="text-sm font-medium text-ink">Access Key Policy</label>
+          <span className="text-sm font-medium text-ink">Access Key Policy</span>
           <button
             type="button"
             onClick={() => setShowBucketPicker((p) => !p)}
@@ -171,6 +171,7 @@ function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Dra
               <label className="flex items-center gap-2 font-medium">
                 <input
                   type="checkbox"
+                  name="all-buckets"
                   checked={all}
                   onChange={(e) => setAllBuckets(e.target.checked)}
                   className="size-4 accent-[var(--accent)]"
@@ -180,6 +181,7 @@ function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Dra
               <label className="flex items-center gap-2 font-medium">
                 <input
                   type="checkbox"
+                  name="read-only"
                   checked={draft.readOnly}
                   onChange={(e) => {
                     const ro = e.target.checked;
@@ -200,6 +202,7 @@ function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Dra
                   <label key={b.name} className="flex items-center gap-2 font-mono">
                     <input
                       type="checkbox"
+                      name="buckets"
                       checked={draft.buckets.includes(b.name)}
                       onChange={() => toggleBucket(b.name)}
                       className="size-3.5 accent-[var(--accent)]"
@@ -261,6 +264,7 @@ function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Dra
           <label className="flex items-center gap-2.5 text-xs text-muted cursor-pointer select-none">
             <input
               type="checkbox"
+              name="no-expiry"
               checked={isNever}
               onChange={(e) => {
                 if (e.target.checked) {
@@ -296,7 +300,7 @@ function KeyForm({ draft, setDraft, buckets }: { draft: Draft; setDraft: (d: Dra
         />
       </Field>
 
-      {/* 5. Status (MinIO Switch toggle) */}
+      {/* 5. Status (switch toggle) */}
       <div className="flex items-center justify-between pt-1">
         <span className="text-sm font-medium text-ink">Status</span>
         <label className="flex cursor-pointer items-center gap-2.5 select-none text-xs">
@@ -524,7 +528,14 @@ export function AccessKeysPage() {
                     </td>
                     <td className="hidden py-3 pr-3 md:table-cell">
                       <div className="flex flex-wrap items-center gap-1">
-                        {k.buckets.length === 0 ? (
+                        {k.groups.length > 0 ? (
+                          // Groups replace the key's own scope.
+                          k.groups.map((g) => (
+                            <span key={g} className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] text-accent-ink" title="Access from this group">
+                              group: {g}
+                            </span>
+                          ))
+                        ) : k.buckets.length === 0 ? (
                           <span className="text-xs">All buckets</span>
                         ) : (
                           k.buckets.map((b) => (
@@ -533,7 +544,7 @@ export function AccessKeysPage() {
                             </span>
                           ))
                         )}
-                        {k.readOnly && <Badge tone="accent">read-only</Badge>}
+                        {k.groups.length === 0 && k.readOnly && <Badge tone="accent">read-only</Badge>}
                       </div>
                     </td>
                     <td className="hidden py-3 pr-3 text-xs lg:table-cell">{k.expiresAt ? date(k.expiresAt) : <span className="text-faint">Never</span>}</td>
@@ -541,7 +552,7 @@ export function AccessKeysPage() {
                     <td className="py-3 pr-3">
                       <div className="flex items-center justify-end gap-1">
                         <label className="relative mr-1 inline-flex cursor-pointer items-center" title={k.enabled ? "Disable" : "Enable"}>
-                          <input type="checkbox" className="peer sr-only" checked={k.enabled} onChange={(e) => setEnabled(k, e.target.checked)} aria-label={`Enabled ${k.accessKey}`} />
+                          <input type="checkbox" name="enabled" className="peer sr-only" checked={k.enabled} onChange={(e) => setEnabled(k, e.target.checked)} aria-label={`Enabled ${k.accessKey}`} />
                           <span className="h-5 w-9 rounded-full bg-line-strong transition-colors peer-checked:bg-ok peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40" />
                           <span className="absolute left-0.5 size-4 rounded-full bg-surface shadow transition-transform peer-checked:translate-x-4" />
                         </label>

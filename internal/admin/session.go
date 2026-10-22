@@ -65,6 +65,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	akOK := subtle.ConstantTimeCompare([]byte(in.AccessKey), []byte(h.opts.Keys.RootAccessKey)) == 1
 	skOK := subtle.ConstantTimeCompare([]byte(in.SecretKey), []byte(h.opts.Keys.RootSecretKey)) == 1
+	// An unknown access key is not recorded: people paste secrets into the wrong field.
+	if akOK {
+		setAuditActor(r, in.AccessKey)
+	} else {
+		setAuditActor(r, "(unknown)")
+	}
 	if !akOK || !skOK {
 		h.limiter.fail(ip)
 		server.Annotate(r.Context(), slog.String("login", "failed"))
