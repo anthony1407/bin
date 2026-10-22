@@ -4,11 +4,13 @@ import {
   Archive,
   ChevronDown,
   ChevronUp,
+  Code2,
   Globe,
   Lock,
   Plus,
   RefreshCw,
   Search,
+  Settings2,
   SlidersHorizontal,
 } from "lucide-react";
 import { api, type Bucket } from "../api";
@@ -426,6 +428,7 @@ export function BucketsPage() {
                 <th className="py-2.5 pr-3 font-semibold text-ink">Objects</th>
                 <th className="py-2.5 pr-3 font-semibold text-ink">Size</th>
                 <th className="py-2.5 pr-4 font-semibold text-ink">Access</th>
+                <th className="py-2.5 pr-4 text-right font-semibold text-ink">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -447,6 +450,26 @@ export function BucketsPage() {
                   <td className="py-3 pr-3 font-mono text-xs text-muted">{bytes(b.size)}</td>
                   <td className="py-3 pr-4 font-mono text-xs font-semibold text-ink">
                     {minioAccessLabel(b)}
+                  </td>
+                  <td className="py-3 pr-4 text-right">
+                    <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/connect?bucket=${encodeURIComponent(b.name)}`)}
+                        title="Connect SDK code generator"
+                        className="flex size-7 items-center justify-center rounded text-muted hover:bg-accent/15 hover:text-accent transition-colors"
+                      >
+                        <Code2 className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/buckets/${encodeURIComponent(b.name)}/settings`)}
+                        title="Bucket settings"
+                        className="flex size-7 items-center justify-center rounded text-muted hover:bg-sunken hover:text-ink transition-colors"
+                      >
+                        <Settings2 className="size-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

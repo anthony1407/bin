@@ -99,6 +99,10 @@ func NewHandler(opts Options) http.Handler {
 	private("GET /api/v1/scrub", h.scrubStatus)
 	private("POST /api/v1/scrub", h.startScrub)
 
+	private("GET /api/v1/speedtest/ping", h.speedtestPing)
+	private("GET /api/v1/speedtest/download", h.speedtestDownload)
+	private("POST /api/v1/speedtest/upload", h.speedtestUpload)
+
 	public("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Unknown API endpoint.")
 	})

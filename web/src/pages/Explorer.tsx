@@ -3,8 +3,11 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   Check,
   ChevronLeft,
+  Code2,
   Copy,
   Download,
+  ExternalLink,
+  Eye,
   File,
   FileArchive,
   FileAudio,
@@ -14,14 +17,18 @@ import {
   FileVideo,
   Folder,
   FolderPlus,
+  Info,
+  Maximize2,
   RefreshCw,
   Search,
   Settings2,
   Share2,
+  Tag,
   Trash2,
   Upload,
   X,
 } from "lucide-react";
+import Editor from "@monaco-editor/react";
 import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo } from "../api";
 import { baseName, bytes, count, dateTime, relative } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
@@ -29,10 +36,11 @@ import { accessLabel } from "./Buckets";
 
 // --- file kinds ------------------------------------------------------------------
 
-type Kind = "image" | "video" | "audio" | "text" | "archive" | "code" | "other";
+type Kind = "image" | "video" | "audio" | "pdf" | "text" | "archive" | "code" | "other";
 
 function kindOf(key: string, contentType = ""): Kind {
   const ext = key.slice(key.lastIndexOf(".") + 1).toLowerCase();
+  if (ext === "pdf" || contentType.includes("pdf")) return "pdf";
   if (contentType.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "bmp", "ico"].includes(ext)) return "image";
   if (contentType.startsWith("video/") || ["mp4", "webm", "mov", "m4v", "mkv"].includes(ext)) return "video";
   if (contentType.startsWith("audio/") || ["mp3", "wav", "ogg", "flac", "m4a"].includes(ext)) return "audio";
@@ -42,10 +50,35 @@ function kindOf(key: string, contentType = ""): Kind {
   return "other";
 }
 
+function getMonacoLanguage(key: string, contentType = ""): string {
+  const ext = key.slice(key.lastIndexOf(".") + 1).toLowerCase();
+  if (ext === "json") return "json";
+  if (["js", "jsx", "mjs", "cjs"].includes(ext)) return "javascript";
+  if (["ts", "tsx"].includes(ext)) return "typescript";
+  if (["py", "pyw"].includes(ext)) return "python";
+  if (ext === "go") return "go";
+  if (ext === "rs") return "rust";
+  if (["html", "htm"].includes(ext)) return "html";
+  if (["css", "scss", "less"].includes(ext)) return "css";
+  if (["yml", "yaml"].includes(ext)) return "yaml";
+  if (ext === "sql") return "sql";
+  if (["sh", "bash", "zsh"].includes(ext)) return "shell";
+  if (["xml", "svg"].includes(ext)) return "xml";
+  if (["md", "markdown"].includes(ext)) return "markdown";
+  if (ext === "c" || ext === "h") return "c";
+  if (ext === "cpp" || ext === "hpp" || ext === "cc") return "cpp";
+  if (ext === "java") return "java";
+  if (contentType.includes("json")) return "json";
+  if (contentType.includes("xml")) return "xml";
+  if (contentType.includes("html")) return "html";
+  return "plaintext";
+}
+
 const kindIcons: Record<Kind, typeof File> = {
   image: FileImage,
   video: FileVideo,
   audio: FileAudio,
+  pdf: FileText,
   text: FileText,
   archive: FileArchive,
   code: FileCode,
@@ -256,27 +289,53 @@ function ShareModal({ bucket, object, onClose }: { bucket: string; object: Objec
 
 // --- detail drawer -----------------------------------------------------------------------
 
-function TextPreview({ url }: { url: string }) {
+const MAX_PREVIEW_BYTES = 512 * 1024; // 512 KiB text/code preview limit
+
+function MonacoPreview({ url, objectKey, contentType }: { url: string; objectKey: string; contentType: string }) {
   const [text, setText] = useState<string | null>(null);
   useEffect(() => {
-    fetch(url, { headers: { Range: "bytes=0-262143" } })
+    fetch(url, { headers: { Range: `bytes=0-${MAX_PREVIEW_BYTES - 1}` } })
       .then((r) => r.text())
       .then(setText)
       .catch(() => setText("(preview unavailable)"));
   }, [url]);
   if (text === null) return <Spinner className="m-6" />;
-  return <pre className="max-h-80 overflow-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-ink">{text}</pre>;
+  const lang = getMonacoLanguage(objectKey, contentType);
+  return (
+    <div className="h-80 overflow-hidden rounded-md border border-line">
+      <Editor
+        height="100%"
+        language={lang}
+        value={text}
+        theme="vs-dark"
+        options={{
+          readOnly: true,
+          minimap: { enabled: false },
+          scrollBeyondLastLine: false,
+          fontSize: 12,
+          lineNumbers: "on",
+          wordWrap: "on",
+          domReadOnly: true,
+          renderLineHighlight: "none",
+          padding: { top: 8 },
+        }}
+      />
+    </div>
+  );
 }
 
-function Preview({ bucket, object }: { bucket: string; object: ObjectInfo }) {
+function Preview({ bucket, object, compact }: { bucket: string; object: ObjectInfo; compact?: boolean }) {
   const kind = kindOf(object.key, object.contentType);
   const url = api.downloadURL(bucket, object.key, true);
   const Icon = kindIcons[kind];
+  const maxH = compact ? "max-h-48" : "max-h-80";
   let body: ReactNode;
-  if (kind === "image") body = <img src={url} alt={object.key} className="mx-auto max-h-80 object-contain" />;
-  else if (kind === "video") body = <video src={url} controls className="max-h-80 w-full bg-black" />;
+  if (kind === "image") body = <img src={url} alt={object.key} className={`mx-auto ${maxH} object-contain`} />;
+  else if (kind === "video") body = <video src={url} controls className={`${maxH} w-full bg-black`} />;
   else if (kind === "audio") body = <audio src={url} controls className="w-full p-3" />;
-  else if ((kind === "text" || kind === "code") && object.size > 0) body = <TextPreview url={url} />;
+  else if (kind === "pdf") body = <iframe src={url} title={object.key} className="h-80 w-full border-0" />;
+  else if ((kind === "text" || kind === "code") && object.size > 0)
+    body = <MonacoPreview url={url} objectKey={object.key} contentType={object.contentType ?? ""} />;
   else
     body = (
       <div className="flex flex-col items-center gap-2 py-10 text-muted">
@@ -286,6 +345,119 @@ function Preview({ bucket, object }: { bucket: string; object: ObjectInfo }) {
     );
   return <div className="overflow-hidden rounded-md border border-line bg-sunken">{body}</div>;
 }
+
+// --- fullscreen preview -----------------------------------------------------------------
+
+function FullscreenPreview({ bucket, object, onClose }: { bucket: string; object: ObjectInfo; onClose: () => void }) {
+  const kind = kindOf(object.key, object.contentType);
+  const url = api.downloadURL(bucket, object.key, true);
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  let body: ReactNode;
+  if (kind === "image") body = <img src={url} alt={object.key} className="max-h-[85vh] max-w-full object-contain" />;
+  else if (kind === "video") body = <video src={url} controls autoPlay className="max-h-[85vh] max-w-full bg-black" />;
+  else if (kind === "audio") body = <audio src={url} controls autoPlay className="w-full max-w-lg" />;
+  else if (kind === "pdf") body = <iframe src={url} title={object.key} className="h-[85vh] w-full max-w-5xl border-0 rounded-lg" />;
+  else if (kind === "text" || kind === "code")
+    body = (
+      <div className="h-[85vh] w-full max-w-5xl overflow-hidden rounded-lg border border-line">
+        <MonacoPreview url={url} objectKey={object.key} contentType={object.contentType ?? ""} />
+      </div>
+    );
+  else body = <div className="text-muted">No preview available</div>;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={onClose}>
+      <div className="relative" onClick={(e) => e.stopPropagation()}>
+        <button
+          onClick={onClose}
+          className="absolute -top-10 right-0 flex size-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors"
+        >
+          <X className="size-5" />
+        </button>
+        {body}
+      </div>
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-4 py-2 text-sm text-white/80 font-mono">
+        {baseName(object.key)}
+      </div>
+    </div>
+  );
+}
+
+// --- metadata / tags editor (inline in detail) ----------------------------------------
+
+function MetadataEditor({ metadata, onCopy }: { metadata: Record<string, string>; onCopy: () => void }) {
+  const entries = Object.entries(metadata);
+  const toast = useToast();
+
+  function copyAll() {
+    navigator.clipboard.writeText(JSON.stringify(metadata, null, 2)).then(() => {
+      toast("ok", "Metadata copied.");
+      onCopy();
+    });
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-line py-6 text-muted">
+        <Info className="size-6 text-faint" />
+        <span className="text-xs">No custom metadata on this object</span>
+        <span className="text-[10px] text-faint">Metadata is set at upload time via x-amz-meta-* headers</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="label-strip text-[10px]">custom metadata</span>
+        <button
+          onClick={copyAll}
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-sunken hover:text-ink transition-colors"
+        >
+          <Copy className="size-3" /> Copy JSON
+        </button>
+      </div>
+      <div className="divide-y divide-line rounded-md border border-line text-xs">
+        {entries.map(([k, v]) => (
+          <div key={k} className="grid grid-cols-[6rem_1fr] gap-3 px-3 py-2">
+            <span className="font-mono text-accent truncate" title={k}>{k}</span>
+            <span className="font-mono break-all text-ink">{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChecksumsPanel({ checksums }: { checksums: Record<string, string> }) {
+  const entries = Object.entries(checksums);
+  if (entries.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <span className="label-strip text-[10px]">checksums</span>
+      <div className="divide-y divide-line rounded-md border border-line text-xs">
+        {entries.map(([alg, val]) => (
+          <div key={alg} className="grid grid-cols-[5rem_1fr] gap-3 px-3 py-2">
+            <span className="font-semibold text-muted uppercase">{alg}</span>
+            <span className="font-mono break-all text-ink">{val}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- tabbed detail drawer ---------------------------------------------------------------
+
+type DetailTab = "preview" | "metadata" | "info";
 
 function Detail({
   bucket,
@@ -303,7 +475,9 @@ function Detail({
   const [info, setInfo] = useState<ObjectInfo | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [downloaded, setDownloaded] = useState<number | null>(null); // bytes so far; null when idle
+  const [downloaded, setDownloaded] = useState<number | null>(null);
+  const [tab, setTab] = useState<DetailTab>("preview");
+  const [fullscreen, setFullscreen] = useState(false);
   const toast = useToast();
 
   async function download(o: ObjectInfo) {
@@ -328,87 +502,204 @@ function Detail({
       setDeleting(false);
     }
   }
+
   useEffect(() => {
     setInfo(null);
+    setTab("preview");
     api.stat(bucket, objectKey).then(setInfo).catch((e) => toast("error", errorText(e)));
   }, [bucket, objectKey, toast]);
 
-  const rows: [string, ReactNode][] = info
-    ? [
-        ["Size", <span className="num">{bytes(info.size)} ({count(info.size)} B)</span>],
-        ["Type", <span className="font-mono">{info.contentType || "—"}</span>],
-        ["Modified", dateTime(info.lastModified)],
-        ["ETag", <span className="font-mono break-all">{info.etag}</span>],
-        ...(info.partsCount ? [["Parts", <span className="num">{info.partsCount}</span>] as [string, ReactNode]] : []),
-        ...Object.entries(info.checksums ?? {}).map(([a, v]) => [a, <span className="font-mono break-all">{v}</span>] as [string, ReactNode]),
-        ...Object.entries(info.metadata ?? {}).map(([k, v]) => [`meta: ${k}`, <span className="font-mono break-all">{v}</span>] as [string, ReactNode]),
-      ]
-    : [];
+  const kind = info ? kindOf(info.key, info.contentType) : null;
+  const canPreview = kind && kind !== "other" && kind !== "archive";
+
+  const tabs: { id: DetailTab; label: string; icon: typeof Eye }[] = [
+    { id: "preview", label: "Preview", icon: Eye },
+    { id: "metadata", label: "Metadata", icon: Tag },
+    { id: "info", label: "Details", icon: Info },
+  ];
 
   return (
-    <aside className="fixed inset-0 z-30 flex flex-col bg-surface sm:inset-y-0 sm:right-0 sm:left-auto sm:w-[26rem] sm:border-l sm:border-line sm:shadow-2xl">
-      <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-        <div className="min-w-0">
-          <div className="label-strip">object</div>
-          <div className="truncate font-mono text-sm font-medium" title={objectKey}>
-            {baseName(objectKey)}
+    <>
+      <aside className="fixed inset-0 z-30 flex flex-col bg-surface sm:inset-y-0 sm:right-0 sm:left-auto sm:w-[28rem] sm:border-l sm:border-line sm:shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+          <div className="min-w-0">
+            <div className="label-strip">object</div>
+            <div className="truncate font-mono text-sm font-medium" title={objectKey}>
+              {baseName(objectKey)}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {info && canPreview && (
+              <IconButton label="Fullscreen preview" onClick={() => setFullscreen(true)}>
+                <Maximize2 className="size-4" />
+              </IconButton>
+            )}
+            <IconButton label="Open in new tab" onClick={() => window.open(api.downloadURL(bucket, objectKey, true), "_blank")}>
+              <ExternalLink className="size-4" />
+            </IconButton>
+            <IconButton label="Close" onClick={onClose}>
+              <X className="size-4" />
+            </IconButton>
           </div>
         </div>
-        <IconButton label="Close" onClick={onClose}>
-          <X className="size-4" />
-        </IconButton>
-      </div>
-      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
-        {!info ? (
-          <Spinner className="mx-auto my-10" />
-        ) : (
-          <>
-            <Preview bucket={bucket} object={info} />
-            <div className="grid grid-cols-3 gap-2">
-              <Button icon={<Download className="size-4" />} busy={downloaded !== null} disabled={deleting} onClick={() => download(info)}>
-                {downloaded === null ? "Download" : info.size ? `${Math.floor((downloaded / info.size) * 100)}%` : "Download"}
-              </Button>
-              <Button icon={<Share2 className="size-4" />} disabled={deleting} onClick={() => onShare(info)}>
-                Share
-              </Button>
-              <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={() => setConfirm(true)}>
-                Delete
-              </Button>
-            </div>
-            <dl className="divide-y divide-line rounded-md border border-line text-sm">
-              {rows.map(([k, v]) => (
-                <div key={k} className="grid grid-cols-[7rem_1fr] gap-3 px-3 py-2">
-                  <dt className="text-muted">{k}</dt>
-                  <dd className="min-w-0 text-xs leading-5">{v}</dd>
+
+        {/* Tabs */}
+        <div className="flex border-b border-line">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={cx(
+                "flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors",
+                tab === t.id
+                  ? "border-b-2 border-accent text-accent-ink"
+                  : "text-muted hover:text-ink hover:bg-sunken/50",
+              )}
+            >
+              <t.icon className="size-3.5" />
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {!info ? (
+            <Spinner className="mx-auto my-10" />
+          ) : (
+            <>
+              {/* Preview tab */}
+              {tab === "preview" && (
+                <div className="space-y-4">
+                  <Preview bucket={bucket} object={info} />
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button icon={<Download className="size-4" />} busy={downloaded !== null} disabled={deleting} onClick={() => download(info)}>
+                      {downloaded === null ? "Download" : info.size ? `${Math.floor((downloaded / info.size) * 100)}%` : "Download"}
+                    </Button>
+                    <Button icon={<Share2 className="size-4" />} disabled={deleting} onClick={() => onShare(info)}>
+                      Share
+                    </Button>
+                    <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={() => setConfirm(true)}>
+                      Delete
+                    </Button>
+                  </div>
+                  {/* Quick info summary */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-md border border-line px-3 py-2">
+                      <div className="label-strip text-[10px]">size</div>
+                      <div className="num font-medium text-ink">{bytes(info.size)}</div>
+                    </div>
+                    <div className="rounded-md border border-line px-3 py-2">
+                      <div className="label-strip text-[10px]">type</div>
+                      <div className="font-mono text-ink truncate" title={info.contentType}>{info.contentType || "—"}</div>
+                    </div>
+                    <div className="rounded-md border border-line px-3 py-2">
+                      <div className="label-strip text-[10px]">modified</div>
+                      <div className="text-ink">{dateTime(info.lastModified)}</div>
+                    </div>
+                    <div className="rounded-md border border-line px-3 py-2">
+                      <div className="label-strip text-[10px]">etag</div>
+                      <div className="font-mono text-ink truncate" title={info.etag}>{info.etag}</div>
+                    </div>
+                  </div>
                 </div>
-              ))}
-            </dl>
-            <div className="text-xs text-muted">
-              Key <span className="font-mono break-all text-ink">{info.key}</span>
-            </div>
-          </>
-        )}
-      </div>
-      <Modal
-        open={confirm}
-        onClose={() => !deleting && setConfirm(false)}
-        title="Delete object"
-        footer={
-          <>
-            <Button disabled={deleting} onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={remove}>
-              {deleting ? "Deleting…" : "Delete"}
-            </Button>
-          </>
-        }
-      >
-        <p className="text-sm">
-          Delete <span className="font-mono">{objectKey}</span>? This cannot be undone.
-        </p>
-      </Modal>
-    </aside>
+              )}
+
+              {/* Metadata tab */}
+              {tab === "metadata" && (
+                <div className="space-y-5">
+                  <MetadataEditor metadata={info.metadata ?? {}} onCopy={() => {}} />
+                  <ChecksumsPanel checksums={info.checksums ?? {}} />
+                  {info.partsCount ? (
+                    <div className="space-y-2">
+                      <span className="label-strip text-[10px]">multipart</span>
+                      <div className="rounded-md border border-line px-3 py-2 text-xs">
+                        <span className="text-muted">Parts: </span>
+                        <span className="num font-medium text-ink">{info.partsCount}</span>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Info tab */}
+              {tab === "info" && (
+                <div className="space-y-4">
+                  <dl className="divide-y divide-line rounded-md border border-line text-sm">
+                    {([
+                      ["Key", <span className="font-mono break-all">{info.key}</span>],
+                      ["Size", <span className="num">{bytes(info.size)} ({count(info.size)} B)</span>],
+                      ["Content-Type", <span className="font-mono">{info.contentType || "—"}</span>],
+                      ["Last Modified", dateTime(info.lastModified)],
+                      ["ETag", <span className="font-mono break-all">{info.etag}</span>],
+                      ...(info.partsCount ? [["Parts", <span className="num">{info.partsCount}</span>]] : []),
+                    ] as [string, ReactNode][]).map(([k, v]) => (
+                      <div key={k} className="grid grid-cols-[7rem_1fr] gap-3 px-3 py-2">
+                        <dt className="text-muted">{k}</dt>
+                        <dd className="min-w-0 text-xs leading-5">{v}</dd>
+                      </div>
+                    ))}
+                  </dl>
+
+                  {/* All headers if available */}
+                  {info.headers && Object.keys(info.headers).length > 0 && (
+                    <div className="space-y-2">
+                      <span className="label-strip text-[10px]">response headers</span>
+                      <dl className="divide-y divide-line rounded-md border border-line text-xs">
+                        {Object.entries(info.headers).map(([k, v]) => (
+                          <div key={k} className="grid grid-cols-[9rem_1fr] gap-3 px-3 py-2">
+                            <dt className="font-mono text-muted truncate" title={k}>{k}</dt>
+                            <dd className="font-mono break-all text-ink">{v}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  )}
+
+                  {/* Direct link */}
+                  <div className="space-y-2">
+                    <span className="label-strip text-[10px]">direct link</span>
+                    <div className="flex gap-2">
+                      <Input mono readOnly value={api.downloadURL(bucket, info.key)} className="text-xs" onFocus={(e) => e.target.select()} />
+                      <IconButton
+                        label="Copy link"
+                        onClick={() => {
+                          const link = window.location.origin + api.downloadURL(bucket, info.key);
+                          navigator.clipboard.writeText(link).then(() => toast("ok", "Link copied."));
+                        }}
+                      >
+                        <Copy className="size-4" />
+                      </IconButton>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <Modal
+          open={confirm}
+          onClose={() => !deleting && setConfirm(false)}
+          title="Delete object"
+          footer={
+            <>
+              <Button disabled={deleting} onClick={() => setConfirm(false)}>
+                Cancel
+              </Button>
+              <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={remove}>
+                {deleting ? "Deleting…" : "Delete"}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm">
+            Delete <span className="font-mono">{objectKey}</span>? This cannot be undone.
+          </p>
+        </Modal>
+      </aside>
+      {fullscreen && info && <FullscreenPreview bucket={bucket} object={info} onClose={() => setFullscreen(false)} />}
+    </>
   );
 }
 
@@ -644,6 +935,9 @@ export function ExplorerPage() {
           <Button icon={<RefreshCw className={cx("size-4", loading && "animate-spin")} />} onClick={() => load()}>
             Refresh
           </Button>
+          <Link to={`/connect?bucket=${encodeURIComponent(bucket)}`} className="contents">
+            <Button icon={<Code2 className="size-4 text-accent" />}>Connect SDK</Button>
+          </Link>
           <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="contents">
             <Button icon={<Settings2 className="size-4" />}>Settings</Button>
           </Link>

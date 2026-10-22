@@ -92,6 +92,10 @@ export interface Info {
   region: string;
   dataDir: string;
   s3Endpoint: string;
+  s3Addr?: string;
+  publicUrl?: string;
+  logRequests?: boolean;
+  isTLS?: boolean;
   startedAt: string;
   uptime: number;
   buckets: number;
@@ -187,6 +191,31 @@ export const api = {
   scrub: () => request<ScrubStatus>("GET", "/scrub"),
   /** Scans the given buckets, or all of them when the list is empty. */
   startScrub: (buckets: string[] = []) => request<ScrubStatus>("POST", "/scrub", { buckets }),
+
+  speedtestPing: () => request<void>("GET", "/speedtest/ping"),
+  speedtestDownloadURL: (sizeBytes: number) => `/api/v1/speedtest/download?size=${sizeBytes}`,
+  speedtestUpload: (body: Blob, onProgress?: (sent: number) => void, signal?: AbortSignal) => {
+    return new Promise<{ bytes: number; duration: number; mbps: number; mBps: number }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/v1/speedtest/upload");
+      xhr.setRequestHeader("X-CSRF-Token", csrfToken);
+      if (onProgress) xhr.upload.onprogress = (e) => onProgress(e.loaded);
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            resolve({ bytes: body.size, duration: 1, mbps: 0, mBps: 0 });
+          }
+        } else {
+          reject(new Error("Speedtest upload failed"));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      if (signal) signal.addEventListener("abort", () => xhr.abort());
+      xhr.send(body);
+    });
+  },
 };
 
 // --- downloads ------------------------------------------------------------------------

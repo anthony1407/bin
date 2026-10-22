@@ -1,0 +1,623 @@
+import { useEffect, useState, useMemo } from "react";
+import { useSearchParams, Link } from "react-router";
+import { Check, Copy, Terminal, KeyRound } from "lucide-react";
+import Editor from "@monaco-editor/react";
+import { api, type AccessKey, type Bucket, type Info } from "../api";
+import { PageHeader, Card, Button, Input, Spinner, useToast } from "../components/ui";
+import { Select } from "../components/Select";
+
+type SDKLang = "javascript" | "python" | "go" | "cli";
+type SDKOp = "all" | "init" | "upload" | "download" | "list";
+
+export function ConnectSDKPage() {
+  const [searchParams] = useSearchParams();
+  const initialBucket = searchParams.get("bucket") || "";
+  const initialKey = searchParams.get("key") || "sample-file.txt";
+
+  const [info, setInfo] = useState<Info | null>(null);
+  const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [keys, setKeys] = useState<AccessKey[]>([]);
+  const [selectedBucket, setSelectedBucket] = useState(initialBucket);
+  const [selectedKey, setSelectedKey] = useState(initialKey);
+  const [selectedAccessKey, setSelectedAccessKey] = useState("");
+  const [secretKey, setSecretKey] = useState("YOUR_SECRET_KEY");
+  const [lang, setLang] = useState<SDKLang>("javascript");
+  const [operation, setOperation] = useState<SDKOp>("all");
+  const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+
+  useEffect(() => {
+    Promise.all([
+      api.info().catch(() => null),
+      api.buckets().catch(() => []),
+      api.accessKeys().catch(() => []),
+    ]).then(([infoRes, bucketsRes, keysRes]) => {
+      if (infoRes) setInfo(infoRes);
+      if (bucketsRes) {
+        setBuckets(bucketsRes);
+        if (!initialBucket && bucketsRes.length > 0) {
+          setSelectedBucket(bucketsRes[0].name);
+        }
+      }
+      if (keysRes && keysRes.length > 0) {
+        setKeys(keysRes);
+        setSelectedAccessKey(keysRes[0].accessKey);
+        if (keysRes[0].secretKey) setSecretKey(keysRes[0].secretKey);
+      }
+      setLoading(false);
+    });
+  }, [initialBucket]);
+
+  const endpoint = useMemo(() => {
+    if (info?.publicUrl) return info.publicUrl;
+    if (info?.s3Endpoint) return info.s3Endpoint;
+    return `${window.location.protocol}//${window.location.hostname}:9000`;
+  }, [info]);
+
+  const region = info?.region || "us-east-1";
+  const bucketName = selectedBucket || "my-bucket";
+  const objectKey = selectedKey || "sample-file.txt";
+  const accessKeyId = selectedAccessKey || "YOUR_ACCESS_KEY";
+
+  const codeSnippet = useMemo(() => {
+    if (lang === "javascript") {
+      if (operation === "init") {
+        return `// Install: npm install @aws-sdk/client-s3
+import { S3Client } from "@aws-sdk/client-s3";
+
+export const s3 = new S3Client({
+  endpoint: "${endpoint}",
+  region: "${region}",
+  credentials: {
+    accessKeyId: "${accessKeyId}",
+    secretAccessKey: "${secretKey}",
+  },
+  forcePathStyle: true, // Required for custom S3 endpoints
+});`;
+      }
+      if (operation === "upload") {
+        return `import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { readFileSync } from "fs";
+
+const s3 = new S3Client({
+  endpoint: "${endpoint}",
+  region: "${region}",
+  credentials: {
+    accessKeyId: "${accessKeyId}",
+    secretAccessKey: "${secretKey}",
+  },
+  forcePathStyle: true,
+});
+
+async function uploadFile() {
+  const fileContent = readFileSync("./${objectKey}");
+  
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: "${bucketName}",
+      Key: "${objectKey}",
+      Body: fileContent,
+      ContentType: "text/plain",
+    })
+  );
+  console.log("Uploaded ${objectKey} to ${bucketName} successfully!");
+}
+
+uploadFile().catch(console.error);`;
+      }
+      if (operation === "download") {
+        return `import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { writeFileSync } from "fs";
+
+const s3 = new S3Client({
+  endpoint: "${endpoint}",
+  region: "${region}",
+  credentials: {
+    accessKeyId: "${accessKeyId}",
+    secretAccessKey: "${secretKey}",
+  },
+  forcePathStyle: true,
+});
+
+async function downloadFile() {
+  const response = await s3.send(
+    new GetObjectCommand({
+      Bucket: "${bucketName}",
+      Key: "${objectKey}",
+    })
+  );
+  
+  const bytes = await response.Body?.transformToByteArray();
+  if (bytes) {
+    writeFileSync("./downloaded-${objectKey}", bytes);
+    console.log("Downloaded ${objectKey} successfully!");
+  }
+}
+
+downloadFile().catch(console.error);`;
+      }
+      if (operation === "list") {
+        return `import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({
+  endpoint: "${endpoint}",
+  region: "${region}",
+  credentials: {
+    accessKeyId: "${accessKeyId}",
+    secretAccessKey: "${secretKey}",
+  },
+  forcePathStyle: true,
+});
+
+async function listFiles() {
+  const result = await s3.send(
+    new ListObjectsV2Command({
+      Bucket: "${bucketName}",
+      MaxKeys: 100,
+    })
+  );
+  
+  console.log("Objects in ${bucketName}:");
+  result.Contents?.forEach((item) => {
+    console.log(\`- \${item.Key} (\${item.Size} bytes)\`);
+  });
+}
+
+listFiles().catch(console.error);`;
+      }
+
+      // Default: Complete Starter
+      return `// ==========================================
+// bin S3 Client - JavaScript / TypeScript
+// Install: npm install @aws-sdk/client-s3
+// ==========================================
+
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+} from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({
+  endpoint: "${endpoint}",
+  region: "${region}",
+  credentials: {
+    accessKeyId: "${accessKeyId}",
+    secretAccessKey: "${secretKey}",
+  },
+  forcePathStyle: true, // Always required for bin / MinIO / path-style
+});
+
+async function main() {
+  // 1. Upload Object
+  console.log("Uploading file to ${bucketName}...");
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: "${bucketName}",
+      Key: "${objectKey}",
+      Body: "Hello from bin storage!",
+      ContentType: "text/plain",
+    })
+  );
+
+  // 2. List Objects
+  console.log("\\nListing bucket objects:");
+  const list = await s3.send(new ListObjectsV2Command({ Bucket: "${bucketName}" }));
+  list.Contents?.forEach((o) => console.log(\`  - \${o.Key} (\${o.Size} bytes)\`));
+
+  // 3. Download Object
+  const data = await s3.send(
+    new GetObjectCommand({
+      Bucket: "${bucketName}",
+      Key: "${objectKey}",
+    })
+  );
+  const text = await data.Body?.transformToString();
+  console.log("\\nDownloaded content:", text);
+}
+
+main().catch(console.error);`;
+    }
+
+    if (lang === "python") {
+      if (operation === "upload") {
+        return `import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="${endpoint}",
+    aws_access_key_id="${accessKeyId}",
+    aws_secret_access_key="${secretKey}",
+    region_name="${region}",
+)
+
+s3.upload_file("./${objectKey}", "${bucketName}", "${objectKey}")
+print("Uploaded ${objectKey} to ${bucketName}")`;
+      }
+
+      if (operation === "download") {
+        return `import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="${endpoint}",
+    aws_access_key_id="${accessKeyId}",
+    aws_secret_access_key="${secretKey}",
+    region_name="${region}",
+)
+
+s3.download_file("${bucketName}", "${objectKey}", "./downloaded-${objectKey}")
+print("Downloaded ${objectKey} successfully")`;
+      }
+
+      return `# ==========================================
+# bin S3 Client - Python (boto3)
+# Install: pip install boto3
+# ==========================================
+
+import boto3
+from botocore.client import Config
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="${endpoint}",
+    aws_access_key_id="${accessKeyId}",
+    aws_secret_access_key="${secretKey}",
+    region_name="${region}",
+    config=Config(s3={"addressing_style": "path"}),
+)
+
+# 1. Upload Object
+s3.put_object(
+    Bucket="${bucketName}",
+    Key="${objectKey}",
+    Body=b"Hello from bin Python SDK!",
+    ContentType="text/plain",
+)
+print("Uploaded ${objectKey} to ${bucketName}")
+
+# 2. List Objects
+response = s3.list_objects_v2(Bucket="${bucketName}")
+print("\\nBucket objects:")
+for item in response.get("Contents", []):
+    print(f"  - {item['Key']} ({item['Size']} bytes)")
+
+# 3. Download Object
+obj = s3.get_object(Bucket="${bucketName}", Key="${objectKey}")
+content = obj["Body"].read().decode("utf-8")
+print("\\nObject content:", content)
+
+# 4. Generate Presigned URL (1 hour)
+url = s3.generate_presigned_url(
+    "get_object",
+    Params={"Bucket": "${bucketName}", "Key": "${objectKey}"},
+    ExpiresIn=3600,
+)
+print("\\nPresigned URL:", url)`;
+    }
+
+    if (lang === "go") {
+      return `// ==========================================
+// bin S3 Client - Go (minio-go/v7)
+// Install: go get github.com/minio/minio-go/v7
+// ==========================================
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Target endpoint (strip http:// or https:// for minio-go client)
+	endpoint := "${endpoint.replace(/^https?:\/\//, "")}"
+	useSSL := ${endpoint.startsWith("https://") ? "true" : "false"}
+
+	minioClient, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("${accessKeyId}", "${secretKey}", ""),
+		Secure: useSSL,
+	})
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// 1. Put Object
+	content := "Hello from bin Go Client!"
+	reader := strings.NewReader(content)
+	_, err = minioClient.PutObject(ctx, "${bucketName}", "${objectKey}", reader, int64(len(content)), minio.PutObjectOptions{
+		ContentType: "text/plain",
+	})
+	if err != nil {
+		log.Fatalln("Upload failed:", err)
+	}
+	fmt.Println("Uploaded ${objectKey} to ${bucketName}")
+
+	// 2. List Objects
+	fmt.Println("\\nObjects in ${bucketName}:")
+	objectCh := minioClient.ListObjects(ctx, "${bucketName}", minio.ListObjectsOptions{
+		Prefix:    "",
+		Recursive: true,
+	})
+	for object := range objectCh {
+		if object.Err != nil {
+			log.Println(object.Err)
+			continue
+		}
+		fmt.Printf("  - %s (%d bytes)\\n", object.Key, object.Size)
+	}
+}`;
+    }
+
+    // CLI / rclone / cURL
+    return `# ==========================================
+# bin S3 Client - AWS CLI, rclone & cURL
+# ==========================================
+
+# 1. AWS CLI Configuration
+aws configure set aws_access_key_id "${accessKeyId}"
+aws configure set aws_secret_access_key "${secretKey}"
+aws configure set default.region "${region}"
+
+# 2. List Objects in Bucket
+aws --endpoint-url ${endpoint} s3 ls s3://${bucketName}/
+
+# 3. Upload File
+aws --endpoint-url ${endpoint} s3 cp ./local-file.txt s3://${bucketName}/${objectKey}
+
+# 4. Download File
+aws --endpoint-url ${endpoint} s3 cp s3://${bucketName}/${objectKey} ./downloaded-${objectKey}
+
+# 5. Sync Directory
+aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
+
+# ------------------------------------------
+# rclone Configuration (~/.config/rclone/rclone.conf)
+# ------------------------------------------
+# [bin]
+# type = s3
+# provider = Other
+# env_auth = false
+# access_key_id = ${accessKeyId}
+# secret_access_key = ${secretKey}
+# endpoint = ${endpoint}
+# acl = private
+#
+# Usage:
+# rclone ls bin:${bucketName}
+# rclone copy ./files bin:${bucketName}/sync/`;
+  }, [lang, operation, endpoint, region, bucketName, objectKey, accessKeyId, secretKey]);
+
+  function copyCode() {
+    navigator.clipboard.writeText(codeSnippet).then(() => {
+      setCopied(true);
+      toast("ok", "Code snippet copied to clipboard!");
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-20">
+        <Spinner />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-6xl pb-16">
+      <PageHeader
+        title="Connect SDK & Client Code Generator"
+        subtitle="Ready-to-use snippets with active credentials and your S3 endpoint for any language."
+      />
+
+      {/* Top Configuration Bar */}
+      <Card className="p-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 bg-sunken/40">
+        <div>
+          <label className="label-strip mb-1.5 block">Target Bucket</label>
+          <Select
+            aria-label="Target Bucket"
+            value={selectedBucket}
+            onChange={setSelectedBucket}
+            options={buckets.map((b) => ({ value: b.name, label: b.name }))}
+            emptyText="No buckets available"
+          />
+        </div>
+
+        <div>
+          <label className="label-strip mb-1.5 block">Object Key (Sample)</label>
+          <Input
+            value={selectedKey}
+            onChange={(e) => setSelectedKey(e.target.value)}
+            placeholder="folder/file.ext"
+            className="font-mono text-xs"
+          />
+        </div>
+
+        <div>
+          <label className="label-strip mb-1.5 block">Access Key</label>
+          {keys.length > 0 ? (
+            <Select
+              aria-label="Access Key"
+              value={selectedAccessKey}
+              onChange={(val) => {
+                setSelectedAccessKey(val);
+                const match = keys.find((k) => k.accessKey === val);
+                if (match?.secretKey) setSecretKey(match.secretKey);
+              }}
+              options={keys.map((k) => ({ value: k.accessKey, label: `${k.name || k.accessKey} (${k.accessKey.slice(0, 8)}…)` }))}
+            />
+          ) : (
+            <Input
+              value={selectedAccessKey}
+              onChange={(e) => setSelectedAccessKey(e.target.value)}
+              placeholder="BIN_ROOT_ACCESS_KEY"
+              className="font-mono text-xs"
+            />
+          )}
+        </div>
+
+        <div>
+          <label className="label-strip mb-1.5 block">Secret Key</label>
+          <div className="relative">
+            <Input
+              type="password"
+              value={secretKey}
+              onChange={(e) => setSecretKey(e.target.value)}
+              className="font-mono text-xs pr-10"
+            />
+            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint text-[10px]">
+              SigV4
+            </span>
+          </div>
+        </div>
+      </Card>
+
+      {/* Main Code View */}
+      <div className="rounded-xl border border-line bg-card overflow-hidden shadow-sm">
+        {/* Navigation & Tabs */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-line bg-sunken/60 px-4 py-2.5 gap-3">
+          <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
+            <button
+              onClick={() => setLang("javascript")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                lang === "javascript"
+                  ? "bg-accent text-white shadow-sm font-semibold"
+                  : "text-muted hover:text-ink hover:bg-sunken"
+              }`}
+            >
+              <span>TypeScript / Node.js</span>
+            </button>
+            <button
+              onClick={() => setLang("python")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                lang === "python"
+                  ? "bg-accent text-white shadow-sm font-semibold"
+                  : "text-muted hover:text-ink hover:bg-sunken"
+              }`}
+            >
+              <span>Python (boto3)</span>
+            </button>
+            <button
+              onClick={() => setLang("go")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                lang === "go"
+                  ? "bg-accent text-white shadow-sm font-semibold"
+                  : "text-muted hover:text-ink hover:bg-sunken"
+              }`}
+            >
+              <span>Go (minio-go)</span>
+            </button>
+            <button
+              onClick={() => setLang("cli")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                lang === "cli"
+                  ? "bg-accent text-white shadow-sm font-semibold"
+                  : "text-muted hover:text-ink hover:bg-sunken"
+              }`}
+            >
+              <Terminal className="size-3.5" />
+              <span>AWS CLI & rclone</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {lang === "javascript" && (
+              <div className="flex rounded-md border border-line bg-card p-0.5 text-[11px]">
+                <button
+                  onClick={() => setOperation("all")}
+                  className={`px-2 py-0.5 rounded ${operation === "all" ? "bg-accent/20 text-accent font-semibold" : "text-muted"}`}
+                >
+                  Full Demo
+                </button>
+                <button
+                  onClick={() => setOperation("init")}
+                  className={`px-2 py-0.5 rounded ${operation === "init" ? "bg-accent/20 text-accent font-semibold" : "text-muted"}`}
+                >
+                  Client Init
+                </button>
+                <button
+                  onClick={() => setOperation("upload")}
+                  className={`px-2 py-0.5 rounded ${operation === "upload" ? "bg-accent/20 text-accent font-semibold" : "text-muted"}`}
+                >
+                  Upload
+                </button>
+                <button
+                  onClick={() => setOperation("download")}
+                  className={`px-2 py-0.5 rounded ${operation === "download" ? "bg-accent/20 text-accent font-semibold" : "text-muted"}`}
+                >
+                  Download
+                </button>
+                <button
+                  onClick={() => setOperation("list")}
+                  className={`px-2 py-0.5 rounded ${operation === "list" ? "bg-accent/20 text-accent font-semibold" : "text-muted"}`}
+                >
+                  List
+                </button>
+              </div>
+            )}
+
+            <Button
+              variant="primary"
+              icon={copied ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
+              onClick={copyCode}
+            >
+              {copied ? "Copied!" : "Copy Code"}
+            </Button>
+          </div>
+        </div>
+
+        {/* Code Editor Preview */}
+        <div className="h-[460px] w-full bg-[#1e1e1e]">
+          <Editor
+            height="100%"
+            language={lang === "javascript" ? "typescript" : lang === "python" ? "python" : lang === "go" ? "go" : "shell"}
+            value={codeSnippet}
+            theme="vs-dark"
+            options={{
+              readOnly: true,
+              fontSize: 13,
+              fontFamily: "'IBM Plex Mono', monospace",
+              minimap: { enabled: false },
+              lineNumbers: "on",
+              wordWrap: "on",
+              padding: { top: 12, bottom: 12 },
+              scrollBeyondLastLine: false,
+            }}
+          />
+        </div>
+
+        {/* Quick Tips Footer */}
+        <div className="border-t border-line bg-sunken/40 px-4 py-3 flex flex-wrap items-center justify-between text-xs text-muted gap-2">
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-1.5">
+              <span className="size-2 rounded-full bg-ok inline-block" />
+              Endpoint: <code className="font-mono text-ink text-[11px] bg-sunken px-1.5 py-0.5 rounded">{endpoint}</code>
+            </span>
+            <span>
+              Region: <code className="font-mono text-ink text-[11px] bg-sunken px-1.5 py-0.5 rounded">{region}</code>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Link
+              to="/access-keys"
+              className="flex items-center gap-1 text-accent hover:underline font-medium text-[11px]"
+            >
+              <KeyRound className="size-3" /> Manage Access Keys
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

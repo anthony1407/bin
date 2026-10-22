@@ -3,9 +3,9 @@ import { NavLink, useLocation } from "react-router";
 import {
   Activity,
   Archive,
-  BookOpen,
   ChevronDown,
   ChevronRight,
+  Code2,
   Contact,
   FileText,
   FolderSearch,
@@ -159,9 +159,9 @@ function MinioSidebarContent({
                 onNavigate={onNavigate}
               />
               <NavItem
-                to="/settings"
-                label="Documentation"
-                icon={BookOpen}
+                to="/connect"
+                label="Connect SDK"
+                icon={Code2}
                 collapsed={collapsed}
                 onNavigate={onNavigate}
               />
@@ -329,6 +329,21 @@ function MinioSidebarContent({
                     >
                       <FileText className="size-3" />
                       <span>Logs</span>
+                    </NavLink>
+                    <NavLink
+                      to="/monitoring/speedtest"
+                      onClick={onNavigate}
+                      className={({ isActive }) =>
+                        cx(
+                          "flex h-7 items-center gap-2 rounded px-2 text-xs font-medium transition-colors",
+                          isActive
+                            ? "bg-accent-soft text-accent-ink font-semibold"
+                            : "text-muted hover:bg-sunken hover:text-ink",
+                        )
+                      }
+                    >
+                      <Zap className="size-3 text-accent" />
+                      <span>Speedtest</span>
                     </NavLink>
                     <div className="flex h-7 items-center gap-2 rounded px-2 text-xs text-faint cursor-not-allowed">
                       <SearchCheck className="size-3" />

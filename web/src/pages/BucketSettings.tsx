@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { Globe, Lock, Plus, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { AlertTriangle, Clock, Code2, Globe, Info, Lock, Plus, Save, Shield, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { api, type Access, type Bucket, type Policy, type Rule } from "../api";
 import { bytes, count, dateTime } from "../lib/format";
 import { Badge, Button, Card, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
@@ -386,12 +386,423 @@ export function BucketSettingsPage() {
       <Section title="Quota" description="Uploads that would push the bucket past this size are rejected with QuotaExceeded.">
         <QuotaEditor bucket={bucket} onSaved={setBucket} />
       </Section>
+
+      {/* Versioning Info */}
+      <Section
+        title="Versioning"
+        description="When enabled, multiple versions of the same object are preserved. Versioning can be enabled but not fully disabled once turned on."
+      >
+        <VersioningPanel bucket={bucket} />
+      </Section>
+
+      {/* CORS Rules */}
+      <Section
+        title="CORS Configuration"
+        description={<>Cross-Origin Resource Sharing rules control which browser-based applications can access objects directly. Configure CORS to allow your web app to fetch objects from <span className="font-mono text-xs">{bucket.name}</span>.</>}
+      >
+        <CORSEditor bucket={bucket} />
+      </Section>
+
+      {/* Lifecycle Rules */}
+      <Section
+        title="Lifecycle Rules"
+        description="Automatically manage objects over time. Set rules to expire (delete) objects after a specified number of days, or clean up incomplete multipart uploads."
+      >
+        <LifecycleEditor bucket={bucket} />
+      </Section>
+
       <Section title="Tags" description="Free-form labels, also visible to S3 clients through GetBucketTagging.">
         <TagsEditor bucket={bucket} onSaved={setBucket} />
       </Section>
       <Section title="Delete bucket" description="Removes the bucket, its objects and any unfinished uploads.">
         <DeleteBucket bucket={bucket} />
       </Section>
+    </div>
+  );
+}
+
+// --- versioning panel ----------------------------------------------------------------
+
+function VersioningPanel({ bucket }: { bucket: Bucket }) {
+  const status = bucket.versioning || "Disabled";
+  const isEnabled = status === "Enabled";
+  const isSuspended = status === "Suspended";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <div className={cx(
+          "flex size-10 items-center justify-center rounded-full",
+          isEnabled ? "bg-ok/10 text-ok" : isSuspended ? "bg-warn/10 text-warn" : "bg-sunken text-faint",
+        )}>
+          {isEnabled ? <Shield className="size-5" /> : isSuspended ? <AlertTriangle className="size-5" /> : <Info className="size-5" />}
+        </div>
+        <div>
+          <div className="text-sm font-semibold text-ink">{status}</div>
+          <div className="text-xs text-muted">
+            {isEnabled && "Multiple versions of objects are being preserved."}
+            {isSuspended && "New versions are not created, but existing versions are retained."}
+            {!isEnabled && !isSuspended && "Only one version of each object is kept."}
+          </div>
+        </div>
+      </div>
+
+      {!isEnabled && (
+        <div className="rounded-md border border-line bg-sunken/40 px-4 py-3 text-xs text-muted">
+          <p className="font-medium text-ink mb-1">How to enable versioning</p>
+          <p>Use the S3 API to enable versioning on this bucket:</p>
+          <pre className="mt-2 rounded bg-surface p-2 font-mono text-[11px] text-ink overflow-x-auto">
+{`aws s3api put-bucket-versioning \\
+  --bucket ${bucket.name} \\
+  --versioning-configuration Status=Enabled`}
+          </pre>
+        </div>
+      )}
+
+      {isEnabled && (
+        <div className="rounded-md border border-ok/20 bg-ok/5 px-4 py-3 text-xs text-muted">
+          <p>Versioned objects can be listed and restored using the S3 API or any compatible client.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- CORS editor (client-side) -------------------------------------------------------
+
+interface CORSRule {
+  id: number;
+  origin: string;
+  methods: string[];
+  headers: string;
+  maxAge: number;
+}
+
+const HTTP_METHODS = ["GET", "PUT", "POST", "DELETE", "HEAD"];
+let corsId = 0;
+
+function CORSEditor({ bucket }: { bucket: Bucket }) {
+  const [rules, setRules] = useState<CORSRule[]>([]);
+  const [showSnippet, setShowSnippet] = useState(false);
+  const toast = useToast();
+
+  function addRule() {
+    setRules((rs) => [...rs, { id: ++corsId, origin: "*", methods: ["GET"], headers: "*", maxAge: 3600 }]);
+  }
+
+  function updateRule(id: number, patch: Partial<CORSRule>) {
+    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
+
+  function removeRule(id: number) {
+    setRules((rs) => rs.filter((r) => r.id !== id));
+  }
+
+  function toggleMethod(id: number, method: string) {
+    setRules((rs) => rs.map((r) => {
+      if (r.id !== id) return r;
+      const methods = r.methods.includes(method)
+        ? r.methods.filter((m) => m !== method)
+        : [...r.methods, method];
+      return { ...r, methods };
+    }));
+  }
+
+  function generateXML() {
+    const rulesXml = rules.map((r) => {
+      const methods = r.methods.map((m) => `    <AllowedMethod>${m}</AllowedMethod>`).join("\n");
+      return `  <CORSRule>
+    <AllowedOrigin>${r.origin}</AllowedOrigin>
+${methods}
+    <AllowedHeader>${r.headers}</AllowedHeader>
+    <MaxAgeSeconds>${r.maxAge}</MaxAgeSeconds>
+  </CORSRule>`;
+    }).join("\n");
+    return `<CORSConfiguration>\n${rulesXml}\n</CORSConfiguration>`;
+  }
+
+  function copyXML() {
+    navigator.clipboard.writeText(generateXML()).then(() => toast("ok", "CORS XML copied."));
+  }
+
+  return (
+    <div className="space-y-4">
+      {rules.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-line py-8 text-muted">
+          <Code2 className="size-8 text-faint" />
+          <p className="text-sm">No CORS rules configured</p>
+          <p className="text-xs text-faint max-w-sm text-center">
+            Add rules to allow browser-based applications to make requests directly to objects in this bucket.
+          </p>
+          <Button icon={<Plus className="size-4" />} onClick={addRule}>
+            Add CORS Rule
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div className="space-y-3">
+            {rules.map((rule, idx) => (
+              <div key={rule.id} className="rounded-md border border-line bg-sunken/30 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-ink">Rule {idx + 1}</span>
+                  <IconButton label="Remove rule" onClick={() => removeRule(rule.id)}>
+                    <X className="size-4" />
+                  </IconButton>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Allowed Origin">
+                    <Input
+                      mono
+                      value={rule.origin}
+                      onChange={(e) => updateRule(rule.id, { origin: e.target.value })}
+                      placeholder="https://example.com or *"
+                    />
+                  </Field>
+                  <Field label="Allowed Headers">
+                    <Input
+                      mono
+                      value={rule.headers}
+                      onChange={(e) => updateRule(rule.id, { headers: e.target.value })}
+                      placeholder="* or Content-Type, Authorization"
+                    />
+                  </Field>
+                </div>
+                <div>
+                  <div className="label-strip mb-1.5 text-[10px]">Allowed Methods</div>
+                  <div className="flex flex-wrap gap-2">
+                    {HTTP_METHODS.map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => toggleMethod(rule.id, m)}
+                        className={cx(
+                          "h-7 rounded-md border px-2.5 font-mono text-xs transition-colors",
+                          rule.methods.includes(m)
+                            ? "border-accent bg-accent-soft text-accent-ink"
+                            : "border-line-strong text-muted hover:bg-sunken",
+                        )}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Field label="Max Age (seconds)">
+                  <Input
+                    mono
+                    value={String(rule.maxAge)}
+                    onChange={(e) => updateRule(rule.id, { maxAge: Number(e.target.value) || 0 })}
+                    className="w-28"
+                    inputMode="numeric"
+                  />
+                </Field>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button icon={<Plus className="size-4" />} onClick={addRule} variant="ghost">
+              Add Rule
+            </Button>
+            <Button icon={<Code2 className="size-4" />} onClick={() => setShowSnippet((v) => !v)}>
+              {showSnippet ? "Hide" : "Show"} S3 XML
+            </Button>
+          </div>
+          {showSnippet && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="label-strip text-[10px]">S3 CORS XML</span>
+                <button
+                  onClick={copyXML}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-sunken hover:text-ink transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="max-h-60 overflow-auto rounded-md border border-line bg-surface p-3 font-mono text-xs text-ink">
+                {generateXML()}
+              </pre>
+              <p className="text-[11px] text-muted">
+                Apply with: <code className="font-mono bg-sunken px-1 rounded">aws s3api put-bucket-cors --bucket {bucket.name} --cors-configuration file://cors.xml</code>
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// --- lifecycle rules (client-side planning) -------------------------------------------
+
+interface LifecycleRule {
+  id: number;
+  prefix: string;
+  expirationDays: number;
+  abortMultipart: boolean;
+  abortDays: number;
+  enabled: boolean;
+}
+
+let lifecycleId = 0;
+
+function LifecycleEditor({ bucket }: { bucket: Bucket }) {
+  const [rules, setRules] = useState<LifecycleRule[]>([]);
+  const [showSnippet, setShowSnippet] = useState(false);
+  const toast = useToast();
+
+  function addRule() {
+    setRules((rs) => [...rs, {
+      id: ++lifecycleId,
+      prefix: "",
+      expirationDays: 30,
+      abortMultipart: true,
+      abortDays: 7,
+      enabled: true,
+    }]);
+  }
+
+  function updateRule(id: number, patch: Partial<LifecycleRule>) {
+    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
+
+  function removeRule(id: number) {
+    setRules((rs) => rs.filter((r) => r.id !== id));
+  }
+
+  function generateXML() {
+    const rulesXml = rules.map((r, i) => {
+      let xml = `  <Rule>
+    <ID>rule-${i + 1}</ID>
+    <Status>${r.enabled ? "Enabled" : "Disabled"}</Status>
+    <Filter><Prefix>${r.prefix}</Prefix></Filter>`;
+      if (r.expirationDays > 0) {
+        xml += `\n    <Expiration><Days>${r.expirationDays}</Days></Expiration>`;
+      }
+      if (r.abortMultipart) {
+        xml += `\n    <AbortIncompleteMultipartUpload><DaysAfterInitiation>${r.abortDays}</DaysAfterInitiation></AbortIncompleteMultipartUpload>`;
+      }
+      xml += `\n  </Rule>`;
+      return xml;
+    }).join("\n");
+    return `<LifecycleConfiguration>\n${rulesXml}\n</LifecycleConfiguration>`;
+  }
+
+  function copyXML() {
+    navigator.clipboard.writeText(generateXML()).then(() => toast("ok", "Lifecycle XML copied."));
+  }
+
+  return (
+    <div className="space-y-4">
+      {rules.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-line py-8 text-muted">
+          <Clock className="size-8 text-faint" />
+          <p className="text-sm">No lifecycle rules</p>
+          <p className="text-xs text-faint max-w-sm text-center">
+            Create rules to automatically expire old objects or clean up incomplete uploads.
+          </p>
+          <Button icon={<Plus className="size-4" />} onClick={addRule}>
+            Add Lifecycle Rule
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div className="space-y-3">
+            {rules.map((rule, idx) => (
+              <div key={rule.id} className="rounded-md border border-line bg-sunken/30 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-ink">Rule {idx + 1}</span>
+                    <button
+                      onClick={() => updateRule(rule.id, { enabled: !rule.enabled })}
+                      className={cx(
+                        "rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors",
+                        rule.enabled
+                          ? "bg-ok/10 text-ok"
+                          : "bg-sunken text-faint",
+                      )}
+                    >
+                      {rule.enabled ? "Enabled" : "Disabled"}
+                    </button>
+                  </div>
+                  <IconButton label="Remove rule" onClick={() => removeRule(rule.id)}>
+                    <X className="size-4" />
+                  </IconButton>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Prefix filter" hint="Leave empty to apply to all objects">
+                    <Input
+                      mono
+                      value={rule.prefix}
+                      onChange={(e) => updateRule(rule.id, { prefix: e.target.value })}
+                      placeholder="logs/ or temp/"
+                    />
+                  </Field>
+                  <Field label="Expire objects after (days)">
+                    <Input
+                      mono
+                      value={String(rule.expirationDays)}
+                      onChange={(e) => updateRule(rule.id, { expirationDays: Number(e.target.value) || 0 })}
+                      className="w-28"
+                      inputMode="numeric"
+                    />
+                  </Field>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={rule.abortMultipart}
+                      onChange={(e) => updateRule(rule.id, { abortMultipart: e.target.checked })}
+                      className="size-4 accent-[var(--accent)]"
+                    />
+                    Abort incomplete multipart uploads after
+                  </label>
+                  {rule.abortMultipart && (
+                    <div className="flex items-center gap-1">
+                      <Input
+                        mono
+                        value={String(rule.abortDays)}
+                        onChange={(e) => updateRule(rule.id, { abortDays: Number(e.target.value) || 1 })}
+                        className="w-16 text-center"
+                        inputMode="numeric"
+                      />
+                      <span className="text-xs text-muted">days</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button icon={<Plus className="size-4" />} onClick={addRule} variant="ghost">
+              Add Rule
+            </Button>
+            <Button icon={<Code2 className="size-4" />} onClick={() => setShowSnippet((v) => !v)}>
+              {showSnippet ? "Hide" : "Show"} S3 XML
+            </Button>
+          </div>
+          {showSnippet && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="label-strip text-[10px]">S3 Lifecycle XML</span>
+                <button
+                  onClick={copyXML}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-sunken hover:text-ink transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="max-h-60 overflow-auto rounded-md border border-line bg-surface p-3 font-mono text-xs text-ink">
+                {generateXML()}
+              </pre>
+              <p className="text-[11px] text-muted">
+                Apply with: <code className="font-mono bg-sunken px-1 rounded">aws s3api put-bucket-lifecycle-configuration --bucket {bucket.name} --lifecycle-configuration file://lifecycle.xml</code>
+              </p>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

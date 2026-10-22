@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,18 +30,22 @@ func (h *Handler) info(w http.ResponseWriter, r *http.Request) {
 		disk["total"], disk["free"] = total, free
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":    buildinfo.Version,
-		"commit":     buildinfo.Commit,
-		"build":      buildinfo.String(),
-		"region":     h.opts.Region,
-		"dataDir":    h.opts.DataDir,
-		"s3Endpoint": h.s3BaseURL(r),
-		"startedAt":  h.started.UTC(),
-		"uptime":     int64(time.Since(h.started).Seconds()),
-		"buckets":    len(usage),
-		"objects":    objects,
-		"bytes":      bytes,
-		"disk":       disk,
+		"version":     buildinfo.Version,
+		"commit":      buildinfo.Commit,
+		"build":       buildinfo.String(),
+		"region":      h.opts.Region,
+		"dataDir":     h.opts.DataDir,
+		"s3Endpoint":  h.s3BaseURL(r),
+		"s3Addr":      h.opts.S3Addr,
+		"publicUrl":   h.opts.PublicURL,
+		"logRequests": h.opts.LogRequests,
+		"isTLS":       r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		"startedAt":   h.started.UTC(),
+		"uptime":      int64(time.Since(h.started).Seconds()),
+		"buckets":     len(usage),
+		"objects":     objects,
+		"bytes":       bytes,
+		"disk":        disk,
 	})
 }
 
@@ -200,4 +205,63 @@ func (h *Handler) startScrub(w http.ResponseWriter, r *http.Request) {
 		h.opts.Log.Info("integrity scan finished", "objects", res.Objects, "corrupt", len(res.Corrupt))
 	}()
 	h.scrubStatus(w, r)
+}
+
+// --- speedtest benchmark -------------------------------------------------------------
+
+func (h *Handler) speedtestPing(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) speedtestDownload(w http.ResponseWriter, r *http.Request) {
+	sizeStr := r.URL.Query().Get("size")
+	size, _ := strconv.ParseInt(sizeStr, 10, 64)
+	if size <= 0 || size > 250*1024*1024 {
+		size = 10 * 1024 * 1024 // 10 MiB default
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+
+	buf := make([]byte, 64*1024)
+	for i := range buf {
+		buf[i] = byte(i % 256)
+	}
+
+	flusher, _ := w.(http.Flusher)
+	remaining := size
+	for remaining > 0 {
+		toWrite := int64(len(buf))
+		if toWrite > remaining {
+			toWrite = remaining
+		}
+		n, err := w.Write(buf[:toWrite])
+		if err != nil {
+			return
+		}
+		remaining -= int64(n)
+		if flusher != nil && remaining%(512*1024) == 0 {
+			flusher.Flush()
+		}
+	}
+}
+
+func (h *Handler) speedtestUpload(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	n, err := io.Copy(io.Discard, r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "upload_failed", err.Error())
+		return
+	}
+	elapsed := time.Since(start)
+	mbPerSec := 0.0
+	if elapsed.Seconds() > 0 {
+		mbPerSec = (float64(n) / (1024 * 1024)) / elapsed.Seconds()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"bytes":    n,
+		"duration": elapsed.Milliseconds(),
+		"mbps":     mbPerSec * 8,
+		"mBps":     mbPerSec,
+	})
 }

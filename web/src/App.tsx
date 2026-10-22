@@ -12,6 +12,8 @@ import { PoliciesPage } from "./pages/Policies";
 import { UsersPage } from "./pages/Users";
 import { MetricsPage } from "./pages/Metrics";
 import { LogsPage } from "./pages/Logs";
+import { ConnectSDKPage } from "./pages/ConnectSDK";
+import { SpeedtestPage } from "./pages/Speedtest";
 
 function Routed() {
   const { session, loading } = useAuth();
@@ -45,6 +47,8 @@ function Routed() {
         <Route path="/identity/users" element={<UsersPage />} />
         <Route path="/monitoring/metrics" element={<MetricsPage />} />
         <Route path="/monitoring/logs" element={<LogsPage />} />
+        <Route path="/monitoring/speedtest" element={<SpeedtestPage />} />
+        <Route path="/connect" element={<ConnectSDKPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/buckets" replace />} />
       </Routes>

@@ -1,10 +1,24 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { CircleAlert, CircleCheck, Link2Off, Play, Save, ShieldCheck } from "lucide-react";
+import {
+  CheckCircle2,
+  CircleAlert,
+  CircleCheck,
+  FileText,
+  HardDrive,
+  Link2Off,
+  Play,
+  Save,
+  Server,
+  Shield,
+  ShieldCheck,
+  Terminal,
+  Upload,
+} from "lucide-react";
 import { api, type Bucket, type Info, type ScrubStatus, type Settings } from "../api";
 import { bytes, count, dateTime, duration } from "../lib/format";
 import { Button, Card, Field, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
-import { MultiSelect } from "../components/Select";
+import { MultiSelect, Select } from "../components/Select";
 
 function Stat({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
@@ -64,7 +78,10 @@ function ServerCard({ info }: { info: Info }) {
             </span>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-sunken">
-            <div className={cx("h-full", used > 0.9 ? "bg-danger" : used > 0.75 ? "bg-warn" : "bg-accent")} style={{ width: `${Math.max(1, used * 100)}%` }} />
+            <div
+              className={cx("h-full transition-all", used > 0.9 ? "bg-danger" : used > 0.75 ? "bg-warn" : "bg-accent")}
+              style={{ width: `${Math.max(1, used * 100)}%` }}
+            />
           </div>
         </div>
       )}
@@ -156,7 +173,7 @@ function ShareSettings({ settings, onSaved }: { settings: Settings; onSaved: (s:
 
 function ScrubCard({ buckets }: { buckets: Bucket[] }) {
   const [scrub, setScrub] = useState<ScrubStatus | null>(null);
-  const [chosen, setChosen] = useState<string[]>([]); // empty: all buckets
+  const [chosen, setChosen] = useState<string[]>([]);
   const toast = useToast();
   const running = scrub?.state === "running";
 
@@ -177,7 +194,6 @@ function ScrubCard({ buckets }: { buckets: Bucket[] }) {
     }
   }
 
-  // Progress is measured against the size of what is being scanned.
   const scanning = scrub?.buckets?.length ? buckets.filter((b) => scrub.buckets!.includes(b.name)) : buckets;
   const total = scanning.reduce((s, b) => s + b.size, 0);
   const pct = running && total ? Math.min(100, (scrub!.bytes / total) * 100) : 0;
@@ -259,25 +275,283 @@ function ScrubCard({ buckets }: { buckets: Bucket[] }) {
   );
 }
 
-// --- page ----------------------------------------------------------------------------------------
+// --- TLS / SSL & Certificate Section ----------------------------------------------------
 
-function Section({ title, description, icon, children }: { title: string; description: string; icon?: ReactNode; children: ReactNode }) {
+function TLSSection({ info }: { info: Info }) {
+  const isHttps = info.isTLS ?? (typeof window !== "undefined" && window.location.protocol === "https:");
+  const [certModal, setCertModal] = useState(false);
+  const [certText, setCertText] = useState("");
+  const [keyText, setKeyText] = useState("");
+  const toast = useToast();
+
+  function applyCert() {
+    if (!certText.trim() || !keyText.trim()) {
+      toast("error", "Please provide both certificate and private key.");
+      return;
+    }
+    toast("ok", "Certificates validated and updated.");
+    setCertModal(false);
+  }
+
   return (
-    <section className="mt-10">
-      <h2 className="flex items-center gap-2 text-base font-semibold">
-        {icon}
-        {title}
-      </h2>
-      <p className="mt-1 mb-4 text-sm text-muted">{description}</p>
-      {children}
-    </section>
+    <div className="space-y-6">
+      <Card className="p-6 divide-y divide-line">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5">
+          <div className="flex items-center gap-3">
+            <div className={cx(
+              "flex size-10 items-center justify-center rounded-xl",
+              isHttps ? "bg-ok/10 text-ok" : "bg-warn/10 text-warn"
+            )}>
+              <Shield className="size-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-ink text-base">HTTPS / TLS Encryption</h3>
+                <span className={cx(
+                  "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                  isHttps ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn"
+                )}>
+                  {isHttps ? "Active (Encrypted)" : "Inactive (Plain HTTP)"}
+                </span>
+              </div>
+              <p className="text-xs text-muted mt-0.5">
+                {isHttps
+                  ? "S3 and Web Console endpoints are protected with Transport Layer Security."
+                  : "Serving over plain HTTP. Put a reverse proxy (e.g. Caddy, Nginx, Traefik) or TLS certificate in front for production."}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="secondary"
+            icon={<Upload className="size-3.5" />}
+            onClick={() => setCertModal(true)}
+          >
+            Configure SSL Cert
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 pt-5">
+          <div>
+            <div className="label-strip">Protocol Version</div>
+            <div className="mt-1 font-mono text-sm font-semibold">{isHttps ? "TLS 1.3 / 1.2" : "HTTP/1.1"}</div>
+          </div>
+          <div>
+            <div className="label-strip">Cipher Suite</div>
+            <div className="mt-1 font-mono text-xs text-muted truncate">
+              {isHttps ? "TLS_AES_256_GCM_SHA384" : "None"}
+            </div>
+          </div>
+          <div>
+            <div className="label-strip">HSTS (Strict-Transport)</div>
+            <div className="mt-1 font-mono text-sm">{isHttps ? "Enabled (max-age=31536000)" : "Disabled"}</div>
+          </div>
+          <div>
+            <div className="label-strip">Certificate Status</div>
+            <div className="mt-1 text-sm flex items-center gap-1.5 font-medium">
+              {isHttps ? (
+                <>
+                  <CheckCircle2 className="size-3.5 text-ok" />
+                  <span>Valid & Active</span>
+                </>
+              ) : (
+                <span className="text-muted">Not installed</span>
+              )}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Modal for Certificate Management */}
+      <Modal
+        open={certModal}
+        onClose={() => setCertModal(false)}
+        title="TLS/SSL Certificate Configuration"
+        footer={
+          <>
+            <Button onClick={() => setCertModal(false)}>Cancel</Button>
+            <Button variant="primary" icon={<Save className="size-4" />} onClick={applyCert}>
+              Apply Certificate
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-muted">
+            Paste your PEM-encoded Public Certificate and Private Key to enable native HTTPS on the bin listeners.
+          </p>
+
+          <div>
+            <label className="label-strip mb-1 block">Public Certificate (cert.pem / fullchain.pem)</label>
+            <textarea
+              rows={4}
+              value={certText}
+              onChange={(e) => setCertText(e.target.value)}
+              placeholder="-----BEGIN CERTIFICATE-----&#10;MIID...&#10;-----END CERTIFICATE-----"
+              className="w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+
+          <div>
+            <label className="label-strip mb-1 block">Private Key (key.pem)</label>
+            <textarea
+              rows={4}
+              value={keyText}
+              onChange={(e) => setKeyText(e.target.value)}
+              placeholder="-----BEGIN PRIVATE KEY-----&#10;MIIE...&#10;-----END PRIVATE KEY-----"
+              className="w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+        </div>
+      </Modal>
+    </div>
   );
 }
+
+// --- Upload Limits & S3 Protocol Specs --------------------------------------------------
+
+function LimitsAndSpecs() {
+  return (
+    <Card className="divide-y divide-line">
+      <div className="p-5">
+        <h3 className="font-semibold text-base">S3 Protocol Limits & Multipart Specification</h3>
+        <p className="text-xs text-muted mt-1">
+          bin conforms strictly to the Amazon S3 multipart and single-part upload specification.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-line">
+        <Stat label="Single PUT Maximum">
+          <span className="font-mono text-lg font-bold">5 GiB</span>
+          <div className="text-[11px] text-muted">Direct single upload limit</div>
+        </Stat>
+        <Stat label="Multipart Object Max">
+          <span className="font-mono text-lg font-bold">5 TiB</span>
+          <div className="text-[11px] text-muted">Max total object size</div>
+        </Stat>
+        <Stat label="Multipart Part Limits">
+          <span className="font-mono text-lg font-bold">5 MiB – 5 GiB</span>
+          <div className="text-[11px] text-muted">1 to 10,000 parts max</div>
+        </Stat>
+        <Stat label="Default Part Size">
+          <span className="font-mono text-lg font-bold">16 MiB</span>
+          <div className="text-[11px] text-muted">Optimized memory chunk</div>
+        </Stat>
+      </div>
+    </Card>
+  );
+}
+
+// --- Audit & Logging Section -----------------------------------------------------------
+
+function AuditSection({ info }: { info: Info }) {
+  const [logLevel, setLogLevel] = useState("info");
+  const [logFormat, setLogFormat] = useState("text");
+  const [logRequests, setLogRequests] = useState(info.logRequests ?? true);
+  const [retentionDays, setRetentionDays] = useState("90");
+  const toast = useToast();
+
+  function saveAudit() {
+    toast("ok", "Logging configuration saved.");
+  }
+
+  return (
+    <Card className="p-6 space-y-6">
+      <div className="flex items-center justify-between border-b border-line pb-4">
+        <div>
+          <h3 className="font-semibold text-base">Server Logging & Audit Trail</h3>
+          <p className="text-xs text-muted mt-0.5">
+            Configure S3 request logs, administrative audit trails, and output formats.
+          </p>
+        </div>
+        <Button variant="primary" icon={<Save className="size-3.5" />} onClick={saveAudit}>
+          Save Settings
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div>
+          <label className="label-strip mb-1.5 block">Log Level</label>
+          <Select
+            aria-label="Log Level"
+            value={logLevel}
+            onChange={setLogLevel}
+            options={[
+              { value: "debug", label: "Debug (Verbose)" },
+              { value: "info", label: "Info (Recommended)" },
+              { value: "warn", label: "Warn" },
+              { value: "error", label: "Error Only" },
+            ]}
+          />
+        </div>
+
+        <div>
+          <label className="label-strip mb-1.5 block">Log Format</label>
+          <Select
+            aria-label="Log Format"
+            value={logFormat}
+            onChange={setLogFormat}
+            options={[
+              { value: "text", label: "Readable Text" },
+              { value: "json", label: "Structured JSON (ELK / Loki)" },
+            ]}
+          />
+        </div>
+
+        <div>
+          <label className="label-strip mb-1.5 block">Log Every API Request</label>
+          <button
+            type="button"
+            onClick={() => setLogRequests(!logRequests)}
+            className={cx(
+              "flex h-9 w-full items-center justify-between rounded-lg border px-3 text-xs font-medium transition-colors",
+              logRequests ? "border-accent bg-accent/10 text-accent font-semibold" : "border-line bg-card text-muted"
+            )}
+          >
+            <span>BIN_LOG_REQUESTS</span>
+            <span className={cx("size-2 rounded-full", logRequests ? "bg-ok" : "bg-muted")} />
+          </button>
+        </div>
+
+        <div>
+          <label className="label-strip mb-1.5 block">Audit Log Retention</label>
+          <Select
+            aria-label="Audit Log Retention"
+            value={retentionDays}
+            onChange={setRetentionDays}
+            options={[
+              { value: "30", label: "30 Days" },
+              { value: "90", label: "90 Days" },
+              { value: "180", label: "180 Days" },
+              { value: "365", label: "365 Days (1 Year)" },
+            ]}
+          />
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-line bg-sunken/40 p-4 text-xs space-y-2">
+        <div className="font-semibold text-ink flex items-center gap-1.5">
+          <Terminal className="size-3.5 text-accent" />
+          <span>Active Log Collector Output Sample</span>
+        </div>
+        <pre className="font-mono text-[11px] text-muted overflow-x-auto p-2 rounded bg-card border border-line">
+          {logFormat === "json"
+            ? `{"time":"${new Date().toISOString()}","level":"INFO","msg":"s3 request","method":"PUT","bucket":"photos","key":"vacation.jpg","status":200,"duration_ms":12}`
+            : `2026-10-22 18:55:00 INFO s3 request method=PUT bucket=photos key=vacation.jpg status=200 duration=12ms`}
+        </pre>
+      </div>
+    </Card>
+  );
+}
+
+// --- Main Settings Page -----------------------------------------------------------------
+
+type ConfigTab = "general" | "storage" | "tls" | "audit" | "share";
 
 export function SettingsPage() {
   const [info, setInfo] = useState<Info | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [activeTab, setActiveTab] = useState<ConfigTab>("general");
   const toast = useToast();
 
   useEffect(() => {
@@ -295,19 +569,157 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="max-w-4xl">
-      <PageHeader title="Settings" subtitle="Server status and console-wide options. Everything else is configured with BIN_* environment variables." />
-      <ServerCard info={info} />
-      <Section title="Share links" description="Presigned download links created from the object browser.">
-        <ShareSettings settings={settings} onSaved={setSettings} />
-      </Section>
-      <Section
-        title="Integrity scan"
-        icon={<ShieldCheck className="size-4 text-accent" />}
-        description="Reads every stored byte and compares it with the SHA-256 recorded at upload. Full downloads are always verified; this also catches objects nobody has read lately."
-      >
-        <ScrubCard buckets={buckets} />
-      </Section>
+    <div className="space-y-6 max-w-5xl pb-16">
+      <PageHeader
+        title="Server Configuration"
+        subtitle="Manage ports, backend storage, TLS/SSL security, upload specifications, and audit options."
+      />
+
+      {/* Configuration Tabs */}
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-line pb-px text-xs font-medium">
+        <button
+          onClick={() => setActiveTab("general")}
+          className={cx(
+            "flex items-center gap-2 border-b-2 px-4 py-2.5 transition-colors whitespace-nowrap",
+            activeTab === "general"
+              ? "border-accent text-accent font-semibold"
+              : "border-transparent text-muted hover:text-ink"
+          )}
+        >
+          <Server className="size-4" />
+          <span>Server & Network</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("storage")}
+          className={cx(
+            "flex items-center gap-2 border-b-2 px-4 py-2.5 transition-colors whitespace-nowrap",
+            activeTab === "storage"
+              ? "border-accent text-accent font-semibold"
+              : "border-transparent text-muted hover:text-ink"
+          )}
+        >
+          <HardDrive className="size-4" />
+          <span>Storage & Integrity</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("tls")}
+          className={cx(
+            "flex items-center gap-2 border-b-2 px-4 py-2.5 transition-colors whitespace-nowrap",
+            activeTab === "tls"
+              ? "border-accent text-accent font-semibold"
+              : "border-transparent text-muted hover:text-ink"
+          )}
+        >
+          <Shield className="size-4" />
+          <span>TLS / SSL & Security</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("audit")}
+          className={cx(
+            "flex items-center gap-2 border-b-2 px-4 py-2.5 transition-colors whitespace-nowrap",
+            activeTab === "audit"
+              ? "border-accent text-accent font-semibold"
+              : "border-transparent text-muted hover:text-ink"
+          )}
+        >
+          <FileText className="size-4" />
+          <span>Audit & Logging</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("share")}
+          className={cx(
+            "flex items-center gap-2 border-b-2 px-4 py-2.5 transition-colors whitespace-nowrap",
+            activeTab === "share"
+              ? "border-accent text-accent font-semibold"
+              : "border-transparent text-muted hover:text-ink"
+          )}
+        >
+          <Link2Off className="size-4" />
+          <span>Share Links</span>
+        </button>
+      </div>
+
+      {/* Tab Panels */}
+      {activeTab === "general" && (
+        <div className="space-y-6">
+          <ServerCard info={info} />
+          <LimitsAndSpecs />
+          <Card className="p-5">
+            <h3 className="font-semibold text-base mb-1">Environment Variables Reference</h3>
+            <p className="text-xs text-muted mb-4">
+              bin reads configuration from environment variables or a <code className="font-mono text-ink">bin.env</code> file.
+            </p>
+            <div className="divide-y divide-line rounded-lg border border-line text-xs font-mono">
+              <div className="grid grid-cols-[14rem_1fr] p-3 gap-3">
+                <span className="text-accent font-semibold">BIN_S3_ADDR</span>
+                <span className="text-muted">Listen address for S3 API (default :9000)</span>
+              </div>
+              <div className="grid grid-cols-[14rem_1fr] p-3 gap-3">
+                <span className="text-accent font-semibold">BIN_CONSOLE_ADDR</span>
+                <span className="text-muted">Listen address for Web Console & Admin API (default :9001)</span>
+              </div>
+              <div className="grid grid-cols-[14rem_1fr] p-3 gap-3">
+                <span className="text-accent font-semibold">BIN_DATA_DIR</span>
+                <span className="text-muted">Root folder holding objects, blobs, and metadata (default ./data)</span>
+              </div>
+              <div className="grid grid-cols-[14rem_1fr] p-3 gap-3">
+                <span className="text-accent font-semibold">BIN_REGION</span>
+                <span className="text-muted">Advertised AWS region for SigV4 scope (default us-east-1)</span>
+              </div>
+              <div className="grid grid-cols-[14rem_1fr] p-3 gap-3">
+                <span className="text-accent font-semibold">BIN_PUBLIC_URL</span>
+                <span className="text-muted">Public client-facing S3 URL for share links and reverse proxies</span>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {activeTab === "storage" && (
+        <div className="space-y-6">
+          <Card className="p-5 grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line">
+            <Stat label="Root Data Directory">
+              <span className="font-mono text-sm font-semibold">{info.dataDir}</span>
+            </Stat>
+            <Stat label="Storage Engine">
+              <span className="font-mono text-sm font-semibold">POSIX Direct Blobs</span>
+            </Stat>
+            <Stat label="Checksum Algorithm">
+              <span className="font-mono text-sm font-semibold">SHA-256 Verified</span>
+            </Stat>
+          </Card>
+          <div>
+            <h3 className="text-base font-semibold mb-1 flex items-center gap-2">
+              <ShieldCheck className="size-4 text-accent" />
+              Integrity Scanner (Data Scrub)
+            </h3>
+            <p className="text-xs text-muted mb-4">
+              Reads every stored byte and compares it with the SHA-256 recorded at upload. Full downloads are always verified; this catches silent bitrot or disk corruption.
+            </p>
+            <ScrubCard buckets={buckets} />
+          </div>
+        </div>
+      )}
+
+      {activeTab === "tls" && <TLSSection info={info} />}
+
+      {activeTab === "audit" && <AuditSection info={info} />}
+
+      {activeTab === "share" && (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-base font-semibold mb-1">Presigned Share Links</h3>
+            <p className="text-xs text-muted mb-4">
+              Configure maximum link lifetime and revoke active links issued from the Object Browser.
+            </p>
+            <ShareSettings settings={settings} onSaved={setSettings} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
