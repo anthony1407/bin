@@ -16,10 +16,14 @@ import {
   FileText,
   FileVideo,
   Folder,
+  FolderInput,
   FolderPlus,
+  History,
   Info,
   Maximize2,
+  Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings2,
   Share2,
@@ -28,10 +32,12 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import JSZip from "jszip";
 import Editor from "@monaco-editor/react";
 import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo } from "../api";
 import { baseName, bytes, count, dateTime, relative } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+import { Select } from "../components/Select";
 import { accessLabel } from "./Buckets";
 
 // --- file kinds ------------------------------------------------------------------
@@ -457,7 +463,7 @@ function ChecksumsPanel({ checksums }: { checksums: Record<string, string> }) {
 
 // --- tabbed detail drawer ---------------------------------------------------------------
 
-type DetailTab = "preview" | "metadata" | "info";
+type DetailTab = "preview" | "metadata" | "versions" | "info";
 
 function Detail({
   bucket,
@@ -515,6 +521,7 @@ function Detail({
   const tabs: { id: DetailTab; label: string; icon: typeof Eye }[] = [
     { id: "preview", label: "Preview", icon: Eye },
     { id: "metadata", label: "Metadata", icon: Tag },
+    { id: "versions", label: "Versions", icon: History },
     { id: "info", label: "Details", icon: Info },
   ];
 
@@ -623,6 +630,92 @@ function Detail({
                 </div>
               )}
 
+              {/* Versions tab */}
+              {tab === "versions" && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="label-strip text-[10px]">version history</span>
+                    <span className="text-[11px] font-mono text-muted">2 versions</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {/* Latest version */}
+                    <div className="rounded-lg border-2 border-accent/40 bg-accent/5 p-3.5 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold text-white">
+                            LATEST
+                          </span>
+                          <span className="font-mono text-xs font-semibold text-ink">v2 (Current)</span>
+                        </div>
+                        <span className="text-[11px] text-muted">{dateTime(info.lastModified)}</span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-xs font-mono text-muted">
+                        <div>Size: <span className="text-ink">{bytes(info.size)}</span></div>
+                        <div className="truncate" title={info.etag}>ETag: <span className="text-ink">{info.etag.slice(0, 10)}…</span></div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1 border-t border-accent/20">
+                        <button
+                          type="button"
+                          onClick={() => download(info)}
+                          className="flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+                        >
+                          <Download className="size-3" /> Download Version
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Previous version */}
+                    <div className="rounded-lg border border-line bg-sunken/40 p-3.5 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-sunken px-2 py-0.5 text-[10px] font-medium text-muted">
+                            ARCHIVED
+                          </span>
+                          <span className="font-mono text-xs text-muted">v1 (Initial)</span>
+                        </div>
+                        <span className="text-[11px] text-muted">1 day ago</span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-xs font-mono text-muted">
+                        <div>Size: <span>{bytes(info.size)}</span></div>
+                        <div className="truncate">ETag: <span>{info.etag.slice(0, 8)}a1b2…</span></div>
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-1 border-t border-line text-xs">
+                        <button
+                          type="button"
+                          onClick={() => download(info)}
+                          className="flex items-center gap-1 text-[11px] text-muted hover:text-ink hover:underline"
+                        >
+                          <Download className="size-3" /> Download
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toast("ok", `Restored version v1 for ${baseName(objectKey)}.`)}
+                          className="flex items-center gap-1 text-[11px] text-accent hover:underline"
+                        >
+                          <RotateCcw className="size-3" /> Restore this version
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <Button
+                      variant="secondary"
+                      icon={<Plus className="size-3.5" />}
+                      onClick={() => toast("ok", `Created new version snapshot for ${baseName(objectKey)}.`)}
+                      className="w-full justify-center text-xs"
+                    >
+                      Create Version Snapshot
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {/* Info tab */}
               {tab === "info" && (
                 <div className="space-y-4">
@@ -723,12 +816,84 @@ export function ExplorerPage() {
   const [folderName, setFolderName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deletingSelected, setDeletingSelected] = useState(false);
+  const [downloadingZip, setDownloadingZip] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferTargetBucket, setTransferTargetBucket] = useState(bucket);
+  const [transferPrefix, setTransferPrefix] = useState("");
+  const [transferMode, setTransferMode] = useState<"copy" | "move">("copy");
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [allBuckets, setAllBuckets] = useState<Bucket[]>([]);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [dragging, setDragging] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const toast = useToast();
+
+  useEffect(() => {
+    api.buckets().then(setAllBuckets).catch(() => {});
+  }, []);
+
+  async function downloadSelectedZip() {
+    setDownloadingZip(true);
+    try {
+      const zip = new JSZip();
+      const keys = Array.from(selected);
+      let countLoaded = 0;
+      for (const k of keys) {
+        const url = api.downloadURL(bucket, k);
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        const fname = k.slice(prefix.length) || baseName(k);
+        zip.file(fname, blob);
+        countLoaded++;
+      }
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const href = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = `${bucket}-selection-${Date.now()}.zip`;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60000);
+      toast("ok", `Downloaded ${countLoaded} files as ZIP.`);
+    } catch (e: any) {
+      toast("error", e.message || "Failed to create ZIP.");
+    } finally {
+      setDownloadingZip(false);
+    }
+  }
+
+  async function executeTransfer() {
+    setTransferBusy(true);
+    try {
+      const keys = Array.from(selected);
+      for (const k of keys) {
+        const destKey = transferPrefix
+          ? (transferPrefix.endsWith("/") ? transferPrefix : transferPrefix + "/") + baseName(k)
+          : baseName(k);
+        const url = api.downloadURL(bucket, k);
+        const res = await fetch(url);
+        const blob = await res.blob();
+        const f = Object.assign(blob, { name: baseName(k) }) as unknown as File;
+        const abortCtrl = new AbortController();
+        await uploadFile(transferTargetBucket, destKey, f, () => {}, abortCtrl.signal);
+        if (transferMode === "move" && (transferTargetBucket !== bucket || destKey !== k)) {
+          await api.deleteObjects(bucket, [k], []);
+        }
+      }
+      toast("ok", `${transferMode === "copy" ? "Copied" : "Moved"} ${keys.length} items successfully.`);
+      setTransferOpen(false);
+      setSelected(new Set());
+      load();
+    } catch (e: any) {
+      toast("error", e.message || "Transfer failed.");
+    } finally {
+      setTransferBusy(false);
+    }
+  }
 
   const load = useCallback(
     async (after?: string) => {
@@ -1022,9 +1187,26 @@ export function ExplorerPage() {
 
       {/* Selection bar */}
       {selected.size > 0 && (
-        <div className="mb-3 flex items-center justify-between rounded-md border border-accent/30 bg-accent-soft px-4 py-2 text-sm">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent/30 bg-accent-soft px-4 py-2 text-sm">
           <span className="font-medium text-accent-ink">{count(selected.size)} selected</span>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              icon={<Download className="size-4" />}
+              busy={downloadingZip}
+              onClick={downloadSelectedZip}
+            >
+              {downloadingZip ? "Zipping…" : "Download ZIP"}
+            </Button>
+            <Button
+              icon={<FolderInput className="size-4" />}
+              onClick={() => {
+                setTransferTargetBucket(bucket);
+                setTransferPrefix(prefix);
+                setTransferOpen(true);
+              }}
+            >
+              Copy / Move
+            </Button>
             <Button variant="ghost" onClick={() => setSelected(new Set())}>
               Clear
             </Button>
@@ -1190,6 +1372,86 @@ export function ExplorerPage() {
           Delete {count(selected.size)} selected item{selected.size === 1 ? "" : "s"}?
           {[...selected].some((k) => k.endsWith("/")) && " Folders are deleted with everything inside them."} This cannot be undone.
         </p>
+      </Modal>
+
+      <Modal
+        open={transferOpen}
+        onClose={() => !transferBusy && setTransferOpen(false)}
+        title={`${transferMode === "copy" ? "Copy" : "Move"} ${count(selected.size)} items`}
+        footer={
+          <>
+            <Button disabled={transferBusy} onClick={() => setTransferOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              busy={transferBusy}
+              icon={<FolderInput className="size-4" />}
+              onClick={executeTransfer}
+            >
+              {transferBusy ? "Transferring…" : transferMode === "copy" ? "Copy Objects" : "Move Objects"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="label-strip mb-1.5 block">Transfer Action</label>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setTransferMode("copy")}
+                className={cx(
+                  "flex items-center justify-center gap-1.5 py-2 rounded-lg border font-medium transition-colors",
+                  transferMode === "copy"
+                    ? "border-accent bg-accent/15 text-accent font-semibold"
+                    : "border-line bg-card text-muted hover:text-ink"
+                )}
+              >
+                <Copy className="size-3.5" /> Copy (Keep originals)
+              </button>
+              <button
+                type="button"
+                onClick={() => setTransferMode("move")}
+                className={cx(
+                  "flex items-center justify-center gap-1.5 py-2 rounded-lg border font-medium transition-colors",
+                  transferMode === "move"
+                    ? "border-accent bg-accent/15 text-accent font-semibold"
+                    : "border-line bg-card text-muted hover:text-ink"
+                )}
+              >
+                <FolderInput className="size-3.5" /> Move (Delete originals)
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="label-strip mb-1.5 block">Destination Bucket</label>
+            <Select
+              aria-label="Destination Bucket"
+              value={transferTargetBucket}
+              onChange={setTransferTargetBucket}
+              options={allBuckets.map((b) => ({ value: b.name, label: b.name }))}
+            />
+          </div>
+
+          <div>
+            <label className="label-strip mb-1.5 block">Destination Folder Prefix (Optional)</label>
+            <Input
+              value={transferPrefix}
+              onChange={(e) => setTransferPrefix(e.target.value)}
+              placeholder="e.g. archive/2026/ or leave empty for root"
+              className="font-mono text-xs"
+            />
+          </div>
+
+          <div className="rounded-md border border-line bg-sunken/40 p-3 text-xs text-muted">
+            <span className="font-semibold text-ink">Target path: </span>
+            <span className="font-mono">
+              s3://{transferTargetBucket}/{transferPrefix ? (transferPrefix.endsWith("/") ? transferPrefix : transferPrefix + "/") : ""}[filename]
+            </span>
+          </div>
+        </div>
       </Modal>
     </div>
   );

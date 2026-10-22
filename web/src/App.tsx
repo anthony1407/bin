@@ -14,6 +14,9 @@ import { MetricsPage } from "./pages/Metrics";
 import { LogsPage } from "./pages/Logs";
 import { ConnectSDKPage } from "./pages/ConnectSDK";
 import { SpeedtestPage } from "./pages/Speedtest";
+import { DropzonePage } from "./pages/Dropzone";
+import { TerminalPage } from "./pages/Terminal";
+import { ReplicationPage } from "./pages/Replication";
 
 function Routed() {
   const { session, loading } = useAuth();
@@ -48,6 +51,9 @@ function Routed() {
         <Route path="/monitoring/metrics" element={<MetricsPage />} />
         <Route path="/monitoring/logs" element={<LogsPage />} />
         <Route path="/monitoring/speedtest" element={<SpeedtestPage />} />
+        <Route path="/dropzone" element={<DropzonePage />} />
+        <Route path="/terminal" element={<TerminalPage />} />
+        <Route path="/replication" element={<ReplicationPage />} />
         <Route path="/connect" element={<ConnectSDKPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/buckets" replace />} />

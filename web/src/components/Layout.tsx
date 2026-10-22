@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router";
 import {
   Activity,
   Archive,
+  ArrowLeftRight,
   ChevronDown,
   ChevronRight,
   Code2,
@@ -21,6 +22,8 @@ import {
   Settings,
   ShieldCheck,
   Sun,
+  Terminal,
+  UploadCloud,
   User,
   Users,
   X,
@@ -155,6 +158,13 @@ function MinioSidebarContent({
                 to="/access-keys"
                 label="Access Keys"
                 icon={Contact}
+                collapsed={collapsed}
+                onNavigate={onNavigate}
+              />
+              <NavItem
+                to="/dropzone"
+                label="Upload Dropzones"
+                icon={UploadCloud}
                 collapsed={collapsed}
                 onNavigate={onNavigate}
               />
@@ -353,11 +363,17 @@ function MinioSidebarContent({
                 )}
               </div>
 
-              {/* Extra MinIO items */}
               <NavItem
-                to="/settings"
-                label="Events"
-                icon={Zap}
+                to="/replication"
+                label="Replication & Sync"
+                icon={ArrowLeftRight}
+                collapsed={collapsed}
+                onNavigate={onNavigate}
+              />
+              <NavItem
+                to="/terminal"
+                label="S3 Terminal"
+                icon={Terminal}
                 collapsed={collapsed}
                 onNavigate={onNavigate}
               />
