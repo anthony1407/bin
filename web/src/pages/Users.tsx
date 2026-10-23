@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import {
   Check,
   Copy,
+  Download,
   Eye,
   EyeOff,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -17,6 +19,18 @@ import {
 } from "lucide-react";
 import { api, type AccessKey, type Group } from "../api";
 import { Button, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+
+function downloadFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 function copyToClipboard(text: string): Promise<boolean> {
   if (navigator?.clipboard?.writeText && window.isSecureContext) {
@@ -90,6 +104,13 @@ export function UsersPage() {
     { type: "single"; user: AccessKey } | { type: "bulk"; count: number } | null
   >(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Edit User State
+  const [editingUser, setEditingUser] = useState<AccessKey | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editReadOnly, setEditReadOnly] = useState(false);
+  const [editEnabled, setEditEnabled] = useState(true);
+  const [updatingUser, setUpdatingUser] = useState(false);
 
   // Create User Form State
   const [username, setUsername] = useState("");
@@ -206,6 +227,32 @@ export function UsersPage() {
       toast("ok", `User ${u.name || u.accessKey} ${!u.enabled ? "enabled" : "disabled"}.`);
     } catch (e) {
       toast("error", errorText(e));
+    }
+  }
+
+  function startEdit(u: AccessKey) {
+    setEditingUser(u);
+    setEditName(u.name || "");
+    setEditReadOnly(u.readOnly);
+    setEditEnabled(u.enabled);
+  }
+
+  async function handleUpdateUser() {
+    if (!editingUser) return;
+    setUpdatingUser(true);
+    try {
+      await api.updateAccessKey(editingUser.accessKey, {
+        name: editName.trim(),
+        readOnly: editReadOnly,
+        enabled: editEnabled,
+      });
+      toast("ok", `User ${editName || editingUser.accessKey} updated.`);
+      setEditingUser(null);
+      load();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setUpdatingUser(false);
     }
   }
 
@@ -583,13 +630,22 @@ export function UsersPage() {
                       )}
                     </td>
                     <td className="py-3 pr-4 text-right">
-                      <IconButton
-                        label="Delete User"
-                        onClick={() => setDeleteTarget({ type: "single", user: u })}
-                        className="hover:text-danger"
-                      >
-                        <Trash2 className="size-4" />
-                      </IconButton>
+                      <div className="flex items-center justify-end gap-1">
+                        <IconButton
+                          label="Edit User"
+                          onClick={() => startEdit(u)}
+                          className="hover:text-accent"
+                        >
+                          <Pencil className="size-4" />
+                        </IconButton>
+                        <IconButton
+                          label="Delete User"
+                          onClick={() => setDeleteTarget({ type: "single", user: u })}
+                          className="hover:text-danger"
+                        >
+                          <Trash2 className="size-4" />
+                        </IconButton>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -607,17 +663,29 @@ export function UsersPage() {
           title="User Created Successfully"
           wide={true}
           footer={
-            <div className="flex w-full items-center justify-between">
-              <Button
-                variant="secondary"
-                icon={<Copy className="size-4" />}
-                onClick={() => {
-                  const creds = `Access Key (Username): ${createdUser.accessKey}\nSecret Key (Password): ${createdUser.secretKey ?? ""}`;
-                  copyToClipboard(creds).then(() => toast("ok", "Credentials copied to clipboard."));
-                }}
-              >
-                Copy Credentials
-              </Button>
+            <div className="flex w-full flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  icon={<Copy className="size-4" />}
+                  onClick={() => {
+                    const creds = `Access Key (Username): ${createdUser.accessKey}\nSecret Key (Password): ${createdUser.secretKey ?? ""}`;
+                    copyToClipboard(creds).then(() => toast("ok", "Credentials copied to clipboard."));
+                  }}
+                >
+                  Copy Credentials
+                </Button>
+                <Button
+                  variant="secondary"
+                  icon={<Download className="size-4" />}
+                  onClick={() => {
+                    const content = `# S3 Credentials for ${createdUser.name || createdUser.accessKey}\nAWS_ACCESS_KEY_ID=${createdUser.accessKey}\nAWS_SECRET_ACCESS_KEY=${createdUser.secretKey ?? ""}\nAWS_DEFAULT_REGION=us-east-1\n`;
+                    downloadFile(`${createdUser.name || "credentials"}.env`, content);
+                  }}
+                >
+                  Download .env
+                </Button>
+              </div>
               <Button variant="primary" onClick={() => setCreatedUser(null)}>
                 I saved the credentials
               </Button>
@@ -642,6 +710,92 @@ export function UsersPage() {
                 <span className="flex-1 truncate select-all">{createdUser.secretKey ?? ""}</span>
                 <CopyButton text={createdUser.secretKey ?? ""} label="Copy secret key" />
               </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Edit User Modal */}
+      {editingUser && (
+        <Modal
+          open={!!editingUser}
+          onClose={() => !updatingUser && setEditingUser(null)}
+          title={`Edit User: ${editingUser.accessKey}`}
+          footer={
+            <div className="flex w-full items-center justify-end gap-2">
+              <Button disabled={updatingUser} onClick={() => setEditingUser(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                busy={updatingUser}
+                onClick={handleUpdateUser}
+              >
+                Save Changes
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted">User Name / Display Name</label>
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="User name"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted">Policy / Permissions</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditReadOnly(false)}
+                  className={cx(
+                    "flex flex-col items-start rounded-md border p-3 text-left transition-colors",
+                    !editReadOnly
+                      ? "border-accent bg-accent/10 text-ink"
+                      : "border-line bg-surface text-muted hover:border-line-strong hover:bg-sunken",
+                  )}
+                >
+                  <span className="text-xs font-semibold">Read & Write</span>
+                  <span className="text-[11px] text-muted">Full access to upload, download, and delete</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditReadOnly(true)}
+                  className={cx(
+                    "flex flex-col items-start rounded-md border p-3 text-left transition-colors",
+                    editReadOnly
+                      ? "border-accent bg-accent/10 text-ink"
+                      : "border-line bg-surface text-muted hover:border-line-strong hover:bg-sunken",
+                  )}
+                >
+                  <span className="text-xs font-semibold">Read Only</span>
+                  <span className="text-[11px] text-muted">View and download objects only</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-line pt-3">
+              <div>
+                <div className="text-xs font-medium text-ink">Account Status</div>
+                <div className="text-[11px] text-muted">Temporarily disable access without deleting</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditEnabled((prev) => !prev)}
+                className={cx(
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors",
+                  editEnabled
+                    ? "bg-ok-soft text-ok hover:bg-ok-soft/80"
+                    : "bg-sunken text-muted hover:bg-line-strong",
+                )}
+              >
+                <span className={cx("size-1.5 rounded-full", editEnabled ? "bg-ok" : "bg-muted")} />
+                {editEnabled ? "Enabled" : "Disabled"}
+              </button>
             </div>
           </div>
         </Modal>

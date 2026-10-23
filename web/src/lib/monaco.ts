@@ -2,7 +2,7 @@
 // CSP only allows scripts from its own origin, and self-hosted installs may
 // have no internet access. This module is loaded lazily (see CodeEditor).
 import * as monaco from "monaco-editor";
-import { Editor, loader } from "@monaco-editor/react";
+import { Editor, DiffEditor, loader } from "@monaco-editor/react";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import JsonWorker from "monaco-editor/language/json/json.worker.js?worker";
 import CssWorker from "monaco-editor/language/css/css.worker.js?worker";
@@ -33,4 +33,5 @@ self.MonacoEnvironment = {
 
 loader.config({ monaco });
 
+export { DiffEditor };
 export default Editor;

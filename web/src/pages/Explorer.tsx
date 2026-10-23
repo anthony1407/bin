@@ -21,6 +21,7 @@ import {
   Folder,
   FolderInput,
   FolderPlus,
+  GitCompare,
   History,
   Info,
   LayoutGrid,
@@ -40,7 +41,7 @@ import {
   X,
 } from "lucide-react";
 import JSZip from "jszip";
-import Editor from "../components/CodeEditor";
+import Editor, { DiffEditor } from "../components/CodeEditor";
 import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo } from "../api";
 import { baseName, bytes, count, dateTime, relative } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
@@ -196,7 +197,9 @@ function UploadPanel({ jobs, onClear }: { jobs: UploadJob[]; onClear: () => void
 // --- share dialog ----------------------------------------------------------------------
 
 const EXPIRY_CHOICES = [
+  { label: "15 min", seconds: 900 },
   { label: "1 hour", seconds: 3600 },
+  { label: "12 hours", seconds: 43200 },
   { label: "1 day", seconds: 86400 },
   { label: "7 days", seconds: 7 * 86400 },
 ];
@@ -320,6 +323,7 @@ function MonacoPreview({
   const [content, setContent] = useState<string | null>(null);
   const [currentVal, setCurrentVal] = useState<string>("");
   const [isEditing, setIsEditing] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
   const [saving, setSaving] = useState(false);
   const toast = useToast();
 
@@ -346,6 +350,7 @@ function MonacoPreview({
       await uploadFile(bucket, objectKey, f, () => {}, abortCtrl.signal);
       setContent(currentVal);
       setIsEditing(false);
+      setShowDiff(false);
       toast("ok", `Saved changes to ${baseName(objectKey)} on S3.`);
       onSaved?.();
     } catch (e: any) {
@@ -385,9 +390,22 @@ function MonacoPreview({
               <>
                 <button
                   type="button"
+                  onClick={() => setShowDiff((d) => !d)}
+                  className={cx(
+                    "flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
+                    showDiff ? "bg-accent/20 text-accent font-semibold" : "text-muted hover:text-ink bg-sunken",
+                  )}
+                  title="Toggle diff comparison with saved version"
+                >
+                  <GitCompare className="size-3" />
+                  <span>{showDiff ? "Edit Mode" : "Diff View"}</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     setCurrentVal(content);
                     setIsEditing(false);
+                    setShowDiff(false);
                   }}
                   disabled={saving}
                   className="rounded px-2 py-0.5 text-[11px] text-muted hover:text-ink transition-colors"
@@ -409,35 +427,52 @@ function MonacoPreview({
         </div>
       )}
       <div className="h-80">
-        <Editor
-          height="100%"
-          language={lang}
-          value={isEditing ? currentVal : content}
-          onChange={(v) => {
-            if (isEditing) setCurrentVal(v || "");
-          }}
-          theme="vs-dark"
-          onMount={(editor) => {
-            // Ctrl+S / Cmd+S → save
-            editor.addCommand(
-              // eslint-disable-next-line no-bitwise
-              (window.navigator.platform.includes("Mac") ? 2048 : 2048) | 49, // CtrlCmd + S
-              () => {
-                if (isEditing && bucket) handleSave();
-              },
-            );
-          }}
-          options={{
-            readOnly: !isEditing,
-            minimap: { enabled: false },
-            scrollBeyondLastLine: false,
-            fontSize: 12,
-            lineNumbers: "on",
-            wordWrap: "on",
-            renderLineHighlight: isEditing ? "line" : "none",
-            padding: { top: 8 },
-          }}
-        />
+        {showDiff ? (
+          <DiffEditor
+            height="100%"
+            language={lang}
+            original={content}
+            modified={currentVal}
+            theme="vs-dark"
+            options={{
+              readOnly: true,
+              minimap: { enabled: false },
+              renderSideBySide: true,
+              fontSize: 12,
+              padding: { top: 8 },
+            }}
+          />
+        ) : (
+          <Editor
+            height="100%"
+            language={lang}
+            value={isEditing ? currentVal : content}
+            onChange={(v) => {
+              if (isEditing) setCurrentVal(v || "");
+            }}
+            theme="vs-dark"
+            onMount={(editor) => {
+              // Ctrl+S / Cmd+S → save
+              editor.addCommand(
+                // eslint-disable-next-line no-bitwise
+                (window.navigator.platform.includes("Mac") ? 2048 : 2048) | 49, // CtrlCmd + S
+                () => {
+                  if (isEditing && bucket) handleSave();
+                },
+              );
+            }}
+            options={{
+              readOnly: !isEditing,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              fontSize: 12,
+              lineNumbers: "on",
+              wordWrap: "on",
+              renderLineHighlight: isEditing ? "line" : "none",
+              padding: { top: 8 },
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -814,12 +849,14 @@ function Detail({
   onClose,
   onShare,
   onDeleted,
+  onDiff,
 }: {
   bucket: string;
   objectKey: string;
   onClose: () => void;
   onShare: (o: ObjectInfo) => void;
   onDeleted: () => void;
+  onDiff?: (files: string[]) => void;
 }) {
   const [info, setInfo] = useState<ObjectInfo | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -1041,10 +1078,17 @@ function Detail({
                         </button>
                         <button
                           type="button"
-                          onClick={() => toast("ok", `Restored version v1 for ${baseName(objectKey)}.`)}
+                          onClick={() => onDiff?.([objectKey, objectKey])}
                           className="flex items-center gap-1 text-[11px] text-accent hover:underline"
                         >
-                          <RotateCcw className="size-3" /> Restore this version
+                          <GitCompare className="size-3" /> Diff vs Current
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toast("ok", `Restored version v1 for ${baseName(objectKey)}.`)}
+                          className="flex items-center gap-1 text-[11px] text-muted hover:text-ink hover:underline"
+                        >
+                          <RotateCcw className="size-3" /> Restore
                         </button>
                       </div>
                     </div>
@@ -1143,6 +1187,90 @@ function Detail({
   );
 }
 
+// --- File Diff Modal -------------------------------------------------------------------------
+
+function FileDiffModal({
+  bucket,
+  files,
+  onClose,
+}: {
+  bucket: string;
+  files: string[] | null;
+  onClose: () => void;
+}) {
+  const [contentA, setContentA] = useState<string | null>(null);
+  const [contentB, setContentB] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!files || files.length < 2) return;
+    setLoading(true);
+    Promise.all([
+      fetch(api.downloadURL(bucket, files[0])).then((r) => r.text()).catch(() => ""),
+      fetch(api.downloadURL(bucket, files[1])).then((r) => r.text()).catch(() => ""),
+    ])
+      .then(([a, b]) => {
+        setContentA(a);
+        setContentB(b);
+      })
+      .finally(() => setLoading(false));
+  }, [bucket, files]);
+
+  if (!files || files.length < 2) return null;
+  const lang = getMonacoLanguage(files[1], "");
+
+  return (
+    <Modal
+      open={!!files}
+      onClose={onClose}
+      title="File Comparison (Monaco Diff Viewer)"
+      wide={true}
+      footer={
+        <Button variant="primary" onClick={onClose}>
+          Close Diff
+        </Button>
+      }
+    >
+      <div className="space-y-3">
+        <div className="flex items-center justify-between text-xs font-mono">
+          <div className="flex items-center gap-2 rounded bg-sunken px-2.5 py-1 text-muted">
+            <span className="font-semibold text-danger">Original:</span>
+            <span className="truncate max-w-xs">{baseName(files[0])}</span>
+          </div>
+          <GitCompare className="size-4 text-muted shrink-0" />
+          <div className="flex items-center gap-2 rounded bg-sunken px-2.5 py-1 text-muted">
+            <span className="font-semibold text-ok">Modified:</span>
+            <span className="truncate max-w-xs">{baseName(files[1])}</span>
+          </div>
+        </div>
+
+        <div className="h-96 rounded-md border border-line overflow-hidden">
+          {loading ? (
+            <div className="flex h-full items-center justify-center">
+              <Spinner />
+            </div>
+          ) : (
+            <DiffEditor
+              height="100%"
+              language={lang}
+              original={contentA ?? ""}
+              modified={contentB ?? ""}
+              theme="vs-dark"
+              options={{
+                readOnly: true,
+                minimap: { enabled: false },
+                renderSideBySide: true,
+                fontSize: 12,
+                scrollBeyondLastLine: false,
+              }}
+            />
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // --- page ------------------------------------------------------------------------------------
 
 export function ExplorerPage() {
@@ -1159,6 +1287,7 @@ export function ExplorerPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<string | null>(null);
   const [sharing, setSharing] = useState<ObjectInfo | null>(null);
+  const [diffFiles, setDiffFiles] = useState<string[] | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1713,6 +1842,30 @@ export function ExplorerPage() {
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent/30 bg-accent-soft px-4 py-2 text-sm">
           <span className="font-medium text-accent-ink">{count(selected.size)} selected</span>
           <div className="flex flex-wrap items-center gap-2">
+            {selected.size === 2 && (
+              <Button
+                icon={<GitCompare className="size-4" />}
+                onClick={() => setDiffFiles(Array.from(selected))}
+              >
+                Compare (Diff)
+              </Button>
+            )}
+            {selected.size === 1 && !([...selected][0].endsWith("/")) && (
+              <Button
+                icon={<Share2 className="size-4" />}
+                onClick={async () => {
+                  const key = [...selected][0];
+                  try {
+                    const st = await api.stat(bucket, key);
+                    setSharing(st);
+                  } catch {
+                    setSharing({ key, size: 0, etag: "", lastModified: new Date().toISOString() });
+                  }
+                }}
+              >
+                Share URL
+              </Button>
+            )}
             <Button
               icon={<Download className="size-4" />}
               busy={downloadingZip}
@@ -1813,6 +1966,19 @@ export function ExplorerPage() {
                         className="size-4 accent-[var(--accent)]"
                       />
                     </div>
+                    <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSharing(o);
+                        }}
+                        className="flex size-7 items-center justify-center rounded-full bg-surface/90 text-muted shadow hover:text-accent backdrop-blur transition-colors"
+                        title="Share Presigned URL"
+                      >
+                        <Share2 className="size-3.5" />
+                      </button>
+                    </div>
                     <div className="flex h-28 w-full items-center justify-center overflow-hidden bg-sunken/80">
                       {isImg ? (
                         <img
@@ -1855,7 +2021,7 @@ export function ExplorerPage() {
                 </th>
                 <th className="py-2 pr-3 font-semibold text-ink">▲ Name</th>
                 <th className="hidden w-44 py-2 pr-4 font-normal md:table-cell">Last Modified</th>
-                <th className="hidden w-28 py-2 pr-4 text-right font-normal sm:table-cell">Size</th>
+                <th className="hidden w-36 py-2 pr-4 text-right font-normal sm:table-cell">Size</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -1895,7 +2061,21 @@ export function ExplorerPage() {
                     <td className="hidden py-2.5 pr-4 text-muted md:table-cell" title={dateTime(o.lastModified)}>
                       {dateTime(o.lastModified)}
                     </td>
-                    <td className="num hidden py-2.5 pr-4 text-right text-muted sm:table-cell">{bytes(o.size)}</td>
+                    <td className="num hidden py-2.5 pr-4 text-right text-muted sm:table-cell">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <span>{bytes(o.size)}</span>
+                        <IconButton
+                          label="Share"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSharing(o);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 hover:text-accent transition-opacity size-7"
+                        >
+                          <Share2 className="size-3.5" />
+                        </IconButton>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
@@ -1935,6 +2115,7 @@ export function ExplorerPage() {
           objectKey={detail}
           onClose={() => setDetail(null)}
           onShare={setSharing}
+          onDiff={setDiffFiles}
           onDeleted={() => {
             setDetail(null);
             load();
@@ -1942,6 +2123,7 @@ export function ExplorerPage() {
         />
       )}
       <ShareModal bucket={bucket} object={sharing} onClose={() => setSharing(null)} />
+      <FileDiffModal bucket={bucket} files={diffFiles} onClose={() => setDiffFiles(null)} />
       <UploadPanel jobs={jobs} onClear={() => setJobs([])} />
 
       <Modal

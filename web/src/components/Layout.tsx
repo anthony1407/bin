@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { NavLink, useLocation } from "react-router";
+import { NavLink, useLocation, useNavigate } from "react-router";
 import {
   Activity,
   Archive,
@@ -18,6 +18,7 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  Search,
   SearchCheck,
   Settings,
   ShieldCheck,
@@ -30,6 +31,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useAuth } from "../auth";
+import { api, type Bucket } from "../api";
 import { BinMark, IconButton, cx } from "./ui";
 
 export function useTheme() {
@@ -111,14 +113,211 @@ function SubNavItem({ to, label, icon: Icon, onNavigate }: Omit<NavItemProps, "c
   );
 }
 
+interface PaletteItem {
+  label: string;
+  section: string;
+  icon: typeof FolderSearch;
+  to?: string;
+  badge?: string;
+  action?: () => void;
+}
+
+function CommandPalette({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const navigate = useNavigate();
+  const { toggle: toggleTheme } = useTheme();
+
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      setSelectedIndex(0);
+      api.buckets().then(setBuckets).catch(() => {});
+    }
+  }, [open]);
+
+  const navItems: PaletteItem[] = [
+    { label: "Object Browser", to: "/buckets", icon: FolderSearch, section: "Navigation" },
+    { label: "Access Keys", to: "/access-keys", icon: Contact, section: "Navigation" },
+    { label: "Upload Dropzones", to: "/dropzone", icon: UploadCloud, section: "Navigation" },
+    { label: "Connect SDK", to: "/connect", icon: Code2, section: "Navigation" },
+    { label: "Buckets", to: "/buckets", icon: Archive, section: "Administrator" },
+    { label: "Policies", to: "/policies", icon: ShieldCheck, section: "Administrator" },
+    { label: "Users", to: "/identity/users", icon: User, section: "Administrator" },
+    { label: "Groups", to: "/identity/groups", icon: Users, section: "Administrator" },
+    { label: "Metrics", to: "/monitoring/metrics", icon: Activity, section: "Monitoring" },
+    { label: "Logs", to: "/monitoring/logs", icon: FileText, section: "Monitoring" },
+    { label: "Speedtest", to: "/monitoring/speedtest", icon: Zap, section: "Monitoring" },
+    { label: "Replication & Sync", to: "/replication", icon: ArrowLeftRight, section: "Administrator" },
+    { label: "S3 Terminal", to: "/terminal", icon: Terminal, section: "Administrator" },
+    { label: "Configuration", to: "/settings", icon: Settings, section: "Administrator" },
+  ];
+
+  const bucketItems: PaletteItem[] = buckets.map((b) => ({
+    label: b.name,
+    to: `/buckets/${encodeURIComponent(b.name)}`,
+    icon: Archive,
+    section: "Buckets",
+    badge: `${b.objects} objs`,
+  }));
+
+  const actionItems: PaletteItem[] = [
+    {
+      label: "Create New User",
+      to: "/identity/users",
+      icon: User,
+      section: "Actions",
+    },
+    {
+      label: "New Access Key",
+      to: "/access-keys",
+      icon: Key,
+      section: "Actions",
+    },
+    {
+      label: "Toggle Theme (Dark / Light)",
+      action: () => toggleTheme(),
+      icon: Sun,
+      section: "Actions",
+    },
+  ];
+
+  const allItems: PaletteItem[] = [...bucketItems, ...navItems, ...actionItems];
+
+  const filtered = query.trim()
+    ? allItems.filter(
+        (item) =>
+          item.label.toLowerCase().includes(query.toLowerCase()) ||
+          item.section.toLowerCase().includes(query.toLowerCase()),
+      )
+    : allItems.slice(0, 15);
+
+  const executeItem = (item: PaletteItem) => {
+    onClose();
+    if (item.action) {
+      item.action();
+    } else if (item.to) {
+      navigate(item.to);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedIndex((i) => (i + 1) % Math.max(1, filtered.length));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedIndex((i) => (i - 1 + filtered.length) % Math.max(1, filtered.length));
+    } else if (e.key === "Enter" && filtered[selectedIndex]) {
+      e.preventDefault();
+      executeItem(filtered[selectedIndex]);
+    } else if (e.key === "Escape") {
+      onClose();
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-20 p-4">
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-xs" onClick={onClose} />
+      <div className="relative w-full max-w-lg overflow-hidden rounded-xl border border-line bg-surface shadow-2xl transition-all">
+        {/* Search Input Bar */}
+        <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+          <Search className="size-5 text-faint shrink-0" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setSelectedIndex(0);
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder="Type a command, page, or bucket name…"
+            className="w-full bg-transparent text-sm text-ink placeholder:text-muted focus:outline-none font-medium"
+          />
+          <kbd className="rounded border border-line bg-sunken px-1.5 py-0.5 font-mono text-[10px] text-faint">
+            ESC
+          </kbd>
+        </div>
+
+        {/* Results list */}
+        <div className="max-h-80 overflow-y-auto p-2 space-y-1">
+          {filtered.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted">No results found for “{query}”.</div>
+          ) : (
+            filtered.map((item, index) => {
+              const Icon = item.icon;
+              const isSelected = index === selectedIndex;
+              return (
+                <div
+                  key={`${item.section}-${item.label}-${index}`}
+                  onClick={() => executeItem(item)}
+                  onMouseEnter={() => setSelectedIndex(index)}
+                  className={cx(
+                    "flex items-center justify-between rounded-lg px-3 py-2 text-xs cursor-pointer transition-colors",
+                    isSelected
+                      ? "bg-accent/15 text-accent-ink font-semibold dark:bg-accent/25 dark:text-white"
+                      : "text-ink hover:bg-sunken",
+                  )}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div
+                      className={cx(
+                        "flex size-6 items-center justify-center rounded-md",
+                        isSelected ? "bg-accent text-white" : "bg-sunken text-muted",
+                      )}
+                    >
+                      <Icon className="size-3.5" />
+                    </div>
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {item.badge && (
+                      <span className="rounded bg-sunken px-1.5 py-0.5 text-[10px] font-mono text-muted">
+                        {item.badge}
+                      </span>
+                    )}
+                    <span className="text-[10px] uppercase font-bold text-faint tracking-wider">
+                      {item.section}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer shortcuts */}
+        <div className="flex items-center justify-between border-t border-line bg-sunken/40 px-3 py-2 text-[11px] text-faint">
+          <div className="flex items-center gap-3">
+            <span><kbd className="rounded border border-line px-1 text-[10px]">↑</kbd> <kbd className="rounded border border-line px-1 text-[10px]">↓</kbd> navigate</span>
+            <span><kbd className="rounded border border-line px-1 text-[10px]">↵</kbd> select</span>
+          </div>
+          <span>Global Search (Ctrl+K)</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SidebarContent({
   collapsed,
   onToggleCollapse,
   onNavigate,
+  onOpenSearch,
 }: {
   collapsed: boolean;
   onToggleCollapse: () => void;
   onNavigate?: () => void;
+  onOpenSearch?: () => void;
 }) {
   const [identityOpen, setIdentityOpen] = useState<boolean>(true);
   const [monitoringOpen, setMonitoringOpen] = useState<boolean>(true);
@@ -154,6 +353,34 @@ function SidebarContent({
               <PanelLeftClose className="size-4" />
             )}
           </button>
+        </div>
+
+        {/* Quick Search Button (Ctrl+K) */}
+        <div className="pt-2.5 pb-1 px-1">
+          {!collapsed ? (
+            <button
+              type="button"
+              onClick={onOpenSearch}
+              className="flex w-full items-center justify-between rounded-lg border border-line bg-sunken/60 px-2.5 py-1.5 text-xs text-muted hover:border-accent/40 hover:text-ink hover:bg-sunken transition-all shadow-xs"
+            >
+              <span className="flex items-center gap-2">
+                <Search className="size-3.5 text-faint" />
+                <span>Quick search…</span>
+              </span>
+              <kbd className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[10px] text-faint shadow-2xs">
+                Ctrl K
+              </kbd>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenSearch}
+              title="Quick Search (Ctrl+K)"
+              className="mx-auto flex size-8 items-center justify-center rounded-lg text-muted hover:bg-sunken hover:text-ink transition-colors"
+            >
+              <Search className="size-4" />
+            </button>
+          )}
         </div>
 
         {/* Navigation list */}
@@ -383,6 +610,7 @@ function Footer({ collapsed }: { collapsed: boolean }) {
 
 export function Layout({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem("bin-sidebar-collapsed") === "true";
@@ -390,6 +618,17 @@ export function Layout({ children }: { children: ReactNode }) {
       return false;
     }
   });
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const toggleCollapsed = () => {
     setCollapsed((prev) => {
@@ -406,6 +645,9 @@ export function Layout({ children }: { children: ReactNode }) {
 
   return (
     <div className={cx("min-h-dvh transition-all duration-200", collapsed ? "lg:pl-16" : "lg:pl-64")}>
+      {/* Command Palette */}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+
       {/* Desktop Sidebar (Collapsible) */}
       <aside
         className={cx(
@@ -416,6 +658,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <SidebarContent
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
+          onOpenSearch={() => setPaletteOpen(true)}
         />
       </aside>
 
@@ -427,9 +670,14 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
           <span className="font-mono font-bold text-base tracking-tight text-ink">bin</span>
         </div>
-        <IconButton label="Menu" onClick={() => setMobileOpen(true)}>
-          <Menu className="size-5" />
-        </IconButton>
+        <div className="flex items-center gap-1">
+          <IconButton label="Search (Ctrl+K)" onClick={() => setPaletteOpen(true)}>
+            <Search className="size-5" />
+          </IconButton>
+          <IconButton label="Menu" onClick={() => setMobileOpen(true)}>
+            <Menu className="size-5" />
+          </IconButton>
+        </div>
       </header>
 
       {/* Mobile Drawer */}
@@ -448,6 +696,10 @@ export function Layout({ children }: { children: ReactNode }) {
                 collapsed={false}
                 onToggleCollapse={() => {}}
                 onNavigate={() => setMobileOpen(false)}
+                onOpenSearch={() => {
+                  setMobileOpen(false);
+                  setPaletteOpen(true);
+                }}
               />
             </div>
           </div>
