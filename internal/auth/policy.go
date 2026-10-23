@@ -94,10 +94,20 @@ const (
 	ReadWrite Access = "readwrite"
 )
 
-// Rule grants anonymous access to keys starting with Prefix.
+// Rule grants anonymous access to keys starting with Prefix, or with Exact
+// to the one object whose key is Prefix. Exact rules never allow listing.
 type Rule struct {
 	Prefix string `json:"prefix"`
 	Access Access `json:"access"`
+	Exact  bool   `json:"exact,omitempty"`
+}
+
+// covers reports whether the rule applies to resource.
+func (r Rule) covers(resource string) bool {
+	if r.Exact {
+		return resource == r.Prefix
+	}
+	return strings.HasPrefix(resource, r.Prefix)
 }
 
 // Policy is a bucket's anonymous-access policy.
@@ -130,6 +140,9 @@ func (p Policy) Validate() error {
 			return fmt.Errorf("custom policies need at least one rule")
 		}
 		for _, r := range p.Rules {
+			if r.Exact && r.Prefix == "" {
+				return fmt.Errorf("an object rule needs the object key")
+			}
 			switch r.Access {
 			case ReadOnly, WriteOnly, ReadWrite:
 			default:
@@ -168,14 +181,19 @@ func (p Policy) AllowsAnonymous(a Action, resource string) bool {
 	for _, r := range p.rules() {
 		reads := r.Access == ReadOnly || r.Access == ReadWrite
 		writes := r.Access == WriteOnly || r.Access == ReadWrite
-		under := strings.HasPrefix(resource, r.Prefix)
+		under := r.covers(resource)
 		switch a {
 		case BucketInfo:
-			if reads {
+			// One public object does not reveal the bucket.
+			if reads && !r.Exact {
 				return true
 			}
-		case ReadObject, ListBucket:
+		case ReadObject:
 			if reads && under {
+				return true
+			}
+		case ListBucket:
+			if reads && under && !r.Exact {
 				return true
 			}
 		case WriteObject:

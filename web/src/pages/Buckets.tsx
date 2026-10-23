@@ -42,7 +42,7 @@ function validateBucketName(name: string): string {
 }
 
 function bucketAccessLabel(b: Bucket): string {
-  if (b.policy.mode === "public") return "R/W";
+  if (b.policy.mode === "public") return "PUBLIC READ";
   if (b.policy.mode === "custom") return "CUSTOM";
   return "PRIVATE";
 }
@@ -65,6 +65,7 @@ function CreateBucketModal({
   const [quotaUnit, setQuotaUnit] = useState<"GiB" | "TiB">("TiB");
   const [retention, setRetention] = useState(false);
   const [retentionDays, setRetentionDays] = useState("180");
+  const [isPublic, setIsPublic] = useState(false);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
 
@@ -77,6 +78,7 @@ function CreateBucketModal({
       setLocking(false);
       setQuota(false);
       setRetention(false);
+      setIsPublic(false);
       setShowRules(false);
     }
   }, [open]);
@@ -87,6 +89,7 @@ function CreateBucketModal({
     setLocking(false);
     setQuota(false);
     setRetention(false);
+    setIsPublic(false);
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -95,7 +98,7 @@ function CreateBucketModal({
     setBusy(true);
 
     try {
-      const b = await api.createBucket(name.trim());
+      const b = await api.createBucket(name.trim(), isPublic ? { mode: "public" } : undefined);
       // If quota was set, apply it
       if (quota) {
         const factor = quotaUnit === "TiB" ? 1024 * 1024 * 1024 * 1024 : 1024 * 1024 * 1024;
@@ -160,6 +163,41 @@ function CreateBucketModal({
                   <li key={r}>• {r}</li>
                 ))}
               </ul>
+            )}
+          </div>
+
+          {/* Access Section */}
+          <div className="space-y-3 border-t border-line pt-4">
+            <div className="text-sm font-bold text-ink">Access</div>
+            <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Anonymous access">
+              {(
+                [
+                  { value: false, title: "Private", body: "Only signed requests from access keys.", icon: Lock },
+                  { value: true, title: "Public read", body: "Anyone can download objects by URL and list the bucket.", icon: Globe },
+                ] as const
+              ).map((o) => (
+                <button
+                  key={o.title}
+                  type="button"
+                  role="radio"
+                  aria-checked={isPublic === o.value}
+                  onClick={() => setIsPublic(o.value)}
+                  className={cx(
+                    "rounded-md border p-3 text-left transition-colors",
+                    isPublic === o.value ? "border-accent bg-accent-soft/60 ring-1 ring-accent" : "border-line-strong hover:bg-sunken",
+                  )}
+                >
+                  <o.icon className={cx("mb-1.5 size-4", isPublic === o.value ? "text-accent" : "text-faint")} />
+                  <div className="text-xs font-semibold">{o.title}</div>
+                  <div className="mt-0.5 text-[11px] text-muted">{o.body}</div>
+                </button>
+              ))}
+            </div>
+            {isPublic && (
+              <p className="text-xs text-warn">
+                Every object will be readable without credentials. To open only some folders or files, keep it private and
+                use Make public in the Object Browser.
+              </p>
             )}
           </div>
 

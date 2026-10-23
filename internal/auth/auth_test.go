@@ -52,6 +52,7 @@ func TestPolicy(t *testing.T) {
 		{Prefix: "scratch/", Access: ReadWrite},
 	}}
 	private := Policy{Mode: "private"}
+	oneFile := Policy{Mode: "custom", Rules: []Rule{{Prefix: "photos/cat.jpg", Access: ReadOnly, Exact: true}}}
 	for _, tc := range []struct {
 		p        Policy
 		a        Action
@@ -72,13 +73,20 @@ func TestPolicy(t *testing.T) {
 		{custom, DeleteObject, "scratch/tmp", true},
 		{custom, BucketInfo, "", true},
 		{custom, ManageBucket, "", false},
+		{oneFile, ReadObject, "photos/cat.jpg", true},
+		{oneFile, ReadObject, "photos/cat.jpg.bak", false}, // exact: not a prefix
+		{oneFile, ReadObject, "photos/dog.jpg", false},
+		{oneFile, ListBucket, "photos/cat.jpg", false},
+		{oneFile, BucketInfo, "", false},
+		{oneFile, WriteObject, "photos/cat.jpg", false},
 	} {
 		if got := tc.p.AllowsAnonymous(tc.a, tc.resource); got != tc.want {
 			t.Errorf("%s %v %q = %v", tc.p.Mode, tc.a, tc.resource, got)
 		}
 	}
 	for _, bad := range []Policy{{Mode: "open"}, {Mode: "custom"}, {Mode: "public", Rules: custom.Rules},
-		{Mode: "custom", Rules: []Rule{{Prefix: "", Access: "everything"}}}} {
+		{Mode: "custom", Rules: []Rule{{Prefix: "", Access: "everything"}}},
+		{Mode: "custom", Rules: []Rule{{Prefix: "", Access: ReadOnly, Exact: true}}}} {
 		if bad.Validate() == nil {
 			t.Errorf("%+v accepted", bad)
 		}

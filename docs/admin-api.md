@@ -44,7 +44,7 @@ Errors always look like `{"error": "<code>", "message": "<human text>"}`.
 | Method and path | Body / query | Response |
 |---|---|---|
 | `GET /api/v1/buckets` | | `{"buckets": [bucket]}` |
-| `POST /api/v1/buckets` | `{"name"}` | `201` bucket |
+| `POST /api/v1/buckets` | `{"name", "policy"?}` (policy below; default private) | `201` bucket |
 | `GET /api/v1/buckets/{bucket}` | | bucket |
 | `DELETE /api/v1/buckets/{bucket}` | `?force=true` deletes the content first | `204` |
 | `PUT /api/v1/buckets/{bucket}/tags` | `{"tags": {"k":"v"}}` (replaces all; `{}` removes) | bucket |
@@ -62,14 +62,17 @@ A policy controls anonymous (unsigned) S3 access:
 {"mode": "custom", "rules": [
   {"prefix": "shared/", "access": "readonly"},
   {"prefix": "inbox/",  "access": "writeonly"},
-  {"prefix": "tmp/",    "access": "readwrite"}
+  {"prefix": "tmp/",    "access": "readwrite"},
+  {"prefix": "img/logo.png", "access": "readonly", "exact": true}
 ]}
 ```
 
 `readonly` allows GET/HEAD of keys under the prefix and listing with that
 prefix; `writeonly` allows uploads under it; `readwrite` allows both plus
-deletes. `public` is `readonly` on everything. Anonymous callers can never
-list buckets, copy, or bulk-delete.
+deletes. With `"exact": true` a rule covers only the object whose key equals
+`prefix` (not `img/logo.png.bak`), and never allows listing. `public` is
+`readonly` on everything. Anonymous callers can never list buckets, copy, or
+bulk-delete.
 
 ### Objects
 

@@ -22,10 +22,12 @@ import {
   FolderInput,
   FolderPlus,
   GitCompare,
+  Globe,
   History,
   Info,
   LayoutGrid,
   LayoutList,
+  Lock,
   Maximize2,
   Plus,
   RefreshCw,
@@ -47,6 +49,7 @@ import { baseName, bytes, count, dateTime, relative } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 import { accessLabel } from "./Buckets";
+import { publicReason, publicURL, withPublic, type PublicReason } from "../lib/publicAccess";
 
 // --- file kinds ------------------------------------------------------------------
 
@@ -843,6 +846,73 @@ function BucketAnalyticsModal({
 
 type DetailTab = "preview" | "metadata" | "versions" | "info";
 
+/** Whether anonymous users can read an object, with its public URL and a toggle. */
+function PublicAccess({
+  bucket,
+  objectKey,
+  reason,
+  s3Endpoint,
+  busy,
+  onChange,
+}: {
+  bucket: string;
+  objectKey: string;
+  reason: PublicReason;
+  s3Endpoint: string;
+  busy: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const isPublic = reason.kind !== "private";
+  const url = s3Endpoint ? publicURL(s3Endpoint, bucket, objectKey) : "";
+
+  return (
+    <div className="space-y-2.5 rounded-md border border-line p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          {isPublic ? <Globe className="size-4 shrink-0 text-warn" /> : <Lock className="size-4 shrink-0 text-faint" />}
+          <div className="min-w-0">
+            <div className="font-medium">{isPublic ? "Public" : "Private"}</div>
+            <div className="truncate text-xs text-muted">
+              {reason.kind === "bucket" && "The whole bucket is public."}
+              {reason.kind === "folder" && <>Public through the folder <span className="font-mono">{reason.prefix}</span></>}
+              {reason.kind === "self" && "Anyone with the URL can download it."}
+              {reason.kind === "private" && "Only signed requests and share links."}
+            </div>
+          </div>
+        </div>
+        {(reason.kind === "private" || reason.kind === "self") && (
+          <Button
+            busy={busy}
+            icon={isPublic ? <Lock className="size-4" /> : <Globe className="size-4" />}
+            onClick={() => onChange(!isPublic)}
+            className="shrink-0"
+          >
+            {isPublic ? "Make private" : "Make public"}
+          </Button>
+        )}
+      </div>
+      {isPublic && url && (
+        <div className="flex items-center gap-1.5">
+          <Input readOnly mono value={url} aria-label="Public URL" className="h-8 text-xs" onFocus={(e) => e.target.select()} />
+          <IconButton
+            label={copied ? "Copied" : "Copy URL"}
+            className="size-8 shrink-0"
+            onClick={() =>
+              navigator.clipboard.writeText(url).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              })
+            }
+          >
+            {copied ? <Check className="size-4 text-ok" /> : <Copy className="size-4" />}
+          </IconButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Detail({
   bucket,
   objectKey,
@@ -850,6 +920,7 @@ function Detail({
   onShare,
   onDeleted,
   onDiff,
+  publicAccess,
 }: {
   bucket: string;
   objectKey: string;
@@ -857,6 +928,8 @@ function Detail({
   onShare: (o: ObjectInfo) => void;
   onDeleted: () => void;
   onDiff?: (files: string[]) => void;
+  /** Omitted until the bucket policy is known. */
+  publicAccess?: { reason: PublicReason; s3Endpoint: string; busy: boolean; onChange: (on: boolean) => void };
 }) {
   const [info, setInfo] = useState<ObjectInfo | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -975,6 +1048,7 @@ function Detail({
                       Delete
                     </Button>
                   </div>
+                  {publicAccess && <PublicAccess bucket={bucket} objectKey={objectKey} {...publicAccess} />}
                   {/* Quick info summary */}
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="rounded-md border border-line px-3 py-2">
@@ -1303,6 +1377,27 @@ export function ExplorerPage() {
   const [dragging, setDragging] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [s3Endpoint, setS3Endpoint] = useState("");
+  const [publicBusy, setPublicBusy] = useState(false);
+
+  useEffect(() => {
+    api.info().then((i) => setS3Endpoint(i.s3Endpoint)).catch(() => {});
+  }, []);
+
+  /** Opens or closes anonymous read access to one folder or object. */
+  async function setPublic(key: string, on: boolean) {
+    if (!meta) return;
+    setPublicBusy(true);
+    try {
+      setMeta(await api.setPolicy(bucket, withPublic(meta.policy, key, on)));
+      toast("ok", `${baseName(key) || key} is now ${on ? "public" : "private"}.`);
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setPublicBusy(false);
+    }
+  }
+  const isPublicKey = (key: string) => !!meta && publicReason(meta.policy, key).kind !== "private";
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [filterKind, setFilterKind] = useState<Kind | "large" | "today" | null>(null);
   const [showTrash, setShowTrash] = useState(false);
@@ -2116,6 +2211,16 @@ export function ExplorerPage() {
           onClose={() => setDetail(null)}
           onShare={setSharing}
           onDiff={setDiffFiles}
+          publicAccess={
+            meta
+              ? {
+                  reason: publicReason(meta.policy, detail),
+                  s3Endpoint,
+                  busy: publicBusy,
+                  onChange: (on) => setPublic(detail, on),
+                }
+              : undefined
+          }
           onDeleted={() => {
             setDetail(null);
             load();

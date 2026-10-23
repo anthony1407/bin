@@ -25,8 +25,8 @@ function Section({ title, description, children }: { title: string; description:
 
 const MODES: { mode: Policy["mode"]; title: string; body: string; icon: typeof Lock }[] = [
   { mode: "private", title: "Private", body: "Only signed requests from access keys.", icon: Lock },
-  { mode: "public", title: "Public read", body: "Anyone can download objects by URL. Listing is not allowed.", icon: Globe },
-  { mode: "custom", title: "Custom", body: "Anonymous access to chosen folders only.", icon: SlidersHorizontal },
+  { mode: "public", title: "Public read", body: "Anyone can download objects by URL and list the bucket.", icon: Globe },
+  { mode: "custom", title: "Custom", body: "Anonymous access to chosen folders and files only.", icon: SlidersHorizontal },
 ];
 
 const ACCESS_TEXT: Record<Access, string> = {
@@ -90,13 +90,27 @@ function PolicyEditor({ bucket, onSaved }: { bucket: Bucket; onSaved: (b: Bucket
       {mode === "custom" && (
         <div className="rounded-md border border-line">
           <div className="label-strip grid grid-cols-[1fr_9rem_2.25rem] gap-2 border-b border-line bg-sunken/60 px-3 py-2">
-            <span>folder prefix</span>
+            <span>folder prefix or file</span>
             <span>anonymous access</span>
             <span />
           </div>
           {rules.map((r, i) => (
             <div key={i} className="grid grid-cols-[1fr_9rem_2.25rem] items-center gap-2 border-b border-line px-3 py-2 last:border-b-0">
-              <Input mono value={r.prefix} onChange={(e) => update(i, { prefix: e.target.value })} placeholder="shared/" aria-label="Folder prefix" />
+              <div className="relative">
+                <Input
+                  mono
+                  value={r.prefix}
+                  onChange={(e) => update(i, { prefix: e.target.value })}
+                  placeholder="shared/"
+                  aria-label={r.exact ? "File key" : "Folder prefix"}
+                  className={r.exact ? "pr-12" : undefined}
+                />
+                {r.exact && (
+                  <span className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[10px] font-semibold text-faint uppercase" title="Only this exact file">
+                    file
+                  </span>
+                )}
+              </div>
               <Select
                 aria-label="Anonymous access"
                 value={r.access}

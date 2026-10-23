@@ -234,7 +234,7 @@ export function ReplicationPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
           title="Bucket Replication & Backup"
-          subtitle="Configure continuous, asynchronous replication between bin and remote S3 targets (AWS S3, MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
+          subtitle="Configure continuous, asynchronous replication between bin and remote S3 targets (AWS S3, Cloudflare R2, Wasabi, Backblaze B2 or any S3-compatible server)."
         />
         <Button
           variant="primary"
@@ -251,7 +251,7 @@ export function ReplicationPage() {
           <ArrowLeftRight className="size-10 mx-auto text-faint" />
           <div className="font-semibold text-ink">No replication targets configured</div>
           <div className="text-xs text-muted max-w-sm mx-auto">
-            Set up automatic offsite backups or active replication to keep secondary copies in another cloud or import data from an external MinIO instance.
+            Set up automatic offsite backups or active replication to keep secondary copies in another cloud, or import all files, buckets and configurations from an external S3-compatible server.
           </div>
           <Button variant="primary" icon={<Plus className="size-4" />} onClick={handleOpenModal}>
             Configure First Target
@@ -413,7 +413,7 @@ export function ReplicationPage() {
                 <ArrowDownLeft className={cx("size-4 shrink-0", direction === "pull" ? "text-accent" : "text-muted")} />
                 <div>
                   <div className="font-semibold">Inbound (Pull / Import)</div>
-                  <div className="text-[11px] text-muted">Import from remote MinIO / S3 to local</div>
+                  <div className="text-[11px] text-muted">Import files, buckets & config from remote server</div>
                 </div>
               </button>
             </div>
@@ -432,7 +432,7 @@ export function ReplicationPage() {
                 setRuleName(e.target.value);
                 clearError("ruleName");
               }}
-              placeholder={direction === "pull" ? "e.g. MinIO Production Inbound Sync" : "e.g. AWS S3 Disaster Recovery"}
+              placeholder={direction === "pull" ? "e.g. Production Server Inbound Sync" : "e.g. AWS S3 Disaster Recovery"}
               className={cx(errors.ruleName && "!border-danger focus:!border-danger focus:!ring-danger/25")}
             />
             {errors.ruleName && (
@@ -475,7 +475,7 @@ export function ReplicationPage() {
                 onChange={(val) => {
                   setDestProvider(val);
                   clearError("destEndpoint");
-                  if (val === "MinIO Server") setDestEndpoint("http://localhost:9000");
+                  if (val === "S3 Server") setDestEndpoint("http://localhost:9000");
                   else if (val === "Cloudflare R2") setDestEndpoint("https://<account-id>.r2.cloudflarestorage.com");
                   else if (val === "Wasabi") setDestEndpoint("https://s3.wasabisys.com");
                   else if (val === "Backblaze B2") setDestEndpoint("https://s3.us-west-002.backblazeb2.com");
@@ -484,7 +484,7 @@ export function ReplicationPage() {
                 }}
                 options={[
                   { value: "AWS S3", label: "Amazon Web Services (S3)" },
-                  { value: "MinIO Server", label: "MinIO Server (Remote Instance)" },
+                  { value: "S3 Server", label: "S3-compatible Server (Remote Instance)" },
                   { value: "Cloudflare R2", label: "Cloudflare R2" },
                   { value: "Wasabi", label: "Wasabi Hot Cloud Storage" },
                   { value: "Backblaze B2", label: "Backblaze B2" },
@@ -565,7 +565,7 @@ export function ReplicationPage() {
                   setAccessKey(e.target.value);
                   clearError("accessKey");
                 }}
-                placeholder="AKIA... or MinIO user"
+                placeholder="AKIA... or access key"
                 className={cx("font-mono text-xs", errors.accessKey && "!border-danger focus:!border-danger focus:!ring-danger/25")}
               />
               {errors.accessKey && (

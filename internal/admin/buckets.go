@@ -53,17 +53,31 @@ func (h *Handler) listBuckets(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name string `json:"name"`
+		Name   string       `json:"name"`
+		Policy *auth.Policy `json:"policy"` // optional: anonymous access from the start
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
 	setAuditBucket(r, in.Name)
+	if in.Policy != nil {
+		if err := in.Policy.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
+			return
+		}
+	}
 	if err := h.opts.Store.CreateBucket(r.Context(), in.Name); err != nil {
 		h.storageError(w, r, err)
 		return
 	}
 	h.opts.Log.Info("bucket created from the console", "bucket", in.Name)
+	if in.Policy != nil && in.Policy.Mode != "private" {
+		if err := h.opts.Store.SetBucketPolicy(r.Context(), in.Name, in.Policy.String()); err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		h.opts.Log.Warn("bucket opened to anonymous access from the console", "bucket", in.Name, "mode", in.Policy.Mode)
+	}
 	b, _ := h.opts.Store.GetBucket(r.Context(), in.Name)
 	writeJSON(w, http.StatusCreated, h.bucketJSON(r, b, storage.Usage{}))
 }

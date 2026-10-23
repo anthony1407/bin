@@ -49,6 +49,8 @@ export type Access = "readonly" | "writeonly" | "readwrite";
 export interface Rule {
   prefix: string;
   access: Access;
+  /** The rule covers only the object whose key is `prefix`. */
+  exact?: boolean;
 }
 export interface Policy {
   mode: "private" | "public" | "custom";
@@ -189,7 +191,7 @@ export const api = {
 
   buckets: () => request<{ buckets: Bucket[] }>("GET", "/buckets").then((r) => r.buckets),
   bucket: (name: string) => request<Bucket>("GET", `/buckets/${enc(name)}`),
-  createBucket: (name: string) => request<Bucket>("POST", "/buckets", { name }),
+  createBucket: (name: string, policy?: Policy) => request<Bucket>("POST", "/buckets", { name, policy }),
   deleteBucket: (name: string, force: boolean) =>
     request<void>("DELETE", `/buckets/${enc(name)}${force ? "?force=true" : ""}`),
   setTags: (name: string, tags: Record<string, string>) => request<Bucket>("PUT", `/buckets/${enc(name)}/tags`, { tags }),

@@ -206,6 +206,26 @@ func TestBucketsAndPolicies(t *testing.T) {
 	if code := e.call("DELETE", "/api/v1/buckets/photos?force=true", nil, nil); code != 204 {
 		t.Errorf("force delete: %d", code)
 	}
+
+	// A bucket can start public, and one object can be opened on its own.
+	if code := e.call("POST", "/api/v1/buckets", map[string]any{"name": "site", "policy": map[string]any{"mode": "public"}}, &b); code != 201 || b.Policy.Mode != "public" {
+		t.Errorf("create public: %d %+v", code, b)
+	}
+	if code := e.call("POST", "/api/v1/buckets", map[string]any{"name": "nope", "policy": map[string]any{"mode": "open"}}, nil); code != 400 {
+		t.Errorf("bad policy at creation: %d", code)
+	}
+	e.call("POST", "/api/v1/buckets", map[string]string{"name": "docs"}, nil)
+	e.call("PUT", "/api/v1/buckets/docs/upload?key=logo.png", "png", nil)
+	e.call("PUT", "/api/v1/buckets/docs/upload?key=logo.png.bak", "old", nil)
+	e.call("PUT", "/api/v1/buckets/docs/policy", map[string]any{"mode": "custom",
+		"rules": []map[string]any{{"prefix": "logo.png", "access": "readonly", "exact": true}}}, nil)
+	for key, want := range map[string]int{"logo.png": 200, "logo.png.bak": 403} {
+		resp, _ := http.Get(e.s3URL + "/docs/" + key)
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("anonymous GET %s: %d, want %d", key, resp.StatusCode, want)
+		}
+	}
 }
 
 func TestExplorer(t *testing.T) {
