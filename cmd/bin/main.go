@@ -68,6 +68,8 @@ func dispatch(args []string) error {
 		return nil
 	case "healthcheck":
 		return healthcheck()
+	case "completion":
+		return runCompletion(args[1:])
 	}
 	if cmd == "" || strings.HasPrefix(cmd, "-") || strings.ContainsAny(cmd, `/\`) {
 		return runServer(args)
@@ -122,6 +124,7 @@ Commands:
   server        run the server (the default when no command is given)
   version       print version information (also --version, -v)
   healthcheck   exit 0 if the local server answers its health endpoint
+  completion    generate shell completion scripts (bash, zsh, fish)
   help          show this help (also --help, -h)
 
 Server flags (they override the matching settings below):
@@ -382,6 +385,124 @@ func healthcheck() error {
 	}
 	return nil
 }
+
+// runCompletion generates shell completion scripts for bash, zsh, or fish.
+func runCompletion(args []string) error {
+	shell := "bash"
+	if len(args) > 0 {
+		shell = args[0]
+	}
+	var out string
+	switch shell {
+	case "bash":
+		out = bashCompletion
+	case "zsh":
+		out = zshCompletion
+	case "fish":
+		out = fishCompletion
+	default:
+		return fmt.Errorf("unsupported shell %q; supported: bash, zsh, fish", shell)
+	}
+	fmt.Print(out)
+	return nil
+}
+
+const bashCompletion = `# bin bash completion
+_bin() {
+	local cur prev opts
+	COMPREPLY=()
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	prev="${COMP_WORDS[COMP_CWORD-1]}"
+	opts="server version healthcheck completion help --version -v --help -h"
+
+	case "${prev}" in
+		server)
+			COMPREPLY=( $(compgen -W "--address --console-address" -- ${cur}) )
+			return 0
+			;;
+		completion)
+			COMPREPLY=( $(compgen -W "bash zsh fish" -- ${cur}) )
+			return 0
+			;;
+		*)
+			;;
+	esac
+
+	if [[ ${cur} == -* ]]; then
+		COMPREPLY=( $(compgen -W "--address --console-address --help -h --version -v" -- ${cur}) )
+	else
+		COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+	fi
+}
+complete -F _bin bin
+`
+
+const zshCompletion = `# bin zsh completion
+#compdef bin
+
+_bin() {
+	local -a commands
+	local -a options
+	commands=(
+		'server:run the server'
+		'version:print version information'
+		'healthcheck:exit 0 if the local server answers its health endpoint'
+		'completion:generate shell completion scripts'
+		'help:show this help'
+	)
+	options=(
+		'--address[listen address of the S3 API]'
+		'--console-address[listen address of the web console]'
+		'--help[show help]'
+		'--version[print version]'
+	)
+
+	_arguments -C \
+		'(-h --help)'{-h,--help}'[show help]' \
+		'(-v --version)'{-v,--version}'[print version]' \
+		'*: :($commands)' \
+		'*::options:->subcmds' && return 0
+
+	if (( CURRENT == 1 )); then
+		compadd -a commands
+		return
+	fi
+
+	case "${words[1]}" in
+		server)
+			_arguments \
+				'--address[listen address of the S3 API]' \
+				'--console-address[listen address of the web console]' \
+				'*:data directory:_files -/'
+			;;
+		completion)
+			compadd bash zsh fish
+			;;
+	esac
+}
+_bin
+`
+
+const fishCompletion = `# bin fish completion
+function __fish_bin_using_command
+	set -l cmd (commandline -opc)
+	if [ (count $cmd) -eq 1 -a $cmd[1] = 'bin' ]
+		return 0
+	end
+	return 1
+end
+
+complete -c bin -f -n '__fish_bin_using_command' -a 'server version healthcheck completion help'
+
+complete -c bin -n '__fish_bin_using_command' -l help -s h -d 'Show help'
+complete -c bin -n '__fish_bin_using_command' -l version -s v -d 'Print version'
+
+complete -c bin -n '__fish_seen_subcommand_from server' -l address -d 'Listen address of the S3 API'
+complete -c bin -n '__fish_seen_subcommand_from server' -l console-address -d 'Listen address of the web console'
+complete -c bin -n '__fish_seen_subcommand_from server' -f -d 'Data directory'
+
+complete -c bin -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
+`
 
 // owner is the single account that owns every bucket. Its ID is a stable hash
 // of the root access key, shaped like S3's canonical user IDs.

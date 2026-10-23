@@ -37,12 +37,18 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
  && mkdir -p /out/data
 
 # --- Runtime -------------------------------------------------------------------
-# Static binary on distroless: no shell, no package manager, non-root user.
+# Static binary on Debian slim: includes shell for debugging, non-root user.
 # "bin" is on the PATH, so `docker exec <container> bin --version` works.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM debian:12-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+RUN groupadd -r -g 65532 nonroot && useradd -r -u 65532 -g nonroot nonroot
 COPY --from=build /out/bin /usr/local/bin/bin
 COPY --from=build --chown=65532:65532 /out/data /data
 ENV BIN_DATA_DIR=/data
+USER 65532:65532
 VOLUME /data
 EXPOSE 9000 9001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s CMD ["bin", "healthcheck"]

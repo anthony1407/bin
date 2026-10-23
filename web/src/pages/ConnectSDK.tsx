@@ -450,6 +450,7 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
             onChange={(e) => setSelectedKey(e.target.value)}
             placeholder="folder/file.ext"
             className="font-mono text-xs"
+            autoComplete="username"
           />
         </div>
 
