@@ -5,6 +5,7 @@ import {
   ArrowLeftRight,
   ArrowUpRight,
   CheckCircle2,
+  Edit,
   Play,
   Plus,
   Trash2,
@@ -61,6 +62,8 @@ export function ReplicationPage() {
   });
 
   const [createModal, setCreateModal] = useState(false);
+  const [editingRule, setEditingRule] = useState<ReplicationRule | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [ruleName, setRuleName] = useState("");
   const [direction, setDirection] = useState<"push" | "pull">("push");
   const [sourceBucket, setSourceBucket] = useState("");
@@ -73,6 +76,12 @@ export function ReplicationPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
   const [testSuccess, setTestSuccess] = useState(false);
+  const [syncResult, setSyncResult] = useState<{
+    ruleName: string;
+    objects: number;
+    bytes: number;
+    duration: number;
+  } | null>(null);
   const toast = useToast();
 
   useEffect(() => {
@@ -98,18 +107,35 @@ export function ReplicationPage() {
     }
   }
 
-  function handleOpenModal() {
-    setRuleName("");
-    setDirection("push");
-    setDestProvider("AWS S3");
-    setDestEndpoint("https://s3.us-east-1.amazonaws.com");
-    setDestBucket("");
-    setDestRegion("us-east-1");
-    setAccessKey("");
-    setSecretKey("");
+  function handleOpenModal(rule?: ReplicationRule) {
+    if (rule) {
+      // Editing existing rule
+      setEditingRule(rule);
+      setRuleName(rule.name);
+      setDirection(rule.direction || "push");
+      setSourceBucket(rule.sourceBucket);
+      setDestProvider(rule.destProvider);
+      setDestEndpoint(rule.destEndpoint);
+      setDestBucket(rule.destBucket);
+      setDestRegion(rule.destRegion);
+      // Note: We don't populate accessKey/secretKey for security
+      setAccessKey("");
+      setSecretKey("");
+    } else {
+      // Creating new rule
+      setEditingRule(null);
+      setRuleName("");
+      setDirection("push");
+      setDestProvider("AWS S3");
+      setDestEndpoint("https://s3.us-east-1.amazonaws.com");
+      setDestBucket("");
+      setDestRegion("us-east-1");
+      setAccessKey("");
+      setSecretKey("");
+      if (buckets.length > 0) setSourceBucket(buckets[0].name);
+    }
     setErrors({});
     setTestSuccess(false);
-    if (buckets.length > 0) setSourceBucket(buckets[0].name);
     setCreateModal(true);
   }
 
@@ -170,35 +196,75 @@ export function ReplicationPage() {
       return;
     }
 
-    const newRule: ReplicationRule = {
-      id: "rep_" + Date.now(),
-      name: ruleName.trim(),
-      sourceBucket,
-      destProvider,
-      destEndpoint: destEndpoint.trim(),
-      destBucket: destBucket.trim(),
-      destRegion: destRegion.trim() || "us-east-1",
-      direction,
-      mode: "mirror",
-      prefix: "",
-      status: "active",
-      lastSyncAt: null,
-      replicatedObjects: 0,
-      replicatedBytes: 0,
-    };
-
-    setRules((prev) => [newRule, ...prev]);
+    if (editingRule) {
+      // Update existing rule
+      setRules((prev) =>
+        prev.map((r) =>
+          r.id === editingRule.id
+            ? {
+                ...r,
+                name: ruleName.trim(),
+                sourceBucket,
+                destProvider,
+                destEndpoint: destEndpoint.trim(),
+                destBucket: destBucket.trim(),
+                destRegion: destRegion.trim() || "us-east-1",
+                direction,
+              }
+            : r
+        )
+      );
+      toast("ok", `Replication rule "${ruleName}" updated.`);
+    } else {
+      // Create new rule
+      const newRule: ReplicationRule = {
+        id: "rep_" + Date.now(),
+        name: ruleName.trim(),
+        sourceBucket,
+        destProvider,
+        destEndpoint: destEndpoint.trim(),
+        destBucket: destBucket.trim(),
+        destRegion: destRegion.trim() || "us-east-1",
+        direction,
+        mode: "mirror",
+        prefix: "",
+        status: "active",
+        lastSyncAt: null,
+        replicatedObjects: 0,
+        replicatedBytes: 0,
+      };
+      setRules((prev) => [newRule, ...prev]);
+      toast("ok", `Replication rule "${ruleName}" created.`);
+    }
     setCreateModal(false);
-    toast("ok", `Replication rule "${ruleName}" created.`);
+    setEditingRule(null);
+  }
+
+  function confirmDelete(id: string) {
+    setDeleteConfirm(id);
+  }
+
+  function deleteRule(id: string) {
+    setRules((prev) => prev.filter((r) => r.id !== id));
+    setDeleteConfirm(null);
+    toast("ok", "Replication rule deleted.");
   }
 
   function triggerSync(id: string) {
+    const rule = rules.find((r) => r.id === id);
+    if (!rule) return;
+
     setRules((prev) =>
       prev.map((r) => (r.id === id ? { ...r, status: "syncing" } : r))
     );
     toast("ok", "Replication job initiated...");
 
+    const startTime = Date.now();
     setTimeout(() => {
+      const newObjects = 12;
+      const newBytes = 150 * 1024 * 1024;
+      const duration = Math.round((Date.now() - startTime) / 1000);
+
       setRules((prev) =>
         prev.map((r) =>
           r.id === id
@@ -206,12 +272,19 @@ export function ReplicationPage() {
                 ...r,
                 status: "active",
                 lastSyncAt: new Date().toISOString(),
-                replicatedObjects: r.replicatedObjects + 12,
-                replicatedBytes: r.replicatedBytes + 150 * 1024 * 1024,
+                replicatedObjects: r.replicatedObjects + newObjects,
+                replicatedBytes: r.replicatedBytes + newBytes,
               }
             : r
         )
       );
+
+      setSyncResult({
+        ruleName: rule.name,
+        objects: newObjects,
+        bytes: newBytes,
+        duration,
+      });
       toast("ok", "Replication sync completed!");
     }, 2500);
   }
@@ -224,11 +297,6 @@ export function ReplicationPage() {
     );
   }
 
-  function deleteRule(id: string) {
-    setRules((prev) => prev.filter((r) => r.id !== id));
-    toast("ok", "Replication rule deleted.");
-  }
-
   return (
     <div className="space-y-6 pb-16">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -239,7 +307,7 @@ export function ReplicationPage() {
         <Button
           variant="primary"
           icon={<Plus className="size-4" />}
-          onClick={handleOpenModal}
+          onClick={() => handleOpenModal()}
           className="shrink-0"
         >
           Add Replication Rule
@@ -253,7 +321,7 @@ export function ReplicationPage() {
           <div className="text-xs text-muted max-w-sm mx-auto">
             Set up automatic offsite backups or active replication to keep secondary copies in another cloud, or import all files, buckets and configurations from an external S3-compatible server.
           </div>
-          <Button variant="primary" icon={<Plus className="size-4" />} onClick={handleOpenModal}>
+          <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => handleOpenModal()}>
             Configure First Target
           </Button>
         </Card>
@@ -313,14 +381,24 @@ export function ReplicationPage() {
                     >
                       {rule.status === "paused" ? "Resume" : "Pause"}
                     </Button>
-                    <button
-                      onClick={() => deleteRule(rule.id)}
-                      className="flex size-8 items-center justify-center rounded text-muted hover:text-danger hover:bg-sunken transition-colors"
+                    <Button
+                      variant="ghost"
+                      className="h-9 w-9 p-0"
+                      onClick={() => handleOpenModal(rule)}
+                      title="Edit rule"
+                      aria-label="Edit rule"
+                    >
+                      <Edit className="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="h-9 w-9 p-0 text-muted hover:text-danger hover:bg-sunken"
+                      onClick={() => confirmDelete(rule.id)}
                       title="Delete rule"
                       aria-label="Delete rule"
                     >
                       <Trash2 className="size-4" />
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
@@ -368,7 +446,8 @@ export function ReplicationPage() {
       <Modal
         open={createModal}
         onClose={() => setCreateModal(false)}
-        title="Add Bucket Replication Target"
+        title={editingRule ? "Edit Bucket Replication Target" : "Add Bucket Replication Target"}
+        wide
         footer={
           <>
             <Button onClick={() => setCreateModal(false)}>Cancel</Button>
@@ -613,6 +692,81 @@ export function ReplicationPage() {
           </div>
         </div>
       </Modal>
+
+      {/* Sync Result Modal */}
+      {syncResult && (
+        <Modal
+          open={true}
+          onClose={() => setSyncResult(null)}
+          title="Sync Completed"
+          footer={
+            <Button onClick={() => setSyncResult(null)}>Close</Button>
+          }
+        >
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-ok/10 border border-ok/20">
+              <CheckCircle2 className="size-5 text-ok shrink-0" />
+              <div>
+                <div className="font-semibold text-ink">Sync completed successfully</div>
+                <div className="text-xs text-muted">{syncResult.ruleName}</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-center">
+              <div className="p-3 rounded-lg bg-surface border border-line">
+                <div className="text-2xl font-bold text-ink font-mono">{count(syncResult.objects)}</div>
+                <div className="text-xs text-muted">Objects Replicated</div>
+              </div>
+              <div className="p-3 rounded-lg bg-surface border border-line">
+                <div className="text-2xl font-bold text-ink font-mono">{bytes(syncResult.bytes)}</div>
+                <div className="text-xs text-muted">Data Transferred</div>
+              </div>
+              <div className="p-3 rounded-lg bg-surface border border-line">
+                <div className="text-2xl font-bold text-ink font-mono">{syncResult.duration}s</div>
+                <div className="text-xs text-muted">Duration</div>
+              </div>
+              <div className="p-3 rounded-lg bg-surface border border-line">
+                <div className="text-2xl font-bold text-ink font-mono">
+                  {syncResult.duration > 0 ? bytes(Math.round(syncResult.bytes / syncResult.duration)) + "/s" : "—"}
+                </div>
+                <div className="text-xs text-muted">Throughput</div>
+              </div>
+            </div>
+
+            <div className="text-xs text-muted text-center pt-2 border-t border-line">
+              Last sync: {dateTime(new Date().toISOString())}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <Modal
+          open={true}
+          onClose={() => setDeleteConfirm(null)}
+          title="Delete Replication Rule"
+          footer={
+            <div className="flex gap-2 w-full justify-end">
+              <Button onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+              <Button variant="danger" onClick={() => deleteRule(deleteConfirm)}>
+                Delete
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-2 text-sm">
+            <AlertCircle className="size-5 text-danger mx-auto" />
+            <p className="text-center">
+              Are you sure you want to delete this replication rule? This action cannot be
+              undone.
+            </p>
+            <p className="text-center font-mono text-xs text-muted">
+              {rules.find((r) => r.id === deleteConfirm)?.name || ""}
+            </p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

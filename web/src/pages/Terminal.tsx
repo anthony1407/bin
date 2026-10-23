@@ -96,12 +96,28 @@ export function TerminalPage() {
                 <span className="text-ink dark:text-slate-200">info</span>
                 <span className="text-slate-400">Show server status, build, uptime, and disk usage</span>
 
+                <span className="text-ink dark:text-slate-200">version</span>
+                <span className="text-slate-400">Show bin version and build information</span>
+
                 <span className="text-ink dark:text-slate-200">clear</span>
                 <span className="text-slate-400">Clear the terminal screen</span>
               </div>
             </div>
           );
           break;
+
+        case "version": {
+          const s = info || (await api.info());
+          output = (
+            <div className="space-y-1 text-xs font-mono">
+              <div className="font-bold text-accent">bin S3-Compatible Object Storage</div>
+              <div>Version: <span className="text-accent">{s.version}</span> ({s.commit.slice(0, 7)})</div>
+              <div>Build: {s.build}</div>
+              <div>Region: {s.region}</div>
+            </div>
+          );
+          break;
+        }
 
         case "info": {
           const s = info || (await api.info());
@@ -308,6 +324,18 @@ export function TerminalPage() {
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
       executeCommand(input);
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      // Tab completion: cycle through matching commands
+      const commands = ["help", "ls", "cd", "cat", "stat", "du", "bench", "info", "version", "clear"];
+      const matches = commands.filter((c) => c.startsWith(input.toLowerCase()));
+      if (matches.length > 0) {
+        const currentIndex = matches.indexOf(input.toLowerCase());
+        const nextIndex = (currentIndex + 1) % matches.length;
+        setInput(matches[nextIndex]);
+      } else if (input === "") {
+        setInput(commands[0]);
+      }
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       if (commandHistory.length > 0) {
