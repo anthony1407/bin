@@ -24,6 +24,7 @@ export function GroupsPage() {
   const [editing, setEditing] = useState<Group | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
+  const [nameTouched, setNameTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<Group | null>(null);
   const toast = useToast();
@@ -44,21 +45,26 @@ export function GroupsPage() {
     setEditing(null);
     setDraft(emptyDraft);
     setFormOpen(true);
+    setNameTouched(false);
   }
 
   function openEdit(g: Group) {
     setEditing(g);
     setDraft({ name: g.name, description: g.description, buckets: g.buckets, readOnly: g.readOnly, members: g.members });
     setFormOpen(true);
+    setNameTouched(false);
   }
 
-  const nameError = !editing && draft.name && !NAME_RULE.test(draft.name)
-    ? "Use 1-64 letters, digits, dots, underscores and hyphens, starting with a letter or digit."
-    : !editing && !draft.name.trim()
-    ? "The group needs a name."
-    : undefined;
+  const nameError = (!editing && nameTouched) ? (
+    draft.name && !NAME_RULE.test(draft.name)
+      ? "Use 1-64 letters, digits, dots, underscores and hyphens, starting with a letter or digit."
+      : !draft.name.trim()
+      ? "The group needs a name."
+      : undefined
+  ) : undefined;
 
   async function submit() {
+    setNameTouched(true);
     if (nameError) return;
     setBusy(true);
     try {
@@ -251,6 +257,7 @@ export function GroupsPage() {
                 name="name"
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                onBlur={() => setNameTouched(true)}
                 placeholder="e.g. analytics-team"
                 mono
               />
