@@ -273,6 +273,23 @@ export const api = {
       xhr.send(body);
     });
   },
+
+  // Import from remote S3
+  importTest: (endpoint: string, accessKey: string, secretKey: string, region: string) =>
+    request<{ buckets: Array<{ name: string; size: number; objects: number }> }>("POST", "/import/test", {
+      endpoint,
+      accessKey,
+      secretKey,
+      region,
+    }),
+  importStart: (endpoint: string, accessKey: string, secretKey: string, region: string, buckets: string[]) =>
+    request<{ jobs: Array<{ bucket: string; jobId: string }> }>("POST", "/import/start", {
+      endpoint,
+      accessKey,
+      secretKey,
+      region,
+      buckets,
+    }),
 };
 
 // --- downloads ------------------------------------------------------------------------

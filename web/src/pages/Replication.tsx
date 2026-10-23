@@ -5,6 +5,7 @@ import {
   ArrowLeftRight,
   ArrowUpRight,
   CheckCircle2,
+  CircleAlert,
   Edit,
   Play,
   Plus,
@@ -82,6 +83,20 @@ export function ReplicationPage() {
     bytes: number;
     duration: number;
   } | null>(null);
+
+  // Import wizard state
+  const [importModal, setImportModal] = useState(false);
+  const [importStep, setImportStep] = useState<1 | 2 | 3>(1);
+  const [importEndpoint, setImportEndpoint] = useState("");
+  const [importAccessKey, setImportAccessKey] = useState("");
+  const [importSecretKey, setImportSecretKey] = useState("");
+  const [importRegion, setImportRegion] = useState("us-east-1");
+  const [remoteBuckets, setRemoteBuckets] = useState<Array<{ name: string; size: number; objects: number }>>([]);
+  const [selectedRemoteBuckets, setSelectedRemoteBuckets] = useState<Set<string>>(new Set());
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importResults, setImportResults] = useState<Array<{ bucket: string; success: boolean; error?: string }>>([]);
+
   const toast = useToast();
 
   useEffect(() => {
@@ -250,6 +265,83 @@ export function ReplicationPage() {
     toast("ok", "Replication rule deleted.");
   }
 
+  // Import wizard functions
+  function openImportModal() {
+    setImportStep(1);
+    setImportEndpoint("");
+    setImportAccessKey("");
+    setImportSecretKey("");
+    setImportRegion("us-east-1");
+    setRemoteBuckets([]);
+    setSelectedRemoteBuckets(new Set());
+    setImportError("");
+    setImportResults([]);
+    setImportModal(true);
+  }
+
+  async function testImportConnection() {
+    setImportError("");
+    setImportLoading(true);
+
+    try {
+      const { buckets } = await api.importTest(importEndpoint, importAccessKey, importSecretKey, importRegion);
+      setRemoteBuckets(buckets.map((b) => ({ name: b.name, size: b.size, objects: b.objects })));
+      setSelectedRemoteBuckets(new Set(buckets.map((b) => b.name)));
+      setImportStep(2);
+    } catch (e: any) {
+      setImportError(e.message || "Failed to connect to remote server");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  function toggleBucketSelection(bucketName: string) {
+    setSelectedRemoteBuckets((prev) => {
+      const next = new Set(prev);
+      if (next.has(bucketName)) next.delete(bucketName);
+      else next.add(bucketName);
+      return next;
+    });
+  }
+
+  async function importSelectedBuckets() {
+    setImportLoading(true);
+    setImportResults([]);
+
+    try {
+      const { jobs } = await api.importStart(importEndpoint, importAccessKey, importSecretKey, importRegion, Array.from(selectedRemoteBuckets));
+      
+      // Refresh local buckets list after import starts
+      api.buckets().then(setBuckets).catch(() => {});
+
+      const results = Array.from(selectedRemoteBuckets).map((bucketName) => {
+        const job = jobs.find((j) => j.bucket === bucketName);
+        return {
+          bucket: bucketName,
+          success: !!job,
+          error: job ? undefined : `Bucket "${bucketName}" already exists locally or failed to start`,
+        };
+      });
+
+      setImportResults(results);
+      setImportStep(3);
+      toast("ok", `Import started: ${jobs.length} buckets queued for replication`);
+    } catch (e: any) {
+      setImportResults(Array.from(selectedRemoteBuckets).map((bucketName) => ({
+        bucket: bucketName,
+        success: false,
+        error: e.message || "Import failed",
+      })));
+      setImportStep(3);
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  function closeImportModal() {
+    setImportModal(false);
+  }
+
   function triggerSync(id: string) {
     const rule = rules.find((r) => r.id === id);
     if (!rule) return;
@@ -297,6 +389,37 @@ export function ReplicationPage() {
     );
   }
 
+  function ImportFooter() {
+    if (importStep === 1) {
+      return (
+        <Button variant="primary" busy={importLoading} onClick={testImportConnection}>
+          Connect & List Buckets
+        </Button>
+      );
+    }
+    if (importStep === 2) {
+      return (
+        <>
+          <Button variant="ghost" onClick={() => setImportStep(1)}>
+            Back
+          </Button>
+          <Button
+            variant="primary"
+            busy={importLoading}
+            disabled={selectedRemoteBuckets.size === 0}
+            onClick={importSelectedBuckets}
+          >
+            Import Selected ({selectedRemoteBuckets.size})
+          </Button>
+        </>
+      );
+    }
+    if (importStep === 3) {
+      return <Button onClick={closeImportModal}>Done</Button>;
+    }
+    return null;
+  }
+
   return (
     <div className="space-y-6 pb-16">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -311,6 +434,14 @@ export function ReplicationPage() {
           className="shrink-0"
         >
           Add Replication Rule
+        </Button>
+        <Button
+          variant="secondary"
+          icon={<ArrowDownLeft className="size-4" />}
+          onClick={openImportModal}
+          className="shrink-0"
+        >
+          Import from Remote
         </Button>
       </div>
 
@@ -767,6 +898,184 @@ export function ReplicationPage() {
           </div>
         </Modal>
       )}
+
+      {/* Import from Remote Wizard Modal */}
+      <Modal
+        open={importModal}
+        onClose={closeImportModal}
+        title="Import Buckets from Remote S3"
+        wide
+        footer={<ImportFooter />}
+      >
+        {importStep === 1 && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted">
+              Enter the connection details for the remote S3-compatible server (MinIO, AWS S3,
+              Cloudflare R2, Wasabi, Backblaze B2, etc.) to list available buckets.
+            </p>
+
+            <div>
+              <label htmlFor="import-endpoint" className="label-strip mb-1.5 block">
+                Remote Endpoint URL <span className="text-danger">*</span>
+              </label>
+              <Input
+                id="import-endpoint"
+                autoComplete="url"
+                value={importEndpoint}
+                onChange={(e) => setImportEndpoint(e.target.value)}
+                placeholder="https://s3.us-east-1.amazonaws.com or http://minio:9000"
+                className="font-mono text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="import-access-key" className="label-strip mb-1.5 block">
+                  Access Key ID <span className="text-danger">*</span>
+                </label>
+                <Input
+                  id="import-access-key"
+                  autoComplete="username"
+                  value={importAccessKey}
+                  onChange={(e) => setImportAccessKey(e.target.value)}
+                  placeholder="AKIA... or minioadmin"
+                  className="font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label htmlFor="import-secret-key" className="label-strip mb-1.5 block">
+                  Secret Access Key <span className="text-danger">*</span>
+                </label>
+                <Input
+                  id="import-secret-key"
+                  type="password"
+                  autoComplete="current-password"
+                  value={importSecretKey}
+                  onChange={(e) => setImportSecretKey(e.target.value)}
+                  placeholder="••••••••••••••••"
+                  className="font-mono text-xs"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="import-region" className="label-strip mb-1.5 block">Region</label>
+              <Input
+                id="import-region"
+                autoComplete="off"
+                value={importRegion}
+                onChange={(e) => setImportRegion(e.target.value)}
+                placeholder="us-east-1"
+                className="font-mono text-xs"
+              />
+            </div>
+
+            {importError && (
+              <div className="p-3 rounded-md bg-danger-soft border border-danger text-danger text-sm">
+                {importError}
+              </div>
+            )}
+          </div>
+        )}
+
+        {importStep === 2 && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted">
+              Select the buckets to import. Each bucket will be created locally and its contents
+              will be replicated from the remote server.
+            </p>
+
+            <div className="rounded-lg border border-line overflow-hidden">
+              <div className="p-3 bg-surface-alt border-b border-line flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={selectedRemoteBuckets.size === remoteBuckets.length && remoteBuckets.length > 0}
+                  onChange={(e) =>
+                    e.target.checked
+                      ? setSelectedRemoteBuckets(new Set(remoteBuckets.map((b) => b.name)))
+                      : setSelectedRemoteBuckets(new Set())
+                  }
+                  className="size-4 accent-[var(--accent)]"
+                />
+                <span className="font-medium text-xs">Select All</span>
+              </div>
+              {remoteBuckets.map((bucket) => (
+                <label
+                  key={bucket.name}
+                  className="flex items-center gap-3 p-3 hover:bg-sunken transition-colors cursor-pointer border-b border-line last:border-0"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedRemoteBuckets.has(bucket.name)}
+                    onChange={() => toggleBucketSelection(bucket.name)}
+                    className="size-4 accent-[var(--accent)]"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono text-sm font-medium text-ink truncate">{bucket.name}</div>
+                    <div className="flex gap-4 text-xs text-muted font-mono mt-0.5">
+                      <span>{bytes(bucket.size)}</span>
+                      <span>{count(bucket.objects)} objects</span>
+                    </div>
+                  </div>
+                  {buckets.some((b) => b.name === bucket.name) && (
+                    <span className="text-xs text-warning bg-warning-soft px-2 py-0.5 rounded">
+                      Exists locally
+                    </span>
+                  )}
+                </label>
+              ))}
+              {remoteBuckets.length === 0 && !importLoading && (
+                <div className="p-8 text-center text-muted">No buckets found on remote server</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {importStep === 3 && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-ok/10 border border-ok/20">
+              <CheckCircle2 className="size-5 text-ok shrink-0" />
+              <div>
+                <div className="font-semibold text-ink">Import Completed</div>
+                <div className="text-xs text-muted">
+                  {importResults.filter((r) => r.success).length} of {importResults.length} buckets imported
+                  successfully
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {importResults.map((result, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-3 p-3 rounded-lg bg-surface border border-line"
+                >
+                  {result.success ? (
+                    <CheckCircle2 className="size-5 text-ok shrink-0" />
+                  ) : (
+                    <CircleAlert className="size-5 text-danger shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono text-sm font-medium text-ink">{result.bucket}</div>
+                    {result.error && (
+                      <div className="text-xs text-danger mt-0.5">{result.error}</div>
+                    )}
+                    {result.success && (
+                      <div className="text-xs text-ok mt-0.5">Bucket created and replication started</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {importResults.some((r) => !r.success) && (
+              <div className="p-3 rounded-md bg-warning-soft border border-warning text-warning text-sm">
+                Some buckets were not imported. Buckets that already exist locally are skipped.
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

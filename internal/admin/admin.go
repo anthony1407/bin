@@ -114,6 +114,10 @@ func NewHandler(opts Options) http.Handler {
 	private("GET /api/v1/speedtest/download", h.speedtestDownload)
 	private("POST /api/v1/speedtest/upload", h.speedtestUpload)
 
+	// Import from remote S3
+	private("POST /api/v1/import/test", h.handleImportTest)
+	private("POST /api/v1/import/start", h.handleImportStart)
+
 	public("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Unknown API endpoint.")
 	})
