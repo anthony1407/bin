@@ -1961,6 +1961,23 @@ export function ExplorerPage() {
                 Share URL
               </Button>
             )}
+            {meta?.policy.mode !== "public" && (() => {
+              const keys = [...selected];
+              const anyPrivate = keys.some((k) => !isPublicKey(k));
+              return (
+                <Button
+                  icon={anyPrivate ? <Globe className="size-4" /> : <Lock className="size-4" />}
+                  busy={publicBusy}
+                  onClick={async () => {
+                    for (const k of keys) {
+                      await setPublic(k, anyPrivate);
+                    }
+                  }}
+                >
+                  {anyPrivate ? "Make public" : "Make private"}
+                </Button>
+              );
+            })()}
             <Button
               icon={<Download className="size-4" />}
               busy={downloadingZip}
@@ -2005,36 +2022,57 @@ export function ExplorerPage() {
         ) : viewMode === "grid" ? (
           <div className="p-4">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-              {displayedPrefixes.map((p) => (
-                <div
-                  key={p}
-                  onClick={() => goTo(p)}
-                  className="group relative flex cursor-pointer flex-col items-center justify-center rounded-lg border border-line bg-surface p-4 text-center transition-colors hover:border-accent/40 hover:bg-sunken/60"
-                >
+              {displayedPrefixes.map((p) => {
+                const folderPublic = isPublicKey(p);
+                return (
                   <div
-                    className="absolute top-2 left-2"
-                    onClick={(e) => e.stopPropagation()}
+                    key={p}
+                    onClick={() => goTo(p)}
+                    className="group relative flex cursor-pointer flex-col items-center justify-center rounded-lg border border-line bg-surface p-4 text-center transition-colors hover:border-accent/40 hover:bg-sunken/60"
                   >
-                    <input
-                      type="checkbox"
-                      name="selected"
-                      aria-label={`Select ${p}`}
-                      checked={selected.has(p)}
-                      onChange={() => toggle(p)}
-                      className="size-4 accent-[var(--accent)]"
-                    />
+                    <div
+                      className="absolute top-2 left-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        name="selected"
+                        aria-label={`Select ${p}`}
+                        checked={selected.has(p)}
+                        onChange={() => toggle(p)}
+                        className="size-4 accent-[var(--accent)]"
+                      />
+                    </div>
+                    {folderPublic && (
+                      <div className="absolute top-2 right-2">
+                        <span title="Public"><Globe className="size-3.5 text-warn" /></span>
+                      </div>
+                    )}
+                    {meta?.policy.mode !== "public" && (
+                      <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => setPublic(p, !folderPublic)}
+                          title={folderPublic ? "Make private" : "Make public"}
+                          className="flex size-6 items-center justify-center rounded-full bg-surface/90 text-muted shadow hover:text-accent backdrop-blur transition-colors"
+                        >
+                          {folderPublic ? <Lock className="size-3" /> : <Globe className="size-3" />}
+                        </button>
+                      </div>
+                    )}
+                    <Folder className="size-10 fill-amber-400 text-amber-500 mb-2" />
+                    <span className="w-full truncate text-xs font-medium text-ink group-hover:text-accent-ink" title={p}>
+                      {search ? p : baseName(p)}/
+                    </span>
                   </div>
-                  <Folder className="size-10 fill-amber-400 text-amber-500 mb-2" />
-                  <span className="w-full truncate text-xs font-medium text-ink group-hover:text-accent-ink" title={p}>
-                    {search ? p : baseName(p)}/
-                  </span>
-                </div>
-              ))}
+                );
+              })}
               {displayedObjects.map((o) => {
                 const kind = kindOf(o.key, o.contentType);
                 const Icon = kindIcons[kind];
                 const isImg = kind === "image";
                 const isSelected = selected.has(o.key);
+                const gridObjPublic = isPublicKey(o.key);
                 return (
                   <div
                     key={o.key}
@@ -2061,14 +2099,15 @@ export function ExplorerPage() {
                         className="size-4 accent-[var(--accent)]"
                       />
                     </div>
-                    <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+                      {gridObjPublic && <span title="Public"><Globe className="size-3.5 text-warn" /></span>}
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           setSharing(o);
                         }}
-                        className="flex size-7 items-center justify-center rounded-full bg-surface/90 text-muted shadow hover:text-accent backdrop-blur transition-colors"
+                        className="flex size-7 items-center justify-center rounded-full bg-surface/90 text-muted shadow hover:text-accent backdrop-blur transition-colors opacity-0 group-hover:opacity-100 transition-opacity"
                         title="Share Presigned URL"
                       >
                         <Share2 className="size-3.5" />
@@ -2120,23 +2159,41 @@ export function ExplorerPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {displayedPrefixes.map((p) => (
-                <tr key={p} className="group hover:bg-sunken/60">
-                  <td className="py-2.5 pl-4">
-                    <input type="checkbox" name="selected" aria-label={`Select ${p}`} checked={selected.has(p)} onChange={() => toggle(p)} className="size-4 accent-[var(--accent)]" />
-                  </td>
-                  <td className="py-2.5 pr-3">
-                    <button onClick={() => goTo(p)} className="flex max-w-full items-center gap-2.5 text-left">
-                      <Folder className="size-4 shrink-0 fill-amber-400 text-amber-500" />
-                      <span className="truncate font-medium text-ink group-hover:text-accent-ink">{search ? p : baseName(p)}/</span>
-                    </button>
-                  </td>
-                  <td className="hidden py-2.5 pr-4 text-faint md:table-cell">-</td>
-                  <td className="hidden py-2.5 pr-4 text-right text-faint sm:table-cell">-</td>
-                </tr>
-              ))}
+              {displayedPrefixes.map((p) => {
+                const folderPublic = isPublicKey(p);
+                return (
+                  <tr key={p} className="group hover:bg-sunken/60">
+                    <td className="py-2.5 pl-4">
+                      <input type="checkbox" name="selected" aria-label={`Select ${p}`} checked={selected.has(p)} onChange={() => toggle(p)} className="size-4 accent-[var(--accent)]" />
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <button onClick={() => goTo(p)} className="flex max-w-full items-center gap-2.5 text-left">
+                        <Folder className="size-4 shrink-0 fill-amber-400 text-amber-500" />
+                        <span className="truncate font-medium text-ink group-hover:text-accent-ink">{search ? p : baseName(p)}/</span>
+                        {folderPublic && <span title="Public"><Globe className="size-3 shrink-0 text-warn" /></span>}
+                      </button>
+                    </td>
+                    <td className="hidden py-2.5 pr-4 text-faint md:table-cell">-</td>
+                    <td className="hidden py-2.5 pr-4 text-right sm:table-cell">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <span className="text-faint">-</span>
+                        {meta?.policy.mode !== "public" && (
+                          <IconButton
+                            label={folderPublic ? "Make private" : "Make public"}
+                            onClick={(e) => { e.stopPropagation(); setPublic(p, !folderPublic); }}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity size-7"
+                          >
+                            {folderPublic ? <Lock className="size-3.5 text-muted" /> : <Globe className="size-3.5 text-muted" />}
+                          </IconButton>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               {displayedObjects.map((o) => {
                 const Icon = kindIcons[kindOf(o.key, o.contentType)];
+                const objPublic = isPublicKey(o.key);
                 return (
                   <tr key={o.key} className={cx("group cursor-pointer hover:bg-sunken/60", detail === o.key && "bg-accent-soft/60")} onClick={() => setDetail(o.key)}>
                     <td className="py-2.5 pl-4" onClick={(e) => e.stopPropagation()}>
@@ -2148,6 +2205,7 @@ export function ExplorerPage() {
                         <span className="truncate font-medium text-ink" title={o.key}>
                           {search ? o.key : baseName(o.key)}
                         </span>
+                        {objPublic && <span title="Public"><Globe className="size-3 shrink-0 text-warn" /></span>}
                       </div>
                       <div className="num mt-0.5 pl-6.5 text-[11px] text-muted sm:hidden">
                         {bytes(o.size)} · {relative(o.lastModified)}
