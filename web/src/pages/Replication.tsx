@@ -95,6 +95,7 @@ export function ReplicationPage() {
   const [selectedRemoteBuckets, setSelectedRemoteBuckets] = useState<Set<string>>(new Set());
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState("");
+  const [importErrors, setImportErrors] = useState<Record<string, string>>({});
   const [importResults, setImportResults] = useState<Array<{ bucket: string; success: boolean; error?: string }>>([]);
 
   const toast = useToast();
@@ -115,6 +116,16 @@ export function ReplicationPage() {
   function clearError(field: string) {
     if (errors[field]) {
       setErrors((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    }
+  }
+
+  function clearImportError(field: string) {
+    if (importErrors[field]) {
+      setImportErrors((prev) => {
         const next = { ...prev };
         delete next[field];
         return next;
@@ -275,13 +286,32 @@ export function ReplicationPage() {
     setRemoteBuckets([]);
     setSelectedRemoteBuckets(new Set());
     setImportError("");
+    setImportErrors({});
     setImportResults([]);
     setImportModal(true);
   }
 
   async function testImportConnection() {
     setImportError("");
+    setImportErrors({});
     setImportLoading(true);
+
+    const errs: Record<string, string> = {};
+    if (!importEndpoint.trim()) {
+      errs.importEndpoint = "Remote Endpoint URL is required.";
+    }
+    if (!importAccessKey.trim()) {
+      errs.importAccessKey = "Remote Access Key ID is required.";
+    }
+    if (!importSecretKey.trim()) {
+      errs.importSecretKey = "Remote Secret Key is required.";
+    }
+
+    if (Object.keys(errs).length > 0) {
+      setImportErrors(errs);
+      setImportLoading(false);
+      return;
+    }
 
     try {
       const { buckets } = await api.importTest(importEndpoint, importAccessKey, importSecretKey, importRegion);
@@ -400,7 +430,7 @@ export function ReplicationPage() {
     if (importStep === 2) {
       return (
         <>
-          <Button variant="ghost" onClick={() => setImportStep(1)}>
+          <Button variant="ghost" onClick={() => { setImportStep(1); setImportErrors({}); setImportError(""); }}>
             Back
           </Button>
           <Button
@@ -922,10 +952,19 @@ export function ReplicationPage() {
                 id="import-endpoint"
                 autoComplete="url"
                 value={importEndpoint}
-                onChange={(e) => setImportEndpoint(e.target.value)}
+                onChange={(e) => {
+                  setImportEndpoint(e.target.value);
+                  clearImportError("importEndpoint");
+                }}
                 placeholder="https://s3.us-east-1.amazonaws.com or http://minio:9000"
-                className="font-mono text-xs"
+                className={cx("font-mono text-xs", importErrors.importEndpoint && "!border-danger focus:!border-danger focus:!ring-danger/25")}
               />
+              {importErrors.importEndpoint && (
+                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  <span>{importErrors.importEndpoint}</span>
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -937,10 +976,19 @@ export function ReplicationPage() {
                   id="import-access-key"
                   autoComplete="username"
                   value={importAccessKey}
-                  onChange={(e) => setImportAccessKey(e.target.value)}
+                  onChange={(e) => {
+                    setImportAccessKey(e.target.value);
+                    clearImportError("importAccessKey");
+                  }}
                   placeholder="AKIA... or minioadmin"
-                  className="font-mono text-xs"
+                  className={cx("font-mono text-xs", importErrors.importAccessKey && "!border-danger focus:!border-danger focus:!ring-danger/25")}
                 />
+                {importErrors.importAccessKey && (
+                  <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                    <AlertCircle className="size-3.5 shrink-0" />
+                    <span>{importErrors.importAccessKey}</span>
+                  </p>
+                )}
               </div>
               <div>
                 <label htmlFor="import-secret-key" className="label-strip mb-1.5 block">
@@ -951,10 +999,19 @@ export function ReplicationPage() {
                   type="password"
                   autoComplete="current-password"
                   value={importSecretKey}
-                  onChange={(e) => setImportSecretKey(e.target.value)}
+                  onChange={(e) => {
+                    setImportSecretKey(e.target.value);
+                    clearImportError("importSecretKey");
+                  }}
                   placeholder="••••••••••••••••"
-                  className="font-mono text-xs"
+                  className={cx("font-mono text-xs", importErrors.importSecretKey && "!border-danger focus:!border-danger focus:!ring-danger/25")}
                 />
+                {importErrors.importSecretKey && (
+                  <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                    <AlertCircle className="size-3.5 shrink-0" />
+                    <span>{importErrors.importSecretKey}</span>
+                  </p>
+                )}
               </div>
             </div>
 
