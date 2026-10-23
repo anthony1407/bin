@@ -470,6 +470,7 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
           ) : (
             <Input
               id="connectsdk-access-key"
+              autoComplete="username"
               value={selectedAccessKey}
               onChange={(e) => setSelectedAccessKey(e.target.value)}
               placeholder="BIN_ROOT_ACCESS_KEY"
@@ -484,7 +485,7 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
             <Input
               id="connectsdk-secret-key"
               type="password"
-              autoComplete="off"
+              autoComplete="current-password"
               value={secretKey}
               onChange={(e) => setSecretKey(e.target.value)}
               className="font-mono text-xs pr-10"

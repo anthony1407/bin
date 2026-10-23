@@ -289,6 +289,7 @@ export function UsersPage() {
                 <label htmlFor="users-user-name" className="mb-1.5 block text-sm font-medium text-ink">User Name</label>
                 <Input
                   id="users-user-name"
+                  autoComplete="username"
                   autoFocus
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}

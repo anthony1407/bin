@@ -287,15 +287,39 @@ const ToastContext = createContext<(tone: Toast["tone"], text: string) => void>(
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const region = useRef<HTMLDivElement>(null);
   const push = useCallback((tone: Toast["tone"], text: string) => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t, { id, tone, text }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === "error" ? 7000 : 3500);
   }, []);
+
+  // Open modals live in the browser's top layer, above any z-index. The toast
+  // region is a popover so it joins the top layer too; showing it again for
+  // each new toast puts it above the most recently opened modal.
+  const newest = toasts.at(-1)?.id;
+  useEffect(() => {
+    const el = region.current;
+    if (!el || typeof el.showPopover !== "function") return;
+    if (el.matches(":popover-open")) el.hidePopover();
+    if (newest !== undefined) el.showPopover();
+  }, [newest]);
+
   return (
     <ToastContext.Provider value={push}>
       {children}
-      <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex flex-col items-center gap-2 px-4 sm:items-end sm:pr-6" aria-live="polite">
+      <div
+        ref={region}
+        popover="manual"
+        className={cx(
+          // Undo the browser's popover box (centered, bordered, opaque).
+          "pointer-events-none fixed inset-x-0 top-auto bottom-4 z-50 m-0 h-auto w-full max-w-none overflow-visible border-0 bg-transparent p-0",
+          "flex-col items-center gap-2 px-4 text-ink sm:items-end sm:pr-6",
+          // Hidden while closed; without popover support it is an ordinary fixed layer.
+          "flex [&[popover]:not(:popover-open)]:hidden",
+        )}
+        aria-live="polite"
+      >
         {toasts.map((t) => (
           <div
             key={t.id}

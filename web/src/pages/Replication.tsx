@@ -1,6 +1,10 @@
 import { useState, useEffect } from "react";
 import {
+  AlertCircle,
+  ArrowDownLeft,
   ArrowLeftRight,
+  ArrowUpRight,
+  CheckCircle2,
   Play,
   Plus,
   Trash2,
@@ -19,6 +23,7 @@ interface ReplicationRule {
   destEndpoint: string;
   destBucket: string;
   destRegion: string;
+  direction?: "push" | "pull";
   mode: "mirror" | "backup";
   prefix: string;
   status: "active" | "syncing" | "paused";
@@ -41,6 +46,7 @@ export function ReplicationPage() {
           destEndpoint: "https://s3.us-east-1.amazonaws.com",
           destBucket: "my-aws-company-backup",
           destRegion: "us-east-1",
+          direction: "push",
           mode: "mirror",
           prefix: "",
           status: "active",
@@ -56,6 +62,7 @@ export function ReplicationPage() {
 
   const [createModal, setCreateModal] = useState(false);
   const [ruleName, setRuleName] = useState("");
+  const [direction, setDirection] = useState<"push" | "pull">("push");
   const [sourceBucket, setSourceBucket] = useState("");
   const [destProvider, setDestProvider] = useState("AWS S3");
   const [destEndpoint, setDestEndpoint] = useState("https://s3.us-east-1.amazonaws.com");
@@ -63,7 +70,9 @@ export function ReplicationPage() {
   const [destRegion, setDestRegion] = useState("us-east-1");
   const [accessKey, setAccessKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
+  const [testSuccess, setTestSuccess] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -79,32 +88,97 @@ export function ReplicationPage() {
     }).catch(() => {});
   }, [sourceBucket]);
 
+  function clearError(field: string) {
+    if (errors[field]) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    }
+  }
+
+  function handleOpenModal() {
+    setRuleName("");
+    setDirection("push");
+    setDestProvider("AWS S3");
+    setDestEndpoint("https://s3.us-east-1.amazonaws.com");
+    setDestBucket("");
+    setDestRegion("us-east-1");
+    setAccessKey("");
+    setSecretKey("");
+    setErrors({});
+    setTestSuccess(false);
+    if (buckets.length > 0) setSourceBucket(buckets[0].name);
+    setCreateModal(true);
+  }
+
   async function testConnection() {
-    if (!destEndpoint || !destBucket) {
-      toast("error", "Please provide destination endpoint and bucket.");
+    const errs: Record<string, string> = {};
+    if (!destEndpoint.trim()) {
+      errs.destEndpoint = "Destination Endpoint URL is required.";
+    }
+    if (!destBucket.trim()) {
+      errs.destBucket = "Remote Bucket Name is required.";
+    }
+    if (!accessKey.trim()) {
+      errs.accessKey = "Remote Access Key ID is required.";
+    }
+    if (!secretKey.trim()) {
+      errs.secretKey = "Remote Secret Key is required.";
+    }
+
+    if (Object.keys(errs).length > 0) {
+      setErrors(errs);
+      toast("error", "Please fill in all required connection fields highlighted below.");
       return;
     }
+
     setTesting(true);
+    setTestSuccess(false);
     setTimeout(() => {
       setTesting(false);
+      setTestSuccess(true);
       toast("ok", `Connection to ${destProvider} (${destBucket}) verified successfully!`);
     }, 1200);
   }
 
   function createRule() {
-    if (!ruleName || !sourceBucket || !destBucket) {
-      toast("error", "Please fill in all required fields.");
+    const errs: Record<string, string> = {};
+    if (!ruleName.trim()) {
+      errs.ruleName = "Rule name is required.";
+    }
+    if (!sourceBucket) {
+      errs.sourceBucket = "Please select a local bucket.";
+    }
+    if (!destEndpoint.trim()) {
+      errs.destEndpoint = "Destination Endpoint URL is required.";
+    }
+    if (!destBucket.trim()) {
+      errs.destBucket = "Remote Bucket Name is required.";
+    }
+    if (!accessKey.trim()) {
+      errs.accessKey = "Remote Access Key ID is required.";
+    }
+    if (!secretKey.trim()) {
+      errs.secretKey = "Remote Secret Key is required.";
+    }
+
+    if (Object.keys(errs).length > 0) {
+      setErrors(errs);
+      toast("error", "Please complete all required fields highlighted in red.");
       return;
     }
 
     const newRule: ReplicationRule = {
       id: "rep_" + Date.now(),
-      name: ruleName,
+      name: ruleName.trim(),
       sourceBucket,
       destProvider,
-      destEndpoint,
-      destBucket,
-      destRegion,
+      destEndpoint: destEndpoint.trim(),
+      destBucket: destBucket.trim(),
+      destRegion: destRegion.trim() || "us-east-1",
+      direction,
       mode: "mirror",
       prefix: "",
       status: "active",
@@ -160,12 +234,12 @@ export function ReplicationPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
           title="Bucket Replication & Backup"
-          subtitle="Configure continuous, one-way asynchronous replication to remote S3 targets (AWS S3, Cloudflare R2, Wasabi, Backblaze B2 or any S3-compatible server)."
+          subtitle="Configure continuous, asynchronous replication between bin and remote S3 targets (AWS S3, MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
         />
         <Button
           variant="primary"
           icon={<Plus className="size-4" />}
-          onClick={() => setCreateModal(true)}
+          onClick={handleOpenModal}
           className="shrink-0"
         >
           Add Replication Rule
@@ -177,86 +251,116 @@ export function ReplicationPage() {
           <ArrowLeftRight className="size-10 mx-auto text-faint" />
           <div className="font-semibold text-ink">No replication targets configured</div>
           <div className="text-xs text-muted max-w-sm mx-auto">
-            Set up automatic offsite backups or active replication to keep secondary copies in another cloud or datacenter.
+            Set up automatic offsite backups or active replication to keep secondary copies in another cloud or import data from an external MinIO instance.
           </div>
-          <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setCreateModal(true)}>
+          <Button variant="primary" icon={<Plus className="size-4" />} onClick={handleOpenModal}>
             Configure First Target
           </Button>
         </Card>
       ) : (
         <div className="space-y-4">
-          {rules.map((rule) => (
-            <Card key={rule.id} className="p-5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-line">
-                <div>
-                  <div className="flex items-center gap-2.5">
-                    <h3 className="font-semibold text-base text-ink">{rule.name}</h3>
-                    <span className={cx(
-                      "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-                      rule.status === "active"
-                        ? "bg-ok/10 text-ok"
-                        : rule.status === "syncing"
-                        ? "bg-accent/15 text-accent animate-pulse"
-                        : "bg-muted/15 text-muted"
-                    )}>
-                      {rule.status === "syncing" ? "Syncing now..." : rule.status === "active" ? "Active" : "Paused"}
-                    </span>
+          {rules.map((rule) => {
+            const isPull = rule.direction === "pull";
+            return (
+              <Card key={rule.id} className="p-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-line">
+                  <div>
+                    <div className="flex items-center gap-2.5">
+                      <h3 className="font-semibold text-base text-ink">{rule.name}</h3>
+                      <span className={cx(
+                        "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                        rule.status === "active"
+                          ? "bg-ok/10 text-ok"
+                          : rule.status === "syncing"
+                          ? "bg-accent/15 text-accent animate-pulse"
+                          : "bg-muted/15 text-muted"
+                      )}>
+                        {rule.status === "syncing" ? "Syncing now..." : rule.status === "active" ? "Active" : "Paused"}
+                      </span>
+                      <span className="rounded-full bg-surface-alt px-2 py-0.5 text-[11px] font-medium text-muted border border-line">
+                        {isPull ? "Inbound (Pull / Import)" : "Outbound (Push / Mirror)"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5 text-xs text-muted font-mono">
+                      {isPull ? (
+                        <>
+                          <span className="text-ink font-semibold">{rule.destProvider} ({rule.destBucket})</span>
+                          <span className="text-accent font-bold">➔</span>
+                          <span className="text-accent font-semibold">{rule.sourceBucket} (Local)</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-accent font-semibold">{rule.sourceBucket} (Local)</span>
+                          <span className="text-accent font-bold">➔</span>
+                          <span className="text-ink font-semibold">{rule.destProvider} ({rule.destBucket})</span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 mt-1 text-xs text-muted font-mono">
-                    <span className="text-accent font-semibold">{rule.sourceBucket}</span>
-                    <span>➔</span>
-                    <span className="text-ink">{rule.destProvider} ({rule.destBucket})</span>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="primary"
+                      busy={rule.status === "syncing"}
+                      icon={<Play className="size-3.5 fill-current" />}
+                      onClick={() => triggerSync(rule.id)}
+                    >
+                      Sync Now
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => toggleStatus(rule.id)}
+                    >
+                      {rule.status === "paused" ? "Resume" : "Pause"}
+                    </Button>
+                    <button
+                      onClick={() => deleteRule(rule.id)}
+                      className="flex size-8 items-center justify-center rounded text-muted hover:text-danger hover:bg-sunken transition-colors"
+                      title="Delete rule"
+                      aria-label="Delete rule"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="primary"
-                    busy={rule.status === "syncing"}
-                    icon={<Play className="size-3.5 fill-current" />}
-                    onClick={() => triggerSync(rule.id)}
-                  >
-                    Sync Now
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => toggleStatus(rule.id)}
-                  >
-                    {rule.status === "paused" ? "Resume" : "Pause"}
-                  </Button>
-                  <button
-                    onClick={() => deleteRule(rule.id)}
-                    className="flex size-8 items-center justify-center rounded text-muted hover:text-danger hover:bg-sunken transition-colors"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-4 text-xs">
-                <div>
-                  <div className="label-strip">Remote Endpoint</div>
-                  <div className="mt-1 font-mono text-muted truncate text-[11px]">{rule.destEndpoint}</div>
-                </div>
-                <div>
-                  <div className="label-strip">Last Synchronized</div>
-                  <div className="mt-1 font-mono text-ink">
-                    {rule.lastSyncAt ? dateTime(rule.lastSyncAt) : "Never"}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-4 text-xs">
+                  <div>
+                    <div className="label-strip">Remote Endpoint</div>
+                    <div className="mt-1 font-mono text-muted truncate text-[11px]">{rule.destEndpoint}</div>
+                  </div>
+                  <div>
+                    <div className="label-strip">Last Synchronized</div>
+                    <div className="mt-1 font-mono text-ink">
+                      {rule.lastSyncAt ? dateTime(rule.lastSyncAt) : "Never"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="label-strip">Replicated Data</div>
+                    <div className="mt-1 font-mono font-semibold text-ink">
+                      {bytes(rule.replicatedBytes)} ({count(rule.replicatedObjects)} objs)
+                    </div>
+                  </div>
+                  <div>
+                    <div className="label-strip">Sync Direction</div>
+                    <div className="mt-1 flex items-center gap-1.5 text-ink font-medium">
+                      {isPull ? (
+                        <>
+                          <ArrowDownLeft className="size-3.5 text-ok" />
+                          <span>Inbound Import (Remote → Local)</span>
+                        </>
+                      ) : (
+                        <>
+                          <ArrowUpRight className="size-3.5 text-accent" />
+                          <span>Outbound Backup (Local → Remote)</span>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <div className="label-strip">Replicated Data</div>
-                  <div className="mt-1 font-mono font-semibold text-ink">
-                    {bytes(rule.replicatedBytes)} ({count(rule.replicatedObjects)} objs)
-                  </div>
-                </div>
-                <div>
-                  <div className="label-strip">Sync Direction</div>
-                  <div className="mt-1 text-muted">Continuous One-Way</div>
-                </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 
@@ -275,77 +379,171 @@ export function ReplicationPage() {
         }
       >
         <div className="space-y-4">
+          {/* Sync Direction */}
           <div>
-            <label htmlFor="replication-rule-name" className="label-strip mb-1.5 block">Rule Name</label>
+            <label className="label-strip mb-1.5 block">Replication Direction</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setDirection("push")}
+                className={cx(
+                  "flex items-center gap-2 p-2.5 rounded-lg border text-left text-xs transition-colors",
+                  direction === "push"
+                    ? "border-accent bg-accent-soft text-ink font-medium"
+                    : "border-line bg-surface text-muted hover:border-line-strong"
+                )}
+              >
+                <ArrowUpRight className={cx("size-4 shrink-0", direction === "push" ? "text-accent" : "text-muted")} />
+                <div>
+                  <div className="font-semibold">Outbound (Push)</div>
+                  <div className="text-[11px] text-muted">Backup local bucket to remote cloud</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDirection("pull")}
+                className={cx(
+                  "flex items-center gap-2 p-2.5 rounded-lg border text-left text-xs transition-colors",
+                  direction === "pull"
+                    ? "border-accent bg-accent-soft text-ink font-medium"
+                    : "border-line bg-surface text-muted hover:border-line-strong"
+                )}
+              >
+                <ArrowDownLeft className={cx("size-4 shrink-0", direction === "pull" ? "text-accent" : "text-muted")} />
+                <div>
+                  <div className="font-semibold">Inbound (Pull / Import)</div>
+                  <div className="text-[11px] text-muted">Import from remote MinIO / S3 to local</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Rule Name */}
+          <div>
+            <label htmlFor="replication-rule-name" className="label-strip mb-1.5 block">
+              Rule Name <span className="text-danger">*</span>
+            </label>
             <Input
               id="replication-rule-name"
+              autoComplete="off"
               value={ruleName}
-              onChange={(e) => setRuleName(e.target.value)}
-              placeholder="e.g. AWS S3 Disaster Recovery"
+              onChange={(e) => {
+                setRuleName(e.target.value);
+                clearError("ruleName");
+              }}
+              placeholder={direction === "pull" ? "e.g. MinIO Production Inbound Sync" : "e.g. AWS S3 Disaster Recovery"}
+              className={cx(errors.ruleName && "!border-danger focus:!border-danger focus:!ring-danger/25")}
             />
+            {errors.ruleName && (
+              <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                <AlertCircle className="size-3.5 shrink-0" />
+                <span>{errors.ruleName}</span>
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="replication-source-bucket" className="label-strip mb-1.5 block">Source Bucket</label>
+              <label htmlFor="replication-source-bucket" className="label-strip mb-1.5 block">
+                {direction === "pull" ? "Local Target Bucket" : "Local Source Bucket"} <span className="text-danger">*</span>
+              </label>
               <Select
                 id="replication-source-bucket"
-                aria-label="Source Bucket"
+                aria-label="Local Bucket"
                 value={sourceBucket}
-                onChange={setSourceBucket}
+                onChange={(val) => {
+                  setSourceBucket(val);
+                  clearError("sourceBucket");
+                }}
                 options={buckets.map((b) => ({ value: b.name, label: b.name }))}
               />
+              {errors.sourceBucket && (
+                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  <span>{errors.sourceBucket}</span>
+                </p>
+              )}
             </div>
 
             <div>
-              <label htmlFor="replication-destination-cloud" className="label-strip mb-1.5 block">Destination Cloud</label>
+              <label htmlFor="replication-destination-cloud" className="label-strip mb-1.5 block">Remote Provider</label>
               <Select
                 id="replication-destination-cloud"
-                aria-label="Destination Cloud"
+                aria-label="Remote Provider"
                 value={destProvider}
                 onChange={(val) => {
                   setDestProvider(val);
-                  if (val === "Cloudflare R2") setDestEndpoint("https://<account-id>.r2.cloudflarestorage.com");
+                  clearError("destEndpoint");
+                  if (val === "MinIO Server") setDestEndpoint("http://localhost:9000");
+                  else if (val === "Cloudflare R2") setDestEndpoint("https://<account-id>.r2.cloudflarestorage.com");
                   else if (val === "Wasabi") setDestEndpoint("https://s3.wasabisys.com");
                   else if (val === "Backblaze B2") setDestEndpoint("https://s3.us-west-002.backblazeb2.com");
-                  else setDestEndpoint("https://s3.us-east-1.amazonaws.com");
+                  else if (val === "AWS S3") setDestEndpoint("https://s3.us-east-1.amazonaws.com");
+                  else setDestEndpoint("https://s3.custom-provider.com");
                 }}
                 options={[
                   { value: "AWS S3", label: "Amazon Web Services (S3)" },
+                  { value: "MinIO Server", label: "MinIO Server (Remote Instance)" },
                   { value: "Cloudflare R2", label: "Cloudflare R2" },
-                  { value: "S3 Compatible", label: "Other S3-compatible server" },
                   { value: "Wasabi", label: "Wasabi Hot Cloud Storage" },
                   { value: "Backblaze B2", label: "Backblaze B2" },
+                  { value: "S3 Compatible", label: "Other S3-compatible server" },
                 ]}
               />
             </div>
           </div>
 
           <div>
-            <label htmlFor="replication-destination-endpoint-url" className="label-strip mb-1.5 block">Destination Endpoint URL</label>
+            <label htmlFor="replication-destination-endpoint-url" className="label-strip mb-1.5 block">
+              Remote Endpoint URL <span className="text-danger">*</span>
+            </label>
             <Input
               id="replication-destination-endpoint-url"
+              autoComplete="url"
               value={destEndpoint}
-              onChange={(e) => setDestEndpoint(e.target.value)}
-              className="font-mono text-xs"
+              onChange={(e) => {
+                setDestEndpoint(e.target.value);
+                clearError("destEndpoint");
+              }}
+              className={cx("font-mono text-xs", errors.destEndpoint && "!border-danger focus:!border-danger focus:!ring-danger/25")}
             />
+            {errors.destEndpoint && (
+              <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                <AlertCircle className="size-3.5 shrink-0" />
+                <span>{errors.destEndpoint}</span>
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="replication-remote-bucket-name" className="label-strip mb-1.5 block">Remote Bucket Name</label>
+              <label htmlFor="replication-remote-bucket-name" className="label-strip mb-1.5 block">
+                Remote Bucket Name <span className="text-danger">*</span>
+              </label>
               <Input
                 id="replication-remote-bucket-name"
+                autoComplete="off"
                 value={destBucket}
-                onChange={(e) => setDestBucket(e.target.value)}
-                placeholder="remote-backup-bucket"
-                className="font-mono text-xs"
+                onChange={(e) => {
+                  setDestBucket(e.target.value);
+                  clearError("destBucket");
+                }}
+                placeholder="remote-bucket-name"
+                className={cx("font-mono text-xs", errors.destBucket && "!border-danger focus:!border-danger focus:!ring-danger/25")}
               />
+              {errors.destBucket && (
+                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  <span>{errors.destBucket}</span>
+                </p>
+              )}
             </div>
             <div>
               <label htmlFor="replication-region" className="label-strip mb-1.5 block">Region</label>
               <Input
                 id="replication-region"
+                autoComplete="off"
                 value={destRegion}
                 onChange={(e) => setDestRegion(e.target.value)}
                 placeholder="us-east-1"
@@ -356,25 +554,49 @@ export function ReplicationPage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="replication-remote-access-key-id" className="label-strip mb-1.5 block">Remote Access Key ID</label>
+              <label htmlFor="replication-remote-access-key-id" className="label-strip mb-1.5 block">
+                Remote Access Key ID <span className="text-danger">*</span>
+              </label>
               <Input
                 id="replication-remote-access-key-id"
+                autoComplete="username"
                 value={accessKey}
-                onChange={(e) => setAccessKey(e.target.value)}
-                placeholder="AKIA..."
-                className="font-mono text-xs"
+                onChange={(e) => {
+                  setAccessKey(e.target.value);
+                  clearError("accessKey");
+                }}
+                placeholder="AKIA... or MinIO user"
+                className={cx("font-mono text-xs", errors.accessKey && "!border-danger focus:!border-danger focus:!ring-danger/25")}
               />
+              {errors.accessKey && (
+                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  <span>{errors.accessKey}</span>
+                </p>
+              )}
             </div>
             <div>
-              <label htmlFor="replication-remote-secret-key" className="label-strip mb-1.5 block">Remote Secret Key</label>
+              <label htmlFor="replication-remote-secret-key" className="label-strip mb-1.5 block">
+                Remote Secret Key <span className="text-danger">*</span>
+              </label>
               <Input
                 id="replication-remote-secret-key"
                 type="password"
+                autoComplete="current-password"
                 value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
+                onChange={(e) => {
+                  setSecretKey(e.target.value);
+                  clearError("secretKey");
+                }}
                 placeholder="••••••••••••••••"
-                className="font-mono text-xs"
+                className={cx("font-mono text-xs", errors.secretKey && "!border-danger focus:!border-danger focus:!ring-danger/25")}
               />
+              {errors.secretKey && (
+                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  <span>{errors.secretKey}</span>
+                </p>
+              )}
             </div>
           </div>
 
@@ -382,11 +604,11 @@ export function ReplicationPage() {
             <Button
               variant="secondary"
               busy={testing}
-              icon={<Zap className="size-3.5 text-accent" />}
+              icon={testSuccess ? <CheckCircle2 className="size-3.5 text-ok" /> : <Zap className="size-3.5 text-accent" />}
               onClick={testConnection}
               className="w-full justify-center"
             >
-              Test Remote Connection
+              {testSuccess ? "Remote Connection Verified!" : "Test Remote Connection"}
             </Button>
           </div>
         </div>
