@@ -282,13 +282,26 @@ function TLSSection({ info }: { info: Info }) {
   const [certModal, setCertModal] = useState(false);
   const [certText, setCertText] = useState("");
   const [keyText, setKeyText] = useState("");
+  const [certError, setCertError] = useState("");
+  const [keyError, setKeyError] = useState("");
   const toast = useToast();
 
   function applyCert() {
-    if (!certText.trim() || !keyText.trim()) {
-      toast("error", "Please provide both certificate and private key.");
-      return;
+    let hasError = false;
+    if (!certText.trim()) {
+      setCertError("Public certificate is required.");
+      hasError = true;
+    } else {
+      setCertError("");
     }
+    if (!keyText.trim()) {
+      setKeyError("Private key is required.");
+      hasError = true;
+    } else {
+      setKeyError("");
+    }
+    if (hasError) return;
+    
     toast("ok", "Certificates validated and updated.");
     setCertModal(false);
   }
@@ -380,29 +393,33 @@ function TLSSection({ info }: { info: Info }) {
             Paste your PEM-encoded Public Certificate and Private Key to enable native HTTPS on the bin listeners.
           </p>
 
-          <div>
-            <label htmlFor="settings-public-certificate" className="label-strip mb-1 block">Public Certificate (cert.pem / fullchain.pem)</label>
+          <Field label="Public Certificate (cert.pem / fullchain.pem)" error={certError}>
             <textarea
               id="settings-public-certificate"
               rows={4}
               value={certText}
-              onChange={(e) => setCertText(e.target.value)}
+              onChange={(e) => {
+                setCertText(e.target.value);
+                if (certError) setCertError("");
+              }}
               placeholder="-----BEGIN CERTIFICATE-----&#10;MIID...&#10;-----END CERTIFICATE-----"
-              className="w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+              className={cx("w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent", certError && "!border-danger focus:!border-danger focus:!ring-danger/25")}
             />
-          </div>
+          </Field>
 
-          <div>
-            <label htmlFor="settings-private-key" className="label-strip mb-1 block">Private Key (key.pem)</label>
+          <Field label="Private Key (key.pem)" error={keyError}>
             <textarea
               id="settings-private-key"
               rows={4}
               value={keyText}
-              onChange={(e) => setKeyText(e.target.value)}
+              onChange={(e) => {
+                setKeyText(e.target.value);
+                if (keyError) setKeyError("");
+              }}
               placeholder="-----BEGIN PRIVATE KEY-----&#10;MIIE...&#10;-----END PRIVATE KEY-----"
-              className="w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+              className={cx("w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent", keyError && "!border-danger focus:!border-danger focus:!ring-danger/25")}
             />
-          </div>
+          </Field>
         </div>
       </Modal>
     </div>

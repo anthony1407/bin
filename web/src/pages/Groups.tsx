@@ -54,13 +54,12 @@ export function GroupsPage() {
 
   const nameError = !editing && draft.name && !NAME_RULE.test(draft.name)
     ? "Use 1-64 letters, digits, dots, underscores and hyphens, starting with a letter or digit."
+    : !editing && !draft.name.trim()
+    ? "The group needs a name."
     : undefined;
 
   async function submit() {
-    if (!editing && !draft.name.trim()) {
-      toast("error", "The group needs a name.");
-      return;
-    }
+    if (nameError) return;
     setBusy(true);
     try {
       if (editing) {

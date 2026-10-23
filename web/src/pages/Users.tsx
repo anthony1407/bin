@@ -18,7 +18,7 @@ import {
   Users as UsersIcon,
 } from "lucide-react";
 import { api, type AccessKey, type Group } from "../api";
-import { Button, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+import { Button, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 
 function downloadFile(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -114,6 +114,7 @@ export function UsersPage() {
 
   // Create User Form State
   const [username, setUsername] = useState("");
+  const [usernameError, setUsernameError] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [policySearch, setPolicySearch] = useState("");
@@ -166,9 +167,10 @@ export function UsersPage() {
   async function handleSaveUser() {
     const trimmedUser = username.trim();
     if (!trimmedUser) {
-      toast("error", "User name is required.");
+      setUsernameError("User name is required.");
       return;
     }
+    setUsernameError("");
 
     setSaving(true);
     const isReadOnly = assignedPolicies.includes("readonly") && !assignedPolicies.includes("readwrite") && !assignedPolicies.includes("consoleAdmin");
@@ -285,17 +287,23 @@ export function UsersPage() {
               className="space-y-5 rounded-card border border-line bg-surface p-5 shadow-sm"
             >
               {/* User Name */}
-              <div>
-                <label htmlFor="users-user-name" className="mb-1.5 block text-sm font-medium text-ink">User Name</label>
+              <Field
+                label="User Name"
+                error={usernameError}
+                hint="Alphanumeric, dots, underscores and hyphens"
+              >
                 <Input
                   id="users-user-name"
                   autoComplete="username"
                   autoFocus
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) => {
+                    setUsername(e.target.value);
+                    if (usernameError) setUsernameError("");
+                  }}
                   placeholder="e.g. app-backup-service"
                 />
-              </div>
+              </Field>
 
               {/* Password */}
               <div>

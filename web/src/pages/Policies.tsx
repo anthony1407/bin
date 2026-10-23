@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Check, Copy, FileText, Plus, Search, ShieldCheck, Trash2 } from "lucide-react";
 import Editor from "../components/CodeEditor";
-import { Button, IconButton, Input, Modal, useToast } from "../components/ui";
+import { Button, Field, IconButton, Input, Modal, useToast } from "../components/ui";
 
 interface PolicyItem {
   name: string;
@@ -108,6 +108,7 @@ export function PoliciesPage() {
   const [selectedPolicy, setSelectedPolicy] = useState<PolicyItem | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [newNameError, setNewNameError] = useState("");
   const [newContent, setNewContent] = useState(DEFAULT_POLICIES[2].content);
   const [copied, setCopied] = useState(false);
   const toast = useToast();
@@ -118,6 +119,7 @@ export function PoliciesPage() {
 
   function openCreate() {
     setNewName("");
+    setNewNameError("");
     setNewContent(DEFAULT_POLICIES[2].content);
     setCreateOpen(true);
   }
@@ -125,13 +127,14 @@ export function PoliciesPage() {
   function handleSaveNew() {
     const trimmed = newName.trim();
     if (!trimmed) {
-      toast("error", "Policy name cannot be empty.");
+      setNewNameError("Policy name cannot be empty.");
       return;
     }
     if (policies.some((p) => p.name === trimmed)) {
-      toast("error", "A policy with this name already exists.");
+      setNewNameError("A policy with this name already exists.");
       return;
     }
+    setNewNameError("");
     try {
       JSON.parse(newContent);
     } catch {
@@ -300,16 +303,18 @@ export function PoliciesPage() {
         }
       >
         <div className="space-y-4">
-          <div>
-            <label htmlFor="policies-policy-name" className="mb-1.5 block text-sm font-medium text-ink">Policy Name</label>
+          <Field label="Policy Name" error={newNameError} hint="Unique name, alphanumeric and hyphens">
             <Input
               id="policies-policy-name"
               autoFocus
               value={newName}
-              onChange={(e) => setNewName(e.target.value)}
+              onChange={(e) => {
+                setNewName(e.target.value);
+                if (newNameError) setNewNameError("");
+              }}
               placeholder="e.g. read-images-only"
             />
-          </div>
+          </Field>
           <div>
             <span className="mb-1.5 block text-sm font-medium text-ink">Policy JSON</span>
             <div className="relative overflow-hidden rounded-md border border-line-strong bg-[#1e1e1e]">
