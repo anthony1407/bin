@@ -37,7 +37,7 @@ services:
       BIN_REGION: us-east-1
     volumes:
       - bin-data:/data
-    # The image is distroless (no shell, no curl): bin checks itself.
+    # The image has no curl or wget: bin checks itself.
     # Load balancers can also probe http://<host>:9000/_health/live.
     healthcheck:
       test: ["CMD", "bin", "healthcheck"]

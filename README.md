@@ -8,7 +8,7 @@
 # bin
 
 **bin** is a single-node, S3-compatible object storage server with a built-in
-web console. It ships as one static binary (or a small distroless image) that
+web console. It ships as one static binary (or a small Debian slim image) that
 serves two ports:
 
 | Port | What |
