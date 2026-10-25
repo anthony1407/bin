@@ -186,6 +186,46 @@ OpenID uses the authorization code flow with PKCE (S256), a nonce, and a state
 bound to the browser by a cookie; each state works once, for 10 minutes.
 LDAP sign-ins share the root login's rate limit per IP.
 
+### Replication rules
+
+| Method and path | Body | Response |
+|---|---|---|
+| `GET /api/v1/replication/rules` | | `{"rules": [rule]}` |
+| `POST /api/v1/replication/rules` | rule settings | `201` rule; when enabled, a first run starts at once |
+| `PUT /api/v1/replication/rules/{id}` | rule settings (`secretKey` empty keeps the stored one) | rule; a run in progress is stopped |
+| `DELETE /api/v1/replication/rules/{id}` | | `204`; objects already copied stay |
+| `POST /api/v1/replication/rules/{id}/run` | | `202`; `409 already_running` |
+
+Rule settings are
+`{"name","direction","bucket","prefix","endpoint","accessKey","secretKey","region","remoteBucket","remotePrefix","intervalSeconds","mirrorDeletes","enabled"}`.
+`direction` is `push` (bin to remote) or `pull` (remote to bin);
+`intervalSeconds` goes from 60 to 86400; prefixes are folders (a trailing `/`
+is added). Validation errors name the `field`. A rule as returned adds
+`{"id","secretKeySet","createdAt","running","lastRunAt","nextRunAt","lastStatus","lastError","lastCopied","lastDeleted","lastFailed","lastBytes","totalCopied","totalBytes"}`.
+The secret is stored encrypted and never returned.
+
+Each run lists both sides and compares them with what the rule copied last
+time, per object (the ETags on both sides), so unchanged objects are skipped
+even when the two servers compute ETags differently. Pushed objects keep
+their content type and user metadata; up to 64 MiB they go in one request.
+With `mirrorDeletes`, an object the source no longer has is removed from the
+destination only if the rule copied it and nobody changed it since. Changing
+what a rule copies (direction, buckets, prefixes, endpoint) makes it compare
+everything again. The remote endpoint has the same address restrictions as
+the import below. Runs are scheduled, not triggered by each write; a rule
+that was down catches up on its next run.
+
+### Server log
+
+| Method and path | Query | Response |
+|---|---|---|
+| `GET /api/v1/logs` | `after` (sequence number; 0: the latest lines), `limit` (up to 1000) | `{"entries": [{"seq","time","level","message","attrs"}], "latest"}`, oldest first |
+
+The server keeps its latest 2,000 log lines in memory, at the configured
+level. The console polls this endpoint; its own polling requests (logs,
+progress and status views) are logged at debug level so they do not bury the
+rest.
+
 ### Import from another S3 server
 
 | Method and path | Body | Response |

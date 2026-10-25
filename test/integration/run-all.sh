@@ -4,7 +4,7 @@
 set -uo pipefail
 DIR=$(dirname "$0")
 failed=()
-for script in cli sigv4 buckets objects list multipart admin import dropzone identity; do
+for script in cli sigv4 buckets objects list multipart admin import replication dropzone identity; do
   echo "=== $script"
   WORK=$(mktemp -d) bash "$DIR/$script.sh" || failed+=("$script")
 done

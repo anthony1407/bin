@@ -43,9 +43,16 @@ serves two ports:
   the S3 API, searchable in the console. Reads are not recorded; entries are
   kept for 30 days by default (configurable in **Settings**, 0 keeps them
   forever).
-- **Import from another S3 server**: copy buckets from AWS S3, Cloudflare R2,
-  Wasabi, Backblaze B2 or any S3-compatible server into bin, from
-  **Replication → Import**, with progress and cancel.
+- **Replication**: rules that keep a bucket folder in step with another S3
+  server (AWS S3, Cloudflare R2, Wasabi, Backblaze B2 or any S3-compatible
+  one), pushing (offsite backup) or pulling, every minute to every day and on
+  demand. Only new or changed objects are copied; deletes can be mirrored, and
+  then only for objects the rule copied. Plus a one-time **Import** of whole
+  buckets, with progress and cancel.
+- **Server log in the console**: the latest log lines, live, with level and
+  text filters, and export.
+- **Share links**: from 5 minutes to 7 days, listed per file with the time
+  left, and revocable one by one.
 - **Dropzones**: expiring upload links for people without an account. They
   upload into one bucket folder, up to a size per file, and never overwrite
   existing files.
@@ -278,21 +285,21 @@ make check        # all of the above
 
 ## Scope and limits
 
-bin targets single-node deployments: one process, one disk, no replication or
+bin targets single-node deployments: one process, one disk, no clustering or
 erasure coding. Not supported yet:
 
 - **Versioning, lifecycle rules, CORS, object lock, event webhooks**: planned.
   The storage schema is already ready for versions; `GetBucketVersioning`
   answers, but versioning cannot be turned on yet.
-- **Continuous replication, KMS encryption, IAM policies**: out of scope.
-  Importing buckets from another S3 server is a one-time copy, not ongoing
-  replication.
+- **KMS encryption, IAM policies**: out of scope.
+- **Replication** runs on a schedule (every minute at most), not on each
+  write, and in one direction per rule; two rules pushing and pulling the
+  same folder are not a two-way sync.
 
 Some console screens are previews of planned features and are not connected
-to the server yet: **Policies**, **Logs**, **Metrics**, replication rules,
-and the versioning, CORS and
-lifecycle sections of bucket settings. What you enter there stays in your
-browser and does not change how the server behaves.
+to the server yet: **Policies**, native TLS certificates in **Settings**, and
+the versioning, CORS and lifecycle sections of bucket settings. They are
+marked "coming soon" and change nothing on the server.
 
 ## Documentation
 

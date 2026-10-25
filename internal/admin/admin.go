@@ -21,6 +21,7 @@ import (
 	"bin/internal/audit"
 	"bin/internal/auth"
 	"bin/internal/buildinfo"
+	"bin/internal/logging"
 	"bin/internal/server"
 	"bin/internal/storage"
 )
@@ -45,6 +46,11 @@ type Options struct {
 	// BIN_LOG_LEVEL and BIN_LOG_FORMAT at startup.
 	LogLevel  string
 	LogFormat string
+	// LogRing holds the latest log lines for GET /logs; nil serves none.
+	LogRing *logging.Ring
+	// RunReplication runs replication rules on their schedule; without it they
+	// only run on demand (tests).
+	RunReplication bool
 	// Panel serves everything outside /api/ (the embedded web panel).
 	Panel http.Handler
 }
@@ -60,6 +66,7 @@ type Handler struct {
 
 	imports    *importJobs
 	oidcStates *oidcStates
+	repl       *replicator
 }
 
 // NewHandler returns the console HTTP handler.
@@ -68,7 +75,10 @@ func NewHandler(opts Options) http.Handler {
 		opts.SessionTTL = 12 * time.Hour
 	}
 	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs(),
-		oidcStates: newOIDCStates()}
+		oidcStates: newOIDCStates(), repl: newReplicator()}
+	if opts.RunReplication {
+		go h.runReplicationScheduler()
+	}
 
 	mux := http.NewServeMux()
 	public := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, h.audited(pattern, fn)) }
@@ -119,6 +129,7 @@ func NewHandler(opts Options) http.Handler {
 	private("DELETE /api/v1/groups/{name}", h.deleteGroup)
 
 	private("GET /api/v1/audit", h.listAudit)
+	private("GET /api/v1/logs", h.listLogs)
 
 	private("GET /api/v1/settings", h.getSettings)
 	private("PUT /api/v1/settings", h.putSettings)
@@ -141,6 +152,12 @@ func NewHandler(opts Options) http.Handler {
 	private("GET /api/v1/identity/ldap", h.getLDAP)
 	private("PUT /api/v1/identity/ldap", h.putLDAP)
 	private("POST /api/v1/identity/ldap/test", h.testLDAP)
+
+	private("GET /api/v1/replication/rules", h.listReplicationRules)
+	private("POST /api/v1/replication/rules", h.createReplicationRule)
+	private("PUT /api/v1/replication/rules/{id}", h.updateReplicationRule)
+	private("DELETE /api/v1/replication/rules/{id}", h.deleteReplicationRule)
+	private("POST /api/v1/replication/rules/{id}/run", h.runReplicationNow)
 
 	private("GET /api/v1/dropzones", h.listDropzones)
 	private("POST /api/v1/dropzones", h.createDropzone)
@@ -165,9 +182,25 @@ func NewHandler(opts Options) http.Handler {
 	}, next)
 	next = server.AccessLog(opts.Log, server.LogOptions{
 		Requests: opts.LogRequests,
-		Quiet:    func(r *http.Request) bool { return r.URL.Path == "/api/v1/health" },
+		Quiet:    quietRequest,
 	}, next)
 	return server.WithRequestID("X-Request-Id", next)
+}
+
+// polledPaths are read by the console on a timer (the Logs page every two
+// seconds, progress views every second or few). Their request lines go to the
+// debug level, like health probes, so they do not bury real activity.
+var polledPaths = map[string]bool{
+	"/api/v1/health":            true,
+	"/api/v1/logs":              true,
+	"/api/v1/import/jobs":       true,
+	"/api/v1/scrub":             true,
+	"/api/v1/dropzones":         true,
+	"/api/v1/replication/rules": true,
+}
+
+func quietRequest(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && polledPaths[r.URL.Path]
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +269,7 @@ func (h *Handler) storageError(w http.ResponseWriter, r *http.Request, err error
 		{storage.ErrGroupExists, 409, "group_exists", "A group with this name already exists."},
 		{storage.ErrNoSuchDropzone, 404, "no_such_dropzone", "The upload link does not exist."},
 		{storage.ErrNoSuchShareLink, 404, "no_such_share_link", "The share link does not exist."},
+		{storage.ErrNoSuchReplicationRule, 404, "no_such_replication_rule", "The replication rule does not exist."},
 	} {
 		if errors.Is(err, m.err) {
 			writeError(w, m.status, m.code, m.message)

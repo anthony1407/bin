@@ -378,6 +378,8 @@ func main() {
     }
 
     if (lang === "curl") {
+      // curl sends the path as written: encode each segment of the key.
+      const keyPath = objectKey.split("/").map(encodeURIComponent).join("/");
       return `# ==========================================
 # bin S3 API with cURL (SigV4 signing built in)
 # Needs curl 7.75+; curl 8 also sends the payload hash S3 requires.
@@ -393,16 +395,16 @@ curl "\${AUTH[@]}" "$S3/"
 curl "\${AUTH[@]}" "$S3/${bucketName}/?list-type=2"
 
 # 3. Upload a file
-curl "\${AUTH[@]}" -T ./local-file.txt "$S3/${bucketName}/${objectKey}"
+curl "\${AUTH[@]}" -T ./local-file.txt "$S3/${bucketName}/${keyPath}"
 
 # 4. Download it
-curl "\${AUTH[@]}" -o ./downloaded-file "$S3/${bucketName}/${objectKey}"
+curl "\${AUTH[@]}" -o ./downloaded-file "$S3/${bucketName}/${keyPath}"
 
 # 5. Object metadata only (size, type, ETag)
-curl "\${AUTH[@]}" -I "$S3/${bucketName}/${objectKey}"
+curl "\${AUTH[@]}" -I "$S3/${bucketName}/${keyPath}"
 
 # 6. Delete it
-curl "\${AUTH[@]}" -X DELETE "$S3/${bucketName}/${objectKey}"
+curl "\${AUTH[@]}" -X DELETE "$S3/${bucketName}/${keyPath}"
 
 # 7. Create a bucket
 curl "\${AUTH[@]}" -X PUT "$S3/new-bucket-name"

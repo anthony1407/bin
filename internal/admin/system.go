@@ -307,3 +307,24 @@ func (h *Handler) speedtestUpload(w http.ResponseWriter, r *http.Request) {
 		"mBps":     mbPerSec,
 	})
 }
+
+// --- server log --------------------------------------------------------------------------
+
+// maxLogPage bounds one GET /logs answer.
+const maxLogPage = 1000
+
+// listLogs returns the server log lines after ?after= (a sequence number;
+// 0 or missing: the latest ones), oldest first. The console polls it.
+func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
+	if h.opts.LogRing == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}, "latest": 0})
+		return
+	}
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	limit := maxLogPage
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v < limit {
+		limit = v
+	}
+	entries, latest := h.opts.LogRing.Since(after, limit)
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "latest": latest})
+}

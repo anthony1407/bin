@@ -153,12 +153,15 @@ func guardDial(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
+// dialGuard is guardDial; tests that use a remote on 127.0.0.1 replace it.
+var dialGuard = guardDial
+
 // importTransport dials only allowed addresses and ignores proxy settings,
 // which would otherwise bypass the check.
 var importTransport = func() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
-	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: guardDial}).DialContext
+	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: func(n, a string, c syscall.RawConn) error { return dialGuard(n, a, c) }}).DialContext
 	// A remote that accepts the connection but never answers must not hold a
 	// job (or an import slot) forever.
 	t.ResponseHeaderTimeout = time.Minute
@@ -382,14 +385,22 @@ func (h *Handler) runImportJob(ctx context.Context, client *minio.Client, id, bu
 
 // importObject copies one object, keeping its content type and user metadata.
 func (h *Handler) importObject(ctx context.Context, client *minio.Client, bucket string, obj minio.ObjectInfo) (int64, error) {
-	src, err := client.GetObject(ctx, bucket, obj.Key, minio.GetObjectOptions{})
+	info, _, err := h.copyFromRemote(ctx, client, bucket, obj.Key, bucket, obj.Key)
+	return info.Size, err
+}
+
+// copyFromRemote copies remoteBucket/remoteKey into localBucket/localKey,
+// keeping the content type and user metadata. It returns the stored object
+// and the remote ETag of what it read.
+func (h *Handler) copyFromRemote(ctx context.Context, client *minio.Client, remoteBucket, remoteKey, localBucket, localKey string) (storage.ObjectInfo, string, error) {
+	src, err := client.GetObject(ctx, remoteBucket, remoteKey, minio.GetObjectOptions{})
 	if err != nil {
-		return 0, err
+		return storage.ObjectInfo{}, "", err
 	}
 	defer src.Close()
 	stat, err := src.Stat()
 	if err != nil {
-		return 0, err
+		return storage.ObjectInfo{}, "", err
 	}
 	contentType := stat.ContentType
 	if contentType == "" {
@@ -404,14 +415,14 @@ func (h *Handler) importObject(ctx context.Context, client *minio.Client, bucket
 	if total > maxImportedMeta {
 		meta = nil
 	}
-	info, err := h.opts.Store.PutObject(ctx, bucket, obj.Key, src, stat.Size, storage.PutOptions{
+	info, err := h.opts.Store.PutObject(ctx, localBucket, localKey, src, stat.Size, storage.PutOptions{
 		ContentType: contentType,
 		UserMeta:    meta,
 	})
 	if err != nil {
-		return 0, err
+		return storage.ObjectInfo{}, "", err
 	}
-	return info.Size, nil
+	return info, stat.ETag, nil
 }
 
 // finishImportJob records the outcome. A job that copied nothing removes the

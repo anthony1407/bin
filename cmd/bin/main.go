@@ -152,6 +152,9 @@ Examples:
 `)
 }
 
+// logRingSize is how many recent log lines the console's Logs page can show.
+const logRingSize = 2000
+
 func runServer(args []string) error {
 	overrides, err := serverOverrides(args)
 	if err != nil {
@@ -166,7 +169,9 @@ func runServer(args []string) error {
 	if err != nil {
 		return err
 	}
-	log := logging.New(os.Stderr, cfg.LogFormat, cfg.LogLevel)
+	// The console's Logs page reads the latest lines from logRing.
+	logRing := logging.NewRing(logRingSize)
+	log := slog.New(logging.Tee(logging.New(os.Stderr, cfg.LogFormat, cfg.LogLevel).Handler(), logRing))
 	startupWarnings(log, cfg)
 
 	store, err := storage.Open(cfg.DataDir, log)
@@ -216,18 +221,20 @@ func runServer(args []string) error {
 			LogRequests: cfg.LogRequests,
 		}))},
 		server.Listener{Name: "console", Addr: cfg.ConsoleAddr, Handler: server.RealIP(cfg.TrustedProxies, admin.NewHandler(admin.Options{
-			Store:       store,
-			Keys:        keys,
-			Audit:       auditLog,
-			Region:      cfg.Region,
-			DataDir:     cfg.DataDir,
-			S3Addr:      cfg.S3Addr,
-			PublicURL:   cfg.PublicURL,
-			Log:         log.With("api", "console"),
-			LogRequests: cfg.LogRequests,
-			LogLevel:    strings.ToLower(cfg.LogLevel.String()),
-			LogFormat:   cfg.LogFormat,
-			Panel:       panel,
+			Store:          store,
+			Keys:           keys,
+			Audit:          auditLog,
+			Region:         cfg.Region,
+			DataDir:        cfg.DataDir,
+			S3Addr:         cfg.S3Addr,
+			PublicURL:      cfg.PublicURL,
+			Log:            log.With("api", "console"),
+			LogRequests:    cfg.LogRequests,
+			LogLevel:       strings.ToLower(cfg.LogLevel.String()),
+			LogFormat:      cfg.LogFormat,
+			LogRing:        logRing,
+			RunReplication: true,
+			Panel:          panel,
 		}))},
 	)
 	if err == nil {

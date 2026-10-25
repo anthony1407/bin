@@ -24,6 +24,7 @@ import (
 
 	"bin/internal/audit"
 	"bin/internal/auth"
+	"bin/internal/logging"
 	"bin/internal/s3"
 	"bin/internal/s3/sigv4"
 	"bin/internal/secrets"
@@ -46,7 +47,8 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ring := logging.NewRing(500)
+	log := slog.New(logging.Tee(slog.NewTextHandler(io.Discard, nil), ring))
 	dir := t.TempDir()
 	store, err := storage.Open(dir, log)
 	if err != nil {
@@ -63,7 +65,7 @@ func newEnv(t *testing.T) *env {
 	}))
 	t.Cleanup(s3srv.Close)
 	console := httptest.NewServer(NewHandler(Options{
-		Store: store, Keys: keys, Audit: rec, Region: "us-east-1", DataDir: dir, PublicURL: s3srv.URL, Log: log,
+		Store: store, Keys: keys, Audit: rec, Region: "us-east-1", DataDir: dir, PublicURL: s3srv.URL, Log: log, LogRing: ring,
 	}))
 	t.Cleanup(console.Close)
 	jar, _ := cookiejar.New(nil)

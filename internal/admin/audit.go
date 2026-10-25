@@ -46,6 +46,10 @@ var auditedRoutes = map[string]string{
 	"PUT /api/v1/identity/openid":                         "UpdateOpenIDConfig",
 	"PUT /api/v1/identity/ldap":                           "UpdateLDAPConfig",
 	"DELETE /api/v1/shares/{id}":                          "RevokeShareLink",
+	"POST /api/v1/replication/rules":                      "CreateReplicationRule",
+	"PUT /api/v1/replication/rules/{id}":                  "UpdateReplicationRule",
+	"DELETE /api/v1/replication/rules/{id}":               "DeleteReplicationRule",
+	"POST /api/v1/replication/rules/{id}/run":             "RunReplication",
 }
 
 // auditInfo lets a handler fill in what the route alone does not tell.

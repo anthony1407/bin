@@ -226,6 +226,46 @@ var migrations = []string{
 		revoked_at     INTEGER NOT NULL DEFAULT 0   -- 0 = not revoked
 	) WITHOUT ROWID;
 	CREATE INDEX share_links_object ON share_links (bucket, key, expires_at);`,
+
+	// 10: replication rules: a local bucket folder kept in step with one on
+	// another S3 server, pushed (local -> remote) or pulled (remote -> local)
+	// on a schedule. replication_state remembers, per object, the versions
+	// last copied on each side, so unchanged objects are skipped even when
+	// the two servers compute ETags differently, and mirrored deletes only
+	// touch objects the rule itself copied.
+	`CREATE TABLE replication_rules (
+		id               TEXT    PRIMARY KEY,
+		name             TEXT    NOT NULL,
+		direction        TEXT    NOT NULL,             -- 'push' or 'pull'
+		bucket           TEXT    NOT NULL,
+		prefix           TEXT    NOT NULL DEFAULT '',
+		endpoint         TEXT    NOT NULL,
+		access_key       TEXT    NOT NULL,
+		secret_enc       TEXT    NOT NULL,             -- encrypted with the master key
+		region           TEXT    NOT NULL DEFAULT '',
+		remote_bucket    TEXT    NOT NULL,
+		remote_prefix    TEXT    NOT NULL DEFAULT '',
+		interval_seconds INTEGER NOT NULL,
+		mirror_deletes   INTEGER NOT NULL DEFAULT 0,
+		enabled          INTEGER NOT NULL DEFAULT 1,
+		created_at       INTEGER NOT NULL,
+		last_run_at      INTEGER NOT NULL DEFAULT 0,   -- 0 = never
+		last_status      TEXT    NOT NULL DEFAULT '',  -- '', 'ok' or 'error'
+		last_error       TEXT    NOT NULL DEFAULT '',
+		last_copied      INTEGER NOT NULL DEFAULT 0,
+		last_deleted     INTEGER NOT NULL DEFAULT 0,
+		last_failed      INTEGER NOT NULL DEFAULT 0,
+		last_bytes       INTEGER NOT NULL DEFAULT 0,
+		total_copied     INTEGER NOT NULL DEFAULT 0,
+		total_bytes      INTEGER NOT NULL DEFAULT 0
+	) WITHOUT ROWID;
+	CREATE TABLE replication_state (
+		rule_id     TEXT NOT NULL REFERENCES replication_rules(id) ON DELETE CASCADE,
+		key         TEXT NOT NULL,                     -- relative to the rule's prefixes
+		local_etag  TEXT NOT NULL,
+		remote_etag TEXT NOT NULL,
+		PRIMARY KEY (rule_id, key)
+	) WITHOUT ROWID;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

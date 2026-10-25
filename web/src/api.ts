@@ -205,6 +205,8 @@ export const api = {
     return s;
   },
   loginProviders: () => request<LoginProviders>("GET", "/login/providers"),
+  /** Server log lines after sequence number `after` (0: the latest ones). */
+  logs: (after: number) => request<{ entries: LogEntry[]; latest: number }>("GET", `/logs?after=${after}&limit=500`),
   /** The browser navigates here to start an OpenID sign-in. */
   openIDLoginURL: (next: string) => `/api/v1/login/openid?next=${enc(next)}`,
   async session() {
@@ -333,6 +335,13 @@ export const api = {
       buckets,
     }),
   importJobs: () => request<{ jobs: ImportJob[] }>("GET", "/import/jobs").then((r) => r.jobs),
+
+  replicationRules: () => request<{ rules: ReplicationRule[] }>("GET", "/replication/rules").then((r) => r.rules),
+  createReplicationRule: (rule: ReplicationRuleInput) => request<ReplicationRule>("POST", "/replication/rules", rule),
+  updateReplicationRule: (id: string, rule: ReplicationRuleInput) =>
+    request<ReplicationRule>("PUT", `/replication/rules/${enc(id)}`, rule),
+  deleteReplicationRule: (id: string) => request<void>("DELETE", `/replication/rules/${enc(id)}`),
+  runReplicationRule: (id: string) => request<void>("POST", `/replication/rules/${enc(id)}/run`),
   cancelImport: (jobId: string) => request<void>("DELETE", `/import/jobs/${enc(jobId)}`),
 
   dropzones: () => request<{ dropzones: Dropzone[] }>("GET", "/dropzones").then((r) => r.dropzones),
@@ -349,6 +358,15 @@ export const api = {
     return data;
   },
 };
+
+export interface LogEntry {
+  seq: number;
+  time: string;
+  level: "DEBUG" | "INFO" | "WARN" | "ERROR" | string;
+  message: string;
+  /** The line's key=value pairs, as in the text log. */
+  attrs?: string;
+}
 
 export interface LoginProviders {
   openid: { displayName: string } | null;
@@ -419,6 +437,40 @@ export interface PublicDropzone {
   note: string;
   maxBytes: number;
   expiresAt: string;
+}
+
+/** What the replication form sends; secretKey empty keeps the stored one. */
+export interface ReplicationRuleInput {
+  name: string;
+  direction: "push" | "pull";
+  bucket: string;
+  prefix: string;
+  endpoint: string;
+  accessKey: string;
+  secretKey?: string;
+  region: string;
+  remoteBucket: string;
+  remotePrefix: string;
+  intervalSeconds: number;
+  mirrorDeletes: boolean;
+  enabled: boolean;
+}
+
+export interface ReplicationRule extends ReplicationRuleInput {
+  id: string;
+  secretKeySet: boolean;
+  createdAt: string;
+  running: boolean;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  lastStatus?: "ok" | "error";
+  lastError?: string;
+  lastCopied: number;
+  lastDeleted: number;
+  lastFailed: number;
+  lastBytes: number;
+  totalCopied: number;
+  totalBytes: number;
 }
 
 export interface RemoteBucket {
