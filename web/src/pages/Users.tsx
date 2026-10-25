@@ -3,8 +3,6 @@ import {
   Check,
   Copy,
   Download,
-  Eye,
-  EyeOff,
   Pencil,
   Plus,
   RefreshCw,
@@ -17,7 +15,7 @@ import {
   UserPlus,
   Users as UsersIcon,
 } from "lucide-react";
-import { api, type AccessKey, type Group } from "../api";
+import { api, type AccessKey, type Bucket, type Group } from "../api";
 import { Button, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 
 function downloadFile(filename: string, content: string) {
@@ -77,19 +75,71 @@ function CopyButton({ text, label = "Copy to clipboard" }: { text: string; label
   );
 }
 
-const AVAILABLE_POLICIES = [
-  { name: "consoleAdmin", desc: "Full administrative access to console and S3 APIs" },
-  { name: "diagnostics", desc: "Access to diagnostics, metrics and server info" },
-  { name: "readonly", desc: "Read-only access to all buckets and objects" },
-  { name: "readwrite", desc: "Read and write access to all buckets and objects" },
-  { name: "writeonly", desc: "Write-only permissions (uploads and deletes)" },
-];
+/** The read & write / read only choice, the only access levels the server enforces. */
+function AccessLevelPicker({ readOnly, onChange }: { readOnly: boolean; onChange: (readOnly: boolean) => void }) {
+  const option = (value: boolean, title: string, desc: string) => (
+    <button
+      type="button"
+      onClick={() => onChange(value)}
+      className={cx(
+        "flex flex-col items-start rounded-md border p-3 text-left transition-colors",
+        readOnly === value
+          ? "border-accent bg-accent/10 text-ink"
+          : "border-line bg-surface text-muted hover:border-line-strong hover:bg-sunken",
+      )}
+    >
+      <span className="text-xs font-semibold">{title}</span>
+      <span className="text-[11px] text-muted">{desc}</span>
+    </button>
+  );
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {option(false, "Read & Write", "Upload, download and delete objects")}
+      {option(true, "Read Only", "List and download objects only")}
+    </div>
+  );
+}
 
-function generateSecret(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+";
-  let s = "";
-  for (let i = 0; i < 32; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
-  return s;
+/** Bucket checkboxes; none checked means every bucket, as the server reads an empty list. */
+function BucketPicker({ buckets, selected, onChange }: { buckets: Bucket[]; selected: string[]; onChange: (next: string[]) => void }) {
+  if (buckets.length === 0) {
+    return <div className="text-xs text-faint">No buckets yet: the user will reach every bucket created later.</div>;
+  }
+  return (
+    <>
+      <div className="flex flex-wrap gap-2">
+        {buckets.map((b) => (
+          <label
+            key={b.name}
+            className={cx(
+              "flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs",
+              selected.includes(b.name) ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted",
+            )}
+          >
+            <input
+              type="checkbox"
+              name="buckets"
+              value={b.name}
+              checked={selected.includes(b.name)}
+              onChange={() =>
+                onChange(selected.includes(b.name) ? selected.filter((x) => x !== b.name) : [...selected, b.name])
+              }
+              className="size-3.5 accent-[var(--accent)]"
+            />
+            <span className="font-mono">{b.name}</span>
+          </label>
+        ))}
+      </div>
+      <p className="mt-1.5 text-xs text-muted">
+        {selected.length === 0 ? "None selected: the user can reach every bucket, including future ones." : `Limited to ${selected.length} bucket(s).`}
+      </p>
+    </>
+  );
+}
+
+function accessLabel(u: AccessKey): string {
+  const level = u.readOnly ? "read only" : "read & write";
+  return u.buckets.length === 0 ? `${level} · all buckets` : `${level} · ${u.buckets.join(", ")}`;
 }
 
 export function UsersPage() {
@@ -109,16 +159,16 @@ export function UsersPage() {
   const [editingUser, setEditingUser] = useState<AccessKey | null>(null);
   const [editName, setEditName] = useState("");
   const [editReadOnly, setEditReadOnly] = useState(false);
+  const [editBuckets, setEditBuckets] = useState<string[]>([]);
   const [editEnabled, setEditEnabled] = useState(true);
   const [updatingUser, setUpdatingUser] = useState(false);
 
   // Create User Form State
   const [username, setUsername] = useState("");
   const [usernameError, setUsernameError] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [policySearch, setPolicySearch] = useState("");
-  const [assignedPolicies, setAssignedPolicies] = useState<string[]>(["readwrite"]);
+  const [readOnly, setReadOnly] = useState(false);
+  const [assignedBuckets, setAssignedBuckets] = useState<string[]>([]);
+  const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [assignedGroups, setAssignedGroups] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -137,6 +187,7 @@ export function UsersPage() {
   useEffect(() => {
     load();
     api.groups().then(setGroups).catch(() => {});
+    api.buckets().then(setBuckets).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -146,22 +197,11 @@ export function UsersPage() {
       u.accessKey.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const filteredPolicies = AVAILABLE_POLICIES.filter((p) =>
-    p.name.toLowerCase().includes(policySearch.toLowerCase()),
-  );
-
-  function togglePolicy(name: string) {
-    setAssignedPolicies((prev) =>
-      prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name],
-    );
-  }
-
   function handleClear() {
     setUsername("");
-    setPassword("");
-    setAssignedPolicies(["readwrite"]);
+    setReadOnly(false);
+    setAssignedBuckets([]);
     setAssignedGroups([]);
-    setPolicySearch("");
   }
 
   async function handleSaveUser() {
@@ -173,13 +213,11 @@ export function UsersPage() {
     setUsernameError("");
 
     setSaving(true);
-    const isReadOnly = assignedPolicies.includes("readonly") && !assignedPolicies.includes("readwrite") && !assignedPolicies.includes("consoleAdmin");
-
     try {
       const res = await api.createAccessKey({
         name: trimmedUser,
-        readOnly: isReadOnly,
-        buckets: [],
+        readOnly,
+        buckets: assignedBuckets,
         groups: assignedGroups,
       });
       setCreatedUser(res);
@@ -236,6 +274,7 @@ export function UsersPage() {
     setEditingUser(u);
     setEditName(u.name || "");
     setEditReadOnly(u.readOnly);
+    setEditBuckets(u.buckets);
     setEditEnabled(u.enabled);
   }
 
@@ -246,6 +285,7 @@ export function UsersPage() {
       await api.updateAccessKey(editingUser.accessKey, {
         name: editName.trim(),
         readOnly: editReadOnly,
+        buckets: editBuckets,
         enabled: editEnabled,
       });
       toast("ok", `User ${editName || editingUser.accessKey} updated.`);
@@ -290,7 +330,7 @@ export function UsersPage() {
               <Field
                 label="User Name"
                 error={usernameError}
-                hint="Alphanumeric, dots, underscores and hyphens"
+                hint="A label for people. The access key and secret key are generated and shown once, after saving."
               >
                 <Input
                   id="users-user-name"
@@ -305,82 +345,16 @@ export function UsersPage() {
                 />
               </Field>
 
-              {/* Password */}
+              {/* Access */}
               <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label htmlFor="users-password" className="text-sm font-medium text-ink">Password</label>
-                  <button
-                    type="button"
-                    onClick={() => setPassword(generateSecret())}
-                    className="text-xs text-accent hover:underline"
-                  >
-                    Generate random
-                  </button>
-                </div>
-                <div className="relative">
-                  <Input
-                    id="users-password"
-                    type={showPassword ? "text" : "password"}
-                    autoComplete="new-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter password or leave blank for auto-generation"
-                    className="pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((p) => !p)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-ink"
-                  >
-                    {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
-                </div>
+                <span className="mb-1.5 block text-sm font-medium text-ink">Access</span>
+                <AccessLevelPicker readOnly={readOnly} onChange={setReadOnly} />
               </div>
 
-              {/* Assign Policies */}
+              {/* Buckets */}
               <div>
-                <span className="mb-1.5 block text-sm font-medium text-ink">Assign Policies</span>
-                <div className="rounded-md border border-line bg-surface overflow-hidden">
-                  <div className="border-b border-line p-2">
-                    <div className="relative">
-                      <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
-                      <input
-                        type="search"
-                        name="policy-search"
-                        aria-label="Search policies"
-                        value={policySearch}
-                        onChange={(e) => setPolicySearch(e.target.value)}
-                        placeholder="Start typing to search for a Policy"
-                        className="w-full bg-transparent pl-8 pr-3 text-xs text-ink placeholder:text-faint focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div className="max-h-52 overflow-y-auto divide-y divide-line">
-                    <div className="grid grid-cols-[3rem_1fr] bg-sunken/60 px-3 py-1.5 text-[11px] font-semibold uppercase text-faint">
-                      <span>Select</span>
-                      <span>Policy</span>
-                    </div>
-                    {filteredPolicies.map((p) => (
-                      <label
-                        key={p.name}
-                        className="grid grid-cols-[3rem_1fr] items-center px-3 py-2 text-sm hover:bg-sunken/50 cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          name="policies"
-                          value={p.name}
-                          checked={assignedPolicies.includes(p.name)}
-                          onChange={() => togglePolicy(p.name)}
-                          className="size-4 accent-[var(--accent)]"
-                        />
-                        <div className="min-w-0">
-                          <div className="font-mono text-xs font-medium text-ink">{p.name}</div>
-                          <div className="text-[11px] text-muted truncate">{p.desc}</div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
+                <span className="mb-1.5 block text-sm font-medium text-ink">Buckets</span>
+                <BucketPicker buckets={buckets} selected={assignedBuckets} onChange={setAssignedBuckets} />
               </div>
 
               {/* Groups */}
@@ -420,7 +394,7 @@ export function UsersPage() {
                     </div>
                     {assignedGroups.length > 0 && (
                       <p className="mt-1.5 text-xs text-muted">
-                        With groups, the user's access comes from the groups and the policies above are not used.
+                        With groups, the user's access comes from the groups; the access and buckets above are not used.
                       </p>
                     )}
                   </>
@@ -446,13 +420,12 @@ export function UsersPage() {
               Learn more about the Users feature
             </h3>
             <p className="text-xs leading-relaxed text-muted">
-              A bin user consists of a unique access key (username) and corresponding secret key
-              (password). Clients must authenticate their identity by specifying both a valid
-              access key and secret key of an existing user.
+              A bin user is an access key and a secret key, both generated by the server. The
+              secret is shown once, right after saving, and is stored encrypted.
             </p>
             <p className="text-xs leading-relaxed text-muted">
-              Each user can have one or more assigned policies that explicitly list the actions and
-              resources to which that user has access.
+              Each user is either read & write or read only, on every bucket or on the buckets you
+              pick. Users in groups get their access from their groups instead.
             </p>
             <div className="space-y-2 border-t border-line pt-3 text-xs text-ink">
               <div className="flex items-center gap-2">
@@ -465,7 +438,7 @@ export function UsersPage() {
               </div>
               <div className="flex items-center gap-2">
                 <Shield className="size-4 text-accent" />
-                <span>Assign Policies</span>
+                <span>Limit Access by Bucket</span>
               </div>
             </div>
           </div>
@@ -525,9 +498,8 @@ export function UsersPage() {
           shared permissions among users.
         </p>
         <p className="text-xs leading-relaxed text-muted">
-          bin uses Policy-Based Access Control (PBAC) to define the authorized actions and resources
-          to which an authenticated user has access. Each policy describes one or more actions and
-          conditions that outline permissions.
+          Each user is read & write or read only, on every bucket or on a chosen list of buckets.
+          A user in one or more groups gets the access of its enabled groups instead.
         </p>
         <div className="pt-1">
           <button
@@ -569,7 +541,7 @@ export function UsersPage() {
                 <th className="py-2.5 pr-3 font-semibold text-ink">User Name</th>
                 <th className="py-2.5 pr-3 font-normal">Access Key</th>
                 <th className="py-2.5 pr-3 font-normal">Status</th>
-                <th className="py-2.5 pr-3 font-normal">Policy</th>
+                <th className="py-2.5 pr-3 font-normal">Access</th>
                 <th className="py-2.5 pr-4 text-right font-normal">
                   <span className="sr-only">actions</span>
                 </th>
@@ -634,7 +606,7 @@ export function UsersPage() {
                         </div>
                       ) : (
                         <span className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-muted">
-                          {u.readOnly ? "readonly" : "readwrite"}
+                          {accessLabel(u)}
                         </span>
                       )}
                     </td>
@@ -756,35 +728,18 @@ export function UsersPage() {
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted">Policy / Permissions</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setEditReadOnly(false)}
-                  className={cx(
-                    "flex flex-col items-start rounded-md border p-3 text-left transition-colors",
-                    !editReadOnly
-                      ? "border-accent bg-accent/10 text-ink"
-                      : "border-line bg-surface text-muted hover:border-line-strong hover:bg-sunken",
-                  )}
-                >
-                  <span className="text-xs font-semibold">Read & Write</span>
-                  <span className="text-[11px] text-muted">Full access to upload, download, and delete</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditReadOnly(true)}
-                  className={cx(
-                    "flex flex-col items-start rounded-md border p-3 text-left transition-colors",
-                    editReadOnly
-                      ? "border-accent bg-accent/10 text-ink"
-                      : "border-line bg-surface text-muted hover:border-line-strong hover:bg-sunken",
-                  )}
-                >
-                  <span className="text-xs font-semibold">Read Only</span>
-                  <span className="text-[11px] text-muted">View and download objects only</span>
-                </button>
-              </div>
+              <label className="mb-1 block text-xs font-medium text-muted">Access</label>
+              <AccessLevelPicker readOnly={editReadOnly} onChange={setEditReadOnly} />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted">Buckets</label>
+              <BucketPicker buckets={buckets} selected={editBuckets} onChange={setEditBuckets} />
+              {editingUser.groups.length > 0 && (
+                <p className="mt-1.5 text-xs text-muted">
+                  This user is in groups, so its access comes from them; these settings apply again if it leaves every group.
+                </p>
+              )}
             </div>
 
             <div className="flex items-center justify-between border-t border-line pt-3">

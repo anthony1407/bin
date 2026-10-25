@@ -6,6 +6,8 @@ export class ApiError extends Error {
     public status: number,
     public code: string,
     message: string,
+    /** The whole error body, for endpoints that explain more than code and message. */
+    public data: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -32,7 +34,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && path !== "/login") onUnauthorized();
-    throw new ApiError(res.status, data.error ?? "error", data.message ?? res.statusText);
+    throw new ApiError(res.status, data.error ?? "error", data.message ?? res.statusText, data);
   }
   return data as T;
 }
@@ -276,21 +278,81 @@ export const api = {
 
   // Import from remote S3
   importTest: (endpoint: string, accessKey: string, secretKey: string, region: string) =>
-    request<{ buckets: Array<{ name: string; size: number; objects: number }> }>("POST", "/import/test", {
+    request<{ buckets: RemoteBucket[] }>("POST", "/import/test", {
       endpoint,
       accessKey,
       secretKey,
       region,
     }),
+  /** Throws ApiError "nothing_imported" (with `skipped` in its data) when no bucket could start. */
   importStart: (endpoint: string, accessKey: string, secretKey: string, region: string, buckets: string[]) =>
-    request<{ jobs: Array<{ bucket: string; jobId: string }> }>("POST", "/import/start", {
+    request<{ jobs: ImportJob[]; skipped: ImportSkipped[] }>("POST", "/import/start", {
       endpoint,
       accessKey,
       secretKey,
       region,
       buckets,
     }),
+  importJobs: () => request<{ jobs: ImportJob[] }>("GET", "/import/jobs").then((r) => r.jobs),
+  cancelImport: (jobId: string) => request<void>("DELETE", `/import/jobs/${enc(jobId)}`),
+
+  dropzones: () => request<{ dropzones: Dropzone[] }>("GET", "/dropzones").then((r) => r.dropzones),
+  createDropzone: (body: { bucket: string; prefix: string; note: string; expiresIn: number; maxBytes: number }) =>
+    request<Dropzone>("POST", "/dropzones", body),
+  deleteDropzone: (id: string) => request<void>("DELETE", `/dropzones/${enc(id)}`),
+  /** What a dropzone link allows, for its public upload page (no session). */
+  publicDropzone: async (token: string): Promise<PublicDropzone> => {
+    const res = await fetch("/api/v1/public/dropzone", { headers: { "X-Dropzone-Token": token } });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(res.status, data.error ?? "error", data.message ?? res.statusText, data);
+    return data;
+  },
 };
+
+export interface Dropzone {
+  id: string;
+  bucket: string;
+  prefix: string;
+  note: string;
+  maxBytes: number;
+  createdAt: string;
+  expiresAt: string;
+  expired: boolean;
+  /** The public upload page; the token is after "#". */
+  url?: string;
+}
+
+export interface PublicDropzone {
+  note: string;
+  maxBytes: number;
+  expiresAt: string;
+}
+
+export interface RemoteBucket {
+  name: string;
+  size: number;
+  objects: number;
+  /** Too large to count fully: size and objects cover the first objects only. */
+  partial?: boolean;
+}
+
+export interface ImportJob {
+  jobId: string;
+  bucket: string;
+  endpoint: string;
+  state: "queued" | "running" | "done" | "failed" | "canceled";
+  copied: number;
+  failed: number;
+  bytes: number;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+export interface ImportSkipped {
+  bucket: string;
+  reason: string;
+}
 
 // --- downloads ------------------------------------------------------------------------
 
@@ -348,12 +410,20 @@ const PART_SIZE = 16 * 1024 * 1024;
 const SINGLE_MAX = 64 * 1024 * 1024;
 
 /** Sends one body with upload progress (fetch cannot report it). */
-function put(url: string, body: Blob, contentType: string, onProgress: (sent: number) => void, signal: AbortSignal): Promise<any> {
+function put(
+  url: string,
+  body: Blob,
+  contentType: string,
+  onProgress: (sent: number) => void,
+  signal: AbortSignal,
+  headers: Record<string, string> = {},
+): Promise<any> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
     xhr.setRequestHeader("X-CSRF-Token", csrfToken);
     if (contentType) xhr.setRequestHeader("Content-Type", contentType);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => onProgress(e.loaded);
     xhr.onload = () => {
       const data = (() => {
@@ -371,6 +441,22 @@ function put(url: string, body: Blob, contentType: string, onProgress: (sent: nu
     signal.addEventListener("abort", () => xhr.abort());
     xhr.send(body);
   });
+}
+
+/**
+ * Uploads a file through a dropzone link, without a session. Resolves to the
+ * name it was stored under, which gets a number when the name was taken.
+ */
+export async function dropzoneUpload(
+  token: string,
+  file: File,
+  onProgress: (sent: number) => void,
+  signal: AbortSignal,
+): Promise<string> {
+  const res = await put(`/api/v1/public/dropzone/files?name=${enc(file.name)}`, file, file.type, onProgress, signal, {
+    "X-Dropzone-Token": token,
+  });
+  return res.name as string;
 }
 
 /**

@@ -156,6 +156,21 @@ var migrations = []string{
 		request_id TEXT    NOT NULL DEFAULT ''
 	);
 	CREATE INDEX audit_log_at ON audit_log (at);`,
+
+	// 6: dropzones, public upload links into one bucket prefix. They are found
+	// by the hash of their token; the token itself is kept encrypted so the
+	// console can show the link again.
+	`CREATE TABLE dropzones (
+		id         TEXT    PRIMARY KEY,
+		token_hash TEXT    NOT NULL UNIQUE,
+		token_enc  TEXT    NOT NULL,
+		bucket     TEXT    NOT NULL,
+		prefix     TEXT    NOT NULL DEFAULT '',
+		note       TEXT    NOT NULL DEFAULT '',
+		max_bytes  INTEGER NOT NULL,             -- per file
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	) WITHOUT ROWID;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

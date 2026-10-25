@@ -147,6 +147,10 @@ func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_tags WHERE bucket_id = ?`, id); err != nil {
 			return err
 		}
+		// A bucket created later with the same name must not inherit its upload links.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM dropzones WHERE bucket = ?`, name); err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM buckets WHERE id = ?`, id)
 		return err
 	})

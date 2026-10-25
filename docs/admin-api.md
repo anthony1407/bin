@@ -128,6 +128,63 @@ not from its own `buckets`/`readOnly`: it may do what any one of its
 **enabled** groups allows. A key whose groups are all disabled has no access.
 Leaving every group (or deleting the group) restores the key's own scope.
 
+### Import from another S3 server
+
+| Method and path | Body | Response |
+|---|---|---|
+| `POST /api/v1/import/test` | `{"endpoint", "accessKey", "secretKey", "region"?}` | `{"buckets": [{"name","size","objects","partial"?}]}` |
+| `POST /api/v1/import/start` | same, plus `"buckets": [...]` | `{"jobs": [job], "skipped": [{"bucket","reason"}]}`; `409 nothing_imported` (with `skipped`) when no bucket could start |
+| `GET /api/v1/import/jobs` | | `{"jobs": [job]}` newest first |
+| `DELETE /api/v1/import/jobs/{id}` | | `204`; objects already copied stay |
+
+`endpoint` is an `http://` or `https://` URL with no path. bin refuses to
+connect to loopback, link-local (including the `169.254.169.254` metadata
+service) and other cloud metadata addresses, checked on the address actually
+dialed; private networks are allowed. Errors from the remote server are not
+passed through: the answer says only whether the credentials, the region or
+the connection failed.
+
+Each selected bucket is created locally and copied once, two buckets at a
+time, keeping content types and user metadata. Buckets that already exist
+locally are skipped. A job that copies nothing removes the bucket it
+created. A job is
+`{"jobId","bucket","endpoint","state","copied","failed","bytes","error"?,"startedAt","finishedAt"?}`
+with `state` one of `queued`, `running`, `done`, `failed`, `canceled`. Jobs
+are kept in memory and forgotten on restart.
+
+`size` and `objects` from the test count at most 10,000 objects per bucket;
+`partial` marks a bucket that has more.
+
+### Dropzones
+
+Upload links for people without an account.
+
+| Method and path | Body | Response |
+|---|---|---|
+| `GET /api/v1/dropzones` | | `{"dropzones": [dropzone]}` newest first, expired ones included |
+| `POST /api/v1/dropzones` | `{"bucket", "prefix"?, "note"?, "expiresIn": 60..2592000 (seconds), "maxBytes": 1..5 GiB (per file)}` | `201` dropzone |
+| `DELETE /api/v1/dropzones/{id}` | | `204`; the link stops working at once |
+
+A dropzone is
+`{"id","bucket","prefix","note","maxBytes","createdAt","expiresAt","expired","url"}`.
+`url` is the console's `/upload` page with the token after `#`, so browsers
+never send it to the server. The token is stored hashed for lookups and
+encrypted with the master key so the console can show the link again.
+Deleting a bucket deletes its dropzones.
+
+The upload page uses two endpoints that need no session; the token goes in
+the `X-Dropzone-Token` header:
+
+| Method and path | Body | Response |
+|---|---|---|
+| `GET /api/v1/public/dropzone` | | `{"note","maxBytes","expiresAt"}` (the bucket and folder are not revealed) |
+| `PUT /api/v1/public/dropzone/files?name=…` | raw file, `Content-Length` required | `201 {"name"}`: the name it was stored under |
+
+A missing, unknown or expired token answers `404 no_such_dropzone`. The file
+name is reduced to its last path element without control characters. Uploads
+never replace a file: a taken name becomes `name (1).ext`, `name (2).ext`, and
+so on.
+
 ### Audit log
 
 | Method and path | Query | Response |

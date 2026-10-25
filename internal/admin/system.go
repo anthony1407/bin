@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -241,10 +242,13 @@ func (h *Handler) speedtestPing(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxSpeedtestBytes bounds both directions of the speed test.
+const maxSpeedtestBytes = 250 << 20
+
 func (h *Handler) speedtestDownload(w http.ResponseWriter, r *http.Request) {
 	sizeStr := r.URL.Query().Get("size")
 	size, _ := strconv.ParseInt(sizeStr, 10, 64)
-	if size <= 0 || size > 250*1024*1024 {
+	if size <= 0 || size > maxSpeedtestBytes {
 		size = 10 * 1024 * 1024 // 10 MiB default
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -276,9 +280,13 @@ func (h *Handler) speedtestDownload(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) speedtestUpload(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	n, err := io.Copy(io.Discard, r.Body)
+	n, err := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxSpeedtestBytes))
+	if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "Speed test uploads are limited to 250 MiB.")
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "upload_failed", err.Error())
+		writeError(w, http.StatusBadRequest, "upload_failed", "The upload was interrupted.")
 		return
 	}
 	elapsed := time.Since(start)

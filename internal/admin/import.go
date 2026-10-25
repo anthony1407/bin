@@ -1,263 +1,470 @@
-// Package admin implements the console listener: the JSON admin API under
-// /api/v1 used by the web panel, and the panel itself (Options.Panel).
 package admin
 
 import (
 	"context"
 	"errors"
-	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
-	"bin/internal/audit"
 	"bin/internal/storage"
 )
 
-type importTestRequest struct {
-	Endpoint    string `json:"endpoint"`
-	AccessKey   string `json:"accessKey"`
-	SecretKey   string `json:"secretKey"`
-	Region      string `json:"region"`
-}
+// Import copies buckets from another S3-compatible server into bin. It is a
+// one-time copy run in the background; GET /import/jobs reports progress and
+// DELETE /import/jobs/{id} cancels a job.
 
-type importTestResponse struct {
-	Buckets []remoteBucketInfo `json:"buckets"`
-}
-
-type remoteBucketInfo struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Objects  int    `json:"objects"`
+type importRemote struct {
+	Endpoint  string `json:"endpoint"`
+	AccessKey string `json:"accessKey"`
+	SecretKey string `json:"secretKey"`
+	Region    string `json:"region"`
 }
 
 type importStartRequest struct {
-	Endpoint    string   `json:"endpoint"`
-	AccessKey   string   `json:"accessKey"`
-	SecretKey   string   `json:"secretKey"`
-	Region      string   `json:"region"`
-	Buckets     []string `json:"buckets"`
+	importRemote
+	Buckets []string `json:"buckets"`
 }
+
+type remoteBucketInfo struct {
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Objects int    `json:"objects"`
+	// Partial is set when the bucket was too large to count fully; Size and
+	// Objects then cover the first maxStatObjects objects only.
+	Partial bool `json:"partial,omitempty"`
+}
+
+type importSkipped struct {
+	Bucket string `json:"bucket"`
+	Reason string `json:"reason"`
+}
+
+// maxStatObjects bounds how many objects are counted per bucket when listing
+// the remote server, so the connection test answers quickly.
+const maxStatObjects = 10000
+
+// maxImportJobs bounds how many buckets are copied at the same time.
+const maxImportJobs = 2
+
+// maxImportedMeta matches the S3 API's limit on x-amz-meta-* names and values;
+// larger metadata is dropped rather than failing the object.
+const maxImportedMeta = 2 << 10
+
+// --- jobs ------------------------------------------------------------------------------
 
 type importJob struct {
-	Bucket string `json:"bucket"`
-	JobID  string `json:"jobId"`
+	ID         string     `json:"jobId"`
+	Bucket     string     `json:"bucket"`
+	Endpoint   string     `json:"endpoint"`
+	State      string     `json:"state"` // queued, running, done, failed, canceled
+	Copied     int        `json:"copied"`
+	Failed     int        `json:"failed"`
+	Bytes      int64      `json:"bytes"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  time.Time  `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+
+	cancel context.CancelFunc
 }
 
-type importStartResponse struct {
-	Jobs []importJob `json:"jobs"`
+// importJobs holds the jobs of this process; they are not kept across restarts.
+type importJobs struct {
+	mu   sync.Mutex
+	jobs map[string]*importJob
+	sem  chan struct{}
 }
+
+func newImportJobs() *importJobs {
+	return &importJobs{jobs: map[string]*importJob{}, sem: make(chan struct{}, maxImportJobs)}
+}
+
+// update runs fn on the job under the lock.
+func (j *importJobs) update(id string, fn func(*importJob)) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if job := j.jobs[id]; job != nil {
+		fn(job)
+	}
+}
+
+func (j *importJobs) list() []importJob {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]importJob, 0, len(j.jobs))
+	for _, job := range j.jobs {
+		out = append(out, *job)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].StartedAt.After(out[b].StartedAt) })
+	return out
+}
+
+// --- remote connections --------------------------------------------------------------
+
+var (
+	errInvalidEndpoint = errors.New("invalid endpoint")
+	errBlockedAddress  = errors.New("remote address not allowed")
+)
+
+// blockedMetadata lists cloud metadata addresses outside the link-local range.
+var blockedMetadata = []netip.Addr{
+	netip.MustParseAddr("fd00:ec2::254"),   // AWS (IPv6)
+	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud
+}
+
+// allowedRemoteIP refuses loopback, link-local (which includes the
+// 169.254.169.254 metadata service), multicast and unspecified addresses, and
+// known metadata endpoints. Private networks stay allowed: importing from a
+// server on the LAN is a normal use.
+func allowedRemoteIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	for _, m := range blockedMetadata {
+		if ip == m {
+			return false
+		}
+	}
+	return true
+}
+
+// guardDial checks the address actually dialed, after DNS resolution, so a
+// name cannot point somewhere else between a check and the connection.
+func guardDial(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return errBlockedAddress
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !allowedRemoteIP(ip) {
+		return errBlockedAddress
+	}
+	return nil
+}
+
+// importTransport dials only allowed addresses and ignores proxy settings,
+// which would otherwise bypass the check.
+var importTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: guardDial}).DialContext
+	return t
+}()
+
+// remoteClient validates the endpoint (http or https URL, no path) and returns
+// a client for it.
+func remoteClient(in importRemote) (*minio.Client, error) {
+	u, err := url.Parse(strings.TrimSpace(in.Endpoint))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" {
+		return nil, errInvalidEndpoint
+	}
+	return minio.New(u.Host, &minio.Options{
+		Creds:     credentials.NewStaticV4(in.AccessKey, in.SecretKey, ""),
+		Secure:    u.Scheme == "https",
+		Region:    in.Region,
+		Transport: importTransport,
+	})
+}
+
+// remoteErrorMessage turns a remote failure into a message that does not echo
+// what the remote side answered: the endpoint is user-chosen, and its replies
+// must not turn the console into a probe of the server's network.
+func remoteErrorMessage(err error) (code, message string) {
+	switch {
+	case errors.Is(err, errInvalidEndpoint):
+		return "invalid_endpoint", "The endpoint must be an http:// or https:// URL with a host and no path, e.g. https://s3.example.com."
+	case errors.Is(err, errBlockedAddress) || strings.Contains(err.Error(), errBlockedAddress.Error()):
+		return "endpoint_not_allowed", "bin does not connect to loopback, link-local or cloud metadata addresses."
+	}
+	switch minio.ToErrorResponse(err).Code {
+	case "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "InvalidToken", "ExpiredToken":
+		return "remote_auth", "The remote server rejected the access key or secret key."
+	case "AuthorizationHeaderMalformed", "InvalidRegion":
+		return "remote_region", "The remote server expects a different region."
+	case "NoSuchBucket":
+		return "remote_no_bucket", "The bucket does not exist on the remote server."
+	}
+	return "remote_unreachable", "Could not reach the remote S3 server. Check the endpoint and the region."
+}
+
+func (h *Handler) remoteError(w http.ResponseWriter, err error) {
+	code, message := remoteErrorMessage(err)
+	h.opts.Log.Warn("import: remote request failed", "err", err)
+	status := http.StatusBadGateway
+	if code == "invalid_endpoint" || code == "endpoint_not_allowed" {
+		status = http.StatusBadRequest
+	}
+	writeError(w, status, code, message)
+}
+
+func validRemote(w http.ResponseWriter, in importRemote) bool {
+	if in.Endpoint == "" || in.AccessKey == "" || in.SecretKey == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "endpoint, accessKey and secretKey are required.")
+		return false
+	}
+	return true
+}
+
+// --- handlers --------------------------------------------------------------------------
 
 // handleImportTest connects to a remote S3-compatible server and lists its buckets.
 func (h *Handler) handleImportTest(w http.ResponseWriter, r *http.Request) {
-	var req importTestRequest
-	if !readJSON(w, r, &req) {
+	var in importRemote
+	if !readJSON(w, r, &in) || !validRemote(w, in) {
 		return
 	}
-
-	if req.Endpoint == "" || req.AccessKey == "" || req.SecretKey == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "endpoint, accessKey, and secretKey are required")
+	client, err := remoteClient(in)
+	if err != nil {
+		h.remoteError(w, err)
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-
-	buckets, err := h.listRemoteBuckets(ctx, req)
-	if err != nil {
-		h.opts.Log.Error("import test failed", "err", err)
-		writeError(w, http.StatusBadGateway, "remote_error", "Failed to connect to remote server: "+err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, importTestResponse{Buckets: buckets})
-}
-
-// handleImportStart starts importing selected buckets from a remote S3 server.
-func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
-	var req importStartRequest
-	if !readJSON(w, r, &req) {
-		return
-	}
-
-	if req.Endpoint == "" || req.AccessKey == "" || req.SecretKey == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "endpoint, accessKey, and secretKey are required")
-		return
-	}
-	if len(req.Buckets) == 0 {
-		writeError(w, http.StatusBadRequest, "bad_request", "at least one bucket must be selected")
-		return
-	}
-
-	ctx := r.Context()
-	jobs := make([]importJob, 0, len(req.Buckets))
-
-	// Get actor from session
-	var actor string
-	if sess, ok := r.Context().Value(sessionKey{}).(storage.Session); ok {
-		actor = sess.User
-	}
-	if actor == "" {
-		actor = audit.Anonymous
-	}
-
-	for _, bucketName := range req.Buckets {
-		jobID := fmt.Sprintf("import-%s-%d", bucketName, time.Now().UnixMilli())
-
-		// Check if bucket already exists locally
-		_, err := h.opts.Store.GetBucket(ctx, bucketName)
-		if err == nil {
-			// Bucket exists, skip
-			continue
-		}
-		if !errors.Is(err, storage.ErrNoSuchBucket) {
-			h.opts.Log.Error("import: checking local bucket", "bucket", bucketName, "err", err)
-			continue
-		}
-
-		// Create local bucket
-		if err := h.opts.Store.CreateBucket(ctx, bucketName); err != nil {
-			h.opts.Log.Error("import: creating local bucket", "bucket", bucketName, "err", err)
-			continue
-		}
-
-		// Start background import
-		go h.runImportJob(context.Background(), jobID, req, bucketName)
-
-		jobs = append(jobs, importJob{Bucket: bucketName, JobID: jobID})
-	}
-
-	// Audit log
-	if h.opts.Audit != nil {
-		h.opts.Audit.Record(storage.AuditEntry{
-			Source:   audit.Console,
-			Actor:    actor,
-			Action:   "import_start",
-			Resource: strings.Join(req.Buckets, ","),
-			Status:   http.StatusOK,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, importStartResponse{Jobs: jobs})
-}
-
-func (h *Handler) listRemoteBuckets(ctx context.Context, req importTestRequest) ([]remoteBucketInfo, error) {
-	// Parse endpoint
-	endpoint := strings.TrimPrefix(req.Endpoint, "https://")
-	endpoint = strings.TrimPrefix(endpoint, "http://")
-
-	useSSL := strings.HasPrefix(req.Endpoint, "https://")
-
-	// Create MinIO client
-	client, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(req.AccessKey, req.SecretKey, ""),
-		Secure: useSSL,
-		Region: req.Region,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating S3 client: %w", err)
-	}
-
-	// List buckets
 	buckets, err := client.ListBuckets(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing buckets: %w", err)
-	}
-
-	var result []remoteBucketInfo
-	for _, b := range buckets {
-		// Get bucket stats (size and object count)
-		size, objects := h.getBucketStats(ctx, client, b.Name)
-		result = append(result, remoteBucketInfo{
-			Name:    b.Name,
-			Size:    size,
-			Objects: objects,
-		})
-	}
-
-	return result, nil
-}
-
-func (h *Handler) getBucketStats(ctx context.Context, client *minio.Client, bucketName string) (int64, int) {
-	// List objects to count them and sum sizes
-	// Use a reasonable limit to avoid timeout on huge buckets
-	var totalSize int64
-	var count int
-
-	opts := minio.ListObjectsOptions{
-		Recursive: true,
-		MaxKeys:   10000, // Limit to avoid long operations
-	}
-
-	for obj := range client.ListObjects(ctx, bucketName, opts) {
-		if obj.Err != nil {
-			h.opts.Log.Debug("import: error listing objects", "bucket", bucketName, "err", obj.Err)
-			break
-		}
-		totalSize += obj.Size
-		count++
-	}
-
-	return totalSize, count
-}
-
-func (h *Handler) runImportJob(ctx context.Context, jobID string, req importStartRequest, bucketName string) {
-	h.opts.Log.Info("import job started", "jobID", jobID, "bucket", bucketName)
-
-	// Create remote client
-	endpoint := strings.TrimPrefix(req.Endpoint, "https://")
-	endpoint = strings.TrimPrefix(endpoint, "http://")
-	useSSL := strings.HasPrefix(req.Endpoint, "https://")
-
-	remoteClient, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(req.AccessKey, req.SecretKey, ""),
-		Secure: useSSL,
-		Region: req.Region,
-	})
-	if err != nil {
-		h.opts.Log.Error("import: creating remote client", "jobID", jobID, "err", err)
+		h.remoteError(w, err)
 		return
 	}
-
-	// List and copy objects
-	opts := minio.ListObjectsOptions{
-		Recursive: true,
+	out := make([]remoteBucketInfo, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, remoteBucketStats(ctx, client, b.Name))
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": out})
+}
 
-	copied := 0
-	failed := 0
-
-	for obj := range remoteClient.ListObjects(ctx, bucketName, opts) {
+// remoteBucketStats counts up to maxStatObjects objects of a bucket.
+func remoteBucketStats(ctx context.Context, client *minio.Client, bucket string) remoteBucketInfo {
+	info := remoteBucketInfo{Name: bucket}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // stops the listing goroutine when we stop early
+	for obj := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
 		if obj.Err != nil {
-			h.opts.Log.Error("import: list error", "jobID", jobID, "err", obj.Err)
+			info.Partial = true
 			break
 		}
+		if info.Objects == maxStatObjects {
+			info.Partial = true
+			break
+		}
+		info.Size += obj.Size
+		info.Objects++
+	}
+	return info
+}
 
-		// Download from remote
-		remoteObj, err := remoteClient.GetObject(ctx, bucketName, obj.Key, minio.GetObjectOptions{})
-		if err != nil {
-			h.opts.Log.Error("import: get object failed", "jobID", jobID, "key", obj.Key, "err", err)
-			failed++
+// handleImportStart creates each selected bucket locally and copies it in
+// the background. Buckets that already exist locally are skipped.
+func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
+	var in importStartRequest
+	if !readJSON(w, r, &in) || !validRemote(w, in.importRemote) {
+		return
+	}
+	if len(in.Buckets) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "Select at least one bucket.")
+		return
+	}
+	client, err := remoteClient(in.importRemote)
+	if err != nil {
+		h.remoteError(w, err)
+		return
+	}
+	setAuditResource(r, strings.Join(in.Buckets, ","))
+
+	started := []importJob{}
+	skipped := []importSkipped{}
+	seen := map[string]bool{}
+	for _, bucket := range in.Buckets {
+		if seen[bucket] {
 			continue
 		}
-
-		// Upload to local storage
-		_, err = h.opts.Store.PutObject(ctx, bucketName, obj.Key, remoteObj, obj.Size, storage.PutOptions{
-			ContentType: obj.ContentType,
-		})
-		remoteObj.Close()
-
-		if err != nil {
-			h.opts.Log.Error("import: put object failed", "jobID", jobID, "key", obj.Key, "err", err)
-			failed++
+		seen[bucket] = true
+		err := h.opts.Store.CreateBucket(r.Context(), bucket)
+		switch {
+		case errors.Is(err, storage.ErrBucketExists):
+			skipped = append(skipped, importSkipped{bucket, "A bucket with this name already exists here."})
+			continue
+		case errors.Is(err, storage.ErrInvalidBucketName):
+			skipped = append(skipped, importSkipped{bucket, "The name is not a valid bucket name here."})
+			continue
+		case err != nil:
+			h.opts.Log.Error("import: creating local bucket", "bucket", bucket, "err", err)
+			skipped = append(skipped, importSkipped{bucket, "The local bucket could not be created."})
 			continue
 		}
-
-		copied++
+		started = append(started, h.startImportJob(client, in.Endpoint, bucket))
 	}
 
-	h.opts.Log.Info("import job completed", "jobID", jobID, "bucket", bucketName, "copied", copied, "failed", failed)
+	if len(started) == 0 {
+		if sw, ok := w.(*statusWriter); ok {
+			sw.errCode = "nothing_imported" // for the audit log
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "nothing_imported", "message": "None of the selected buckets could be imported.",
+			"jobs": started, "skipped": skipped,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": started, "skipped": skipped})
+}
+
+func (h *Handler) startImportJob(client *minio.Client, endpoint, bucket string) importJob {
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &importJob{
+		ID:        "import-" + randomToken()[:12],
+		Bucket:    bucket,
+		Endpoint:  endpoint,
+		State:     "queued",
+		StartedAt: time.Now().UTC(),
+		cancel:    cancel,
+	}
+	h.imports.mu.Lock()
+	h.imports.jobs[job.ID] = job
+	snapshot := *job
+	h.imports.mu.Unlock()
+
+	go h.runImportJob(ctx, client, job.ID, bucket)
+	return snapshot
+}
+
+func (h *Handler) runImportJob(ctx context.Context, client *minio.Client, id, bucket string) {
+	select {
+	case h.imports.sem <- struct{}{}:
+		defer func() { <-h.imports.sem }()
+	case <-ctx.Done():
+		h.finishImportJob(id, bucket, ctx.Err())
+		return
+	}
+	h.imports.update(id, func(j *importJob) { j.State = "running" })
+	h.opts.Log.Info("import job started", "job", id, "bucket", bucket)
+
+	var listErr error
+	for obj := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
+		if obj.Err != nil {
+			listErr = obj.Err
+			break
+		}
+		n, err := h.importObject(ctx, client, bucket, obj)
+		if ctx.Err() != nil {
+			break
+		}
+		if err != nil {
+			h.opts.Log.Warn("import: object not copied", "job", id, "bucket", bucket, "key", obj.Key, "err", err)
+		}
+		h.imports.update(id, func(j *importJob) {
+			if err != nil {
+				j.Failed++
+			} else {
+				j.Copied++
+				j.Bytes += n
+			}
+		})
+	}
+	if ctx.Err() != nil {
+		listErr = ctx.Err()
+	}
+	h.finishImportJob(id, bucket, listErr)
+}
+
+// importObject copies one object, keeping its content type and user metadata.
+func (h *Handler) importObject(ctx context.Context, client *minio.Client, bucket string, obj minio.ObjectInfo) (int64, error) {
+	src, err := client.GetObject(ctx, bucket, obj.Key, minio.GetObjectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer src.Close()
+	stat, err := src.Stat()
+	if err != nil {
+		return 0, err
+	}
+	contentType := stat.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	// Stored like the S3 API stores x-amz-meta-*: lowercase names, 2 KiB in all.
+	meta, total := map[string]string{}, 0
+	for k, v := range stat.UserMetadata {
+		meta[strings.ToLower(k)] = v
+		total += len(k) + len(v)
+	}
+	if total > maxImportedMeta {
+		meta = nil
+	}
+	info, err := h.opts.Store.PutObject(ctx, bucket, obj.Key, src, stat.Size, storage.PutOptions{
+		ContentType: contentType,
+		UserMeta:    meta,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return info.Size, nil
+}
+
+// finishImportJob records the outcome. A job that copied nothing removes the
+// bucket it created, so a failed import does not leave an empty bucket behind.
+func (h *Handler) finishImportJob(id, bucket string, err error) {
+	var job importJob
+	h.imports.update(id, func(j *importJob) {
+		now := time.Now().UTC()
+		j.FinishedAt = &now
+		switch {
+		case errors.Is(err, context.Canceled):
+			j.State = "canceled"
+		case err != nil:
+			j.State = "failed"
+			_, j.Error = remoteErrorMessage(err)
+		case j.Failed > 0 && j.Copied == 0:
+			j.State = "failed"
+			j.Error = "No object could be copied."
+		default:
+			j.State = "done"
+		}
+		j.cancel()
+		job = *j
+	})
+	if job.Copied == 0 {
+		if derr := h.opts.Store.DeleteBucket(context.Background(), bucket); derr != nil && !errors.Is(derr, storage.ErrBucketNotEmpty) {
+			h.opts.Log.Warn("import: removing empty bucket", "bucket", bucket, "err", derr)
+		}
+	}
+	h.opts.Log.Info("import job finished", "job", id, "bucket", bucket, "state", job.State,
+		"copied", job.Copied, "failed", job.Failed, "err", err)
+}
+
+func (h *Handler) listImportJobs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": h.imports.list()})
+}
+
+// cancelImportJob stops a queued or running job. Objects already copied stay.
+func (h *Handler) cancelImportJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	found, active := false, false
+	h.imports.update(id, func(j *importJob) {
+		found = true
+		setAuditBucket(r, j.Bucket)
+		if j.State == "queued" || j.State == "running" {
+			active = true
+			j.cancel()
+		}
+	})
+	setAuditResource(r, id)
+	switch {
+	case !found:
+		writeError(w, http.StatusNotFound, "no_such_job", "The import job does not exist.")
+	case !active:
+		writeError(w, http.StatusConflict, "job_finished", "The import job has already finished.")
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }

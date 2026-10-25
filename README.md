@@ -41,7 +41,10 @@ serves two ports:
   forever).
 - **Import from another S3 server**: copy buckets from AWS S3, Cloudflare R2,
   Wasabi, Backblaze B2 or any S3-compatible server into bin, from
-  **Replication → Import**.
+  **Replication → Import**, with progress and cancel.
+- **Dropzones**: expiring upload links for people without an account. They
+  upload into one bucket folder, up to a size per file, and never overwrite
+  existing files.
 - **Console tools**: an S3 terminal in the browser, ready-to-paste SDK
   snippets with your endpoint and keys, and a speed test for bandwidth,
   latency and disk throughput.
@@ -265,7 +268,7 @@ erasure coding. Not supported yet:
 
 Some console screens are previews of planned features and are not connected
 to the server yet: **Policies**, **Identity providers**, **Logs**,
-**Metrics**, **Dropzone**, replication rules, and the versioning, CORS and
+**Metrics**, replication rules, and the versioning, CORS and
 lifecycle sections of bucket settings. What you enter there stays in your
 browser and does not change how the server behaves.
 

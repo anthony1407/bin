@@ -36,6 +36,11 @@ var auditedRoutes = map[string]string{
 	"PUT /api/v1/settings":                                "UpdateSettings",
 	"POST /api/v1/settings/revoke-share-links":            "RevokeShareLinks",
 	"POST /api/v1/scrub":                                  "StartScrub",
+	"POST /api/v1/import/start":                           "ImportBuckets",
+	"DELETE /api/v1/import/jobs/{id}":                     "CancelImport",
+	"POST /api/v1/dropzones":                              "CreateDropzone",
+	"DELETE /api/v1/dropzones/{id}":                       "DeleteDropzone",
+	"PUT /api/v1/public/dropzone/files":                   "DropzoneUpload",
 }
 
 // auditInfo lets a handler fill in what the route alone does not tell.

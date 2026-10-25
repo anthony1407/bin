@@ -12,8 +12,8 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
-import { api, type Bucket } from "../api";
-import { PageHeader, Card, Button, Input, Modal, cx, useToast } from "../components/ui";
+import { api, ApiError, type Bucket, type ImportJob, type ImportSkipped, type RemoteBucket } from "../api";
+import { PageHeader, Card, Button, Input, Modal, Spinner, cx, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 import { bytes, count, dateTime } from "../lib/format";
 
@@ -91,14 +91,35 @@ export function ReplicationPage() {
   const [importAccessKey, setImportAccessKey] = useState("");
   const [importSecretKey, setImportSecretKey] = useState("");
   const [importRegion, setImportRegion] = useState("us-east-1");
-  const [remoteBuckets, setRemoteBuckets] = useState<Array<{ name: string; size: number; objects: number }>>([]);
+  const [remoteBuckets, setRemoteBuckets] = useState<RemoteBucket[]>([]);
   const [selectedRemoteBuckets, setSelectedRemoteBuckets] = useState<Set<string>>(new Set());
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState("");
   const [importErrors, setImportErrors] = useState<Record<string, string>>({});
-  const [importResults, setImportResults] = useState<Array<{ bucket: string; success: boolean; error?: string }>>([]);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
+  const [importSkipped, setImportSkipped] = useState<ImportSkipped[]>([]);
 
   const toast = useToast();
+
+  // While the import modal shows started jobs, follow their progress.
+  const importActive = importJobs.some((j) => j.state === "queued" || j.state === "running");
+  useEffect(() => {
+    if (!importModal || importStep !== 3 || !importActive) return;
+    const ids = new Set(importJobs.map((j) => j.jobId));
+    const timer = setInterval(() => {
+      api
+        .importJobs()
+        .then((all) => {
+          setImportJobs(all.filter((j) => ids.has(j.jobId)));
+          if (!all.some((j) => ids.has(j.jobId) && (j.state === "queued" || j.state === "running"))) {
+            api.buckets().then(setBuckets).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importModal, importStep, importActive]);
 
   useEffect(() => {
     try {
@@ -287,7 +308,8 @@ export function ReplicationPage() {
     setSelectedRemoteBuckets(new Set());
     setImportError("");
     setImportErrors({});
-    setImportResults([]);
+    setImportJobs([]);
+    setImportSkipped([]);
     setImportModal(true);
   }
 
@@ -315,8 +337,10 @@ export function ReplicationPage() {
 
     try {
       const { buckets } = await api.importTest(importEndpoint, importAccessKey, importSecretKey, importRegion);
-      setRemoteBuckets(buckets.map((b) => ({ name: b.name, size: b.size, objects: b.objects })));
-      setSelectedRemoteBuckets(new Set(buckets.map((b) => b.name)));
+      setRemoteBuckets(buckets);
+      // Buckets that already exist here would be skipped, so leave them unselected.
+      const local = new Set(buckets.map((b) => b.name));
+      setSelectedRemoteBuckets(new Set(buckets.filter((b) => !local.has(b.name)).map((b) => b.name)));
       setImportStep(2);
     } catch (e: any) {
       setImportError(e.message || "Failed to connect to remote server");
@@ -336,35 +360,36 @@ export function ReplicationPage() {
 
   async function importSelectedBuckets() {
     setImportLoading(true);
-    setImportResults([]);
+    setImportError("");
+    setImportJobs([]);
+    setImportSkipped([]);
 
     try {
-      const { jobs } = await api.importStart(importEndpoint, importAccessKey, importSecretKey, importRegion, Array.from(selectedRemoteBuckets));
-      
-      // Refresh local buckets list after import starts
+      const { jobs, skipped } = await api.importStart(importEndpoint, importAccessKey, importSecretKey, importRegion, Array.from(selectedRemoteBuckets));
       api.buckets().then(setBuckets).catch(() => {});
-
-      const results = Array.from(selectedRemoteBuckets).map((bucketName) => {
-        const job = jobs.find((j) => j.bucket === bucketName);
-        return {
-          bucket: bucketName,
-          success: !!job,
-          error: job ? undefined : `Bucket "${bucketName}" already exists locally or failed to start`,
-        };
-      });
-
-      setImportResults(results);
+      setImportJobs(jobs);
+      setImportSkipped(skipped);
       setImportStep(3);
-      toast("ok", `Import started: ${jobs.length} buckets queued for replication`);
-    } catch (e: any) {
-      setImportResults(Array.from(selectedRemoteBuckets).map((bucketName) => ({
-        bucket: bucketName,
-        success: false,
-        error: e.message || "Import failed",
-      })));
-      setImportStep(3);
+      toast("ok", `Import started for ${jobs.length} bucket(s).`);
+    } catch (e) {
+      if (e instanceof ApiError && Array.isArray(e.data.skipped)) {
+        setImportSkipped(e.data.skipped as ImportSkipped[]);
+        setImportStep(3);
+      } else {
+        setImportError(e instanceof Error ? e.message : "Import failed");
+      }
     } finally {
       setImportLoading(false);
+    }
+  }
+
+  async function cancelImport(jobId: string) {
+    try {
+      // The job stops at the next object; polling then shows it as canceled.
+      await api.cancelImport(jobId);
+      toast("ok", "Canceling the import. Objects already copied are kept.");
+    } catch (e) {
+      toast("error", e instanceof Error ? e.message : "Could not cancel the import");
     }
   }
 
@@ -1038,9 +1063,15 @@ export function ReplicationPage() {
         {importStep === 2 && (
           <div className="space-y-4">
             <p className="text-sm text-muted">
-              Select the buckets to import. Each bucket will be created locally and its contents
-              will be replicated from the remote server.
+              Select the buckets to import. Each bucket is created here and its objects are copied
+              once from the remote server; later changes there are not followed.
             </p>
+
+            {importError && (
+              <div className="p-3 rounded-md bg-danger-soft border border-danger text-danger text-sm">
+                {importError}
+              </div>
+            )}
 
             <div className="rounded-lg border border-line overflow-hidden">
               <div className="p-3 bg-surface-alt border-b border-line flex items-center gap-2">
@@ -1070,8 +1101,8 @@ export function ReplicationPage() {
                   <div className="flex-1 min-w-0">
                     <div className="font-mono text-sm font-medium text-ink truncate">{bucket.name}</div>
                     <div className="flex gap-4 text-xs text-muted font-mono mt-0.5">
-                      <span>{bytes(bucket.size)}</span>
-                      <span>{count(bucket.objects)} objects</span>
+                      <span>{bucket.partial ? "≥ " : ""}{bytes(bucket.size)}</span>
+                      <span>{bucket.partial ? "≥ " : ""}{count(bucket.objects)} objects</span>
                     </div>
                   </div>
                   {buckets.some((b) => b.name === bucket.name) && (
@@ -1090,44 +1121,69 @@ export function ReplicationPage() {
 
         {importStep === 3 && (
           <div className="space-y-4">
-            <div className="flex items-center gap-3 p-3 rounded-lg bg-ok/10 border border-ok/20">
-              <CheckCircle2 className="size-5 text-ok shrink-0" />
+            <div
+              className={cx(
+                "flex items-center gap-3 p-3 rounded-lg border",
+                importActive ? "bg-accent-soft border-accent/20" : "bg-ok/10 border-ok/20",
+              )}
+            >
+              {importActive ? (
+                <Spinner className="size-5 text-accent" />
+              ) : (
+                <CheckCircle2 className="size-5 text-ok shrink-0" />
+              )}
               <div>
-                <div className="font-semibold text-ink">Import Completed</div>
+                <div className="font-semibold text-ink">{importActive ? "Importing…" : "Import finished"}</div>
                 <div className="text-xs text-muted">
-                  {importResults.filter((r) => r.success).length} of {importResults.length} buckets imported
-                  successfully
+                  {importJobs.filter((j) => j.state === "done").length} of {importJobs.length + importSkipped.length}{" "}
+                  bucket(s) imported. You can close this window; the copy continues on the server.
                 </div>
               </div>
             </div>
 
             <div className="space-y-2 max-h-60 overflow-y-auto">
-              {importResults.map((result, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 p-3 rounded-lg bg-surface border border-line"
-                >
-                  {result.success ? (
-                    <CheckCircle2 className="size-5 text-ok shrink-0" />
-                  ) : (
-                    <CircleAlert className="size-5 text-danger shrink-0" />
-                  )}
+              {importJobs.map((job) => {
+                const active = job.state === "queued" || job.state === "running";
+                return (
+                  <div key={job.jobId} className="flex items-center gap-3 p-3 rounded-lg bg-surface border border-line">
+                    {job.state === "done" ? (
+                      <CheckCircle2 className="size-5 text-ok shrink-0" />
+                    ) : active ? (
+                      <Spinner className="size-5 text-accent" />
+                    ) : (
+                      <CircleAlert className="size-5 text-danger shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="font-mono text-sm font-medium text-ink">{job.bucket}</div>
+                      <div className="text-xs text-muted mt-0.5">
+                        {job.state === "queued" ? "Waiting to start" : `${count(job.copied)} objects · ${bytes(job.bytes)}`}
+                        {job.failed > 0 && <span className="text-danger"> · {count(job.failed)} failed</span>}
+                        {job.state === "canceled" && " · canceled"}
+                      </div>
+                      {job.error && <div className="text-xs text-danger mt-0.5">{job.error}</div>}
+                    </div>
+                    {active && (
+                      <Button variant="ghost" onClick={() => cancelImport(job.jobId)}>
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+              {importSkipped.map((s) => (
+                <div key={s.bucket} className="flex items-center gap-3 p-3 rounded-lg bg-surface border border-line">
+                  <CircleAlert className="size-5 text-warning shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="font-mono text-sm font-medium text-ink">{result.bucket}</div>
-                    {result.error && (
-                      <div className="text-xs text-danger mt-0.5">{result.error}</div>
-                    )}
-                    {result.success && (
-                      <div className="text-xs text-ok mt-0.5">Bucket created and replication started</div>
-                    )}
+                    <div className="font-mono text-sm font-medium text-ink">{s.bucket}</div>
+                    <div className="text-xs text-warning mt-0.5">Skipped: {s.reason}</div>
                   </div>
                 </div>
               ))}
             </div>
 
-            {importResults.some((r) => !r.success) && (
+            {importJobs.some((j) => j.failed > 0) && (
               <div className="p-3 rounded-md bg-warning-soft border border-warning text-warning text-sm">
-                Some buckets were not imported. Buckets that already exist locally are skipped.
+                Some objects could not be copied; the server log lists each one.
               </div>
             )}
           </div>

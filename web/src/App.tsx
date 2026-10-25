@@ -14,7 +14,7 @@ import { MetricsPage } from "./pages/Metrics";
 import { LogsPage } from "./pages/Logs";
 import { ConnectSDKPage } from "./pages/ConnectSDK";
 import { SpeedtestPage } from "./pages/Speedtest";
-import { DropzonePage } from "./pages/Dropzone";
+import { DropzonePage, PublicUploadPage } from "./pages/Dropzone";
 import { TerminalPage } from "./pages/Terminal";
 import { ReplicationPage } from "./pages/Replication";
 import { GroupsPage } from "./pages/Groups";
@@ -24,6 +24,10 @@ import { LDAPPage, OpenIDPage } from "./pages/IdentityProviders";
 function Routed() {
   const { session, loading } = useAuth();
   const location = useLocation();
+  // Dropzone links are for people without an account: no sign-in, no panel.
+  if (location.pathname === "/upload") {
+    return <PublicUploadPage />;
+  }
   if (loading) {
     return (
       <div className="flex min-h-dvh items-center justify-center">

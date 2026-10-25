@@ -1,7 +1,8 @@
 // Package admin implements the console listener: the JSON admin API under
 // /api/v1 used by the web panel, and the panel itself (Options.Panel).
 //
-// Every endpoint except health and login needs a session cookie; requests
+// Every endpoint except health, login and the dropzone upload page (which
+// authorizes with the link's token) needs a session cookie; requests
 // that change state also need the session's CSRF token in X-CSRF-Token and,
 // when the browser sends one, an Origin matching the host.
 package admin
@@ -51,6 +52,8 @@ type Handler struct {
 
 	scrubMu sync.Mutex
 	scrub   scrubStatus
+
+	imports *importJobs
 }
 
 // NewHandler returns the console HTTP handler.
@@ -58,7 +61,7 @@ func NewHandler(opts Options) http.Handler {
 	if opts.SessionTTL == 0 {
 		opts.SessionTTL = 12 * time.Hour
 	}
-	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter()}
+	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs()}
 
 	mux := http.NewServeMux()
 	public := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, h.audited(pattern, fn)) }
@@ -114,9 +117,17 @@ func NewHandler(opts Options) http.Handler {
 	private("GET /api/v1/speedtest/download", h.speedtestDownload)
 	private("POST /api/v1/speedtest/upload", h.speedtestUpload)
 
-	// Import from remote S3
 	private("POST /api/v1/import/test", h.handleImportTest)
 	private("POST /api/v1/import/start", h.handleImportStart)
+	private("GET /api/v1/import/jobs", h.listImportJobs)
+	private("DELETE /api/v1/import/jobs/{id}", h.cancelImportJob)
+
+	private("GET /api/v1/dropzones", h.listDropzones)
+	private("POST /api/v1/dropzones", h.createDropzone)
+	private("DELETE /api/v1/dropzones/{id}", h.deleteDropzone)
+	// The upload page: no session, the dropzone token authorizes.
+	public("GET /api/v1/public/dropzone", h.publicDropzone)
+	public("PUT /api/v1/public/dropzone/files", h.publicDropzoneUpload)
 
 	public("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Unknown API endpoint.")
@@ -202,6 +213,7 @@ func (h *Handler) storageError(w http.ResponseWriter, r *http.Request, err error
 		{storage.ErrAccessKeyExists, 409, "access_key_exists", "The access key already exists."},
 		{storage.ErrNoSuchGroup, 404, "no_such_group", "The group does not exist."},
 		{storage.ErrGroupExists, 409, "group_exists", "A group with this name already exists."},
+		{storage.ErrNoSuchDropzone, 404, "no_such_dropzone", "The upload link does not exist."},
 	} {
 		if errors.Is(err, m.err) {
 			writeError(w, m.status, m.code, m.message)
