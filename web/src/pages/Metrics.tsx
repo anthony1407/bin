@@ -41,8 +41,10 @@ export function MetricsPage() {
     );
   }
 
-  const diskTotal = info?.disk?.total ?? 1000000000;
-  const diskFree = info?.disk?.free ?? 900000000;
+  // The server leaves disk out when it cannot read it; show that, not a guess.
+  const diskKnown = info?.disk?.total !== undefined && info?.disk?.free !== undefined;
+  const diskTotal = info?.disk?.total ?? 0;
+  const diskFree = info?.disk?.free ?? 0;
   const diskUsed = Math.max(0, diskTotal - diskFree);
   const usedPercent = diskTotal > 0 ? Math.round((diskUsed / diskTotal) * 100) : 0;
 
@@ -211,7 +213,7 @@ export function MetricsPage() {
                 <td className="py-3 pl-4 pr-3 font-mono font-medium text-ink">
                   <div className="flex items-center gap-2">
                     <span className="size-2 rounded-full bg-ok" />
-                    <span>{info?.s3Endpoint || "http://127.0.0.1:9000"}</span>
+                    <span>{info?.s3Endpoint || "—"}</span>
                   </div>
                 </td>
                 <td className="py-3 pr-3 font-mono text-xs">
@@ -228,7 +230,7 @@ export function MetricsPage() {
                   {info ? duration(info.uptime) : "—"}
                 </td>
                 <td className="py-3 pr-4 text-right font-mono text-xs text-muted">
-                  {info?.version || "2026.1"}
+                  {info?.version || "—"}
                 </td>
               </tr>
             </tbody>
@@ -273,7 +275,7 @@ export function MetricsPage() {
               <div>
                 <div className="text-xs font-medium text-muted">Drive Name</div>
                 <div className="font-mono text-base font-bold text-ink">
-                  {info?.dataDir || "/data"}
+                  {info?.dataDir || "—"}
                 </div>
               </div>
             </div>
@@ -281,15 +283,13 @@ export function MetricsPage() {
             <div className="flex flex-wrap items-center gap-8 text-xs">
               <div>
                 <span className="text-muted block">Used Capacity</span>
-                <span className="font-mono text-sm font-semibold text-ink">{bytes(diskUsed)}</span>
-                <span className="text-faint block">{usedPercent}% of {bytes(diskTotal)}</span>
+                <span className="font-mono text-sm font-semibold text-ink">{diskKnown ? bytes(diskUsed) : "—"}</span>
+                <span className="text-faint block">{diskKnown ? `${usedPercent}% of ${bytes(diskTotal)}` : "Not reported by the server"}</span>
               </div>
               <div>
                 <span className="text-muted block">Available Capacity</span>
-                <span className="font-mono text-sm font-semibold text-ink">{bytes(diskFree)}</span>
-                <span className="text-faint block">
-                  {diskTotal > 0 ? (100 - usedPercent).toFixed(1) : 100}% free
-                </span>
+                <span className="font-mono text-sm font-semibold text-ink">{diskKnown ? bytes(diskFree) : "—"}</span>
+                <span className="text-faint block">{diskKnown ? `${100 - usedPercent}% free` : ""}</span>
               </div>
               <div>
                 <span className="text-muted block">Drive Status</span>

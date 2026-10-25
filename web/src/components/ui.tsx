@@ -69,6 +69,23 @@ export function IconButton({ label, className, children, ...rest }: ButtonHTMLAt
   );
 }
 
+// --- previews ---------------------------------------------------------------------------
+
+/**
+ * Marks a screen or section that is not connected to the server yet, so
+ * nobody mistakes it for something that works.
+ */
+export function ComingSoon({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-2.5 rounded-md border border-warn/30 bg-warn-soft px-3.5 py-2.5 text-xs text-warn">
+      <span className="shrink-0 rounded border border-warn/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
+        coming soon
+      </span>
+      <span className="leading-relaxed">{children}</span>
+    </div>
+  );
+}
+
 // --- form fields --------------------------------------------------------------------
 
 export function Field({
@@ -105,7 +122,10 @@ export function Field({
         {children}
       </label>
       {error ? (
-        <span className="mt-1.5 block text-xs text-danger">{error}</span>
+        <span className="mt-1.5 flex items-center gap-1 text-xs font-medium text-danger" role="alert">
+          <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>{error}</span>
+        </span>
       ) : hint ? (
         <span className="mt-1.5 block text-xs text-muted">{hint}</span>
       ) : null}

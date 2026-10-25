@@ -195,6 +195,19 @@ var migrations = []string{
 		UPDATE buckets SET used_objects = used_objects + (NEW.delete_marker = 0), used_bytes = used_bytes + NEW.size
 		WHERE id = NEW.bucket_id;
 	END;`,
+
+	// 8: what was uploaded through each dropzone, for the console. Rows go
+	// with their dropzone; the objects themselves stay in the bucket.
+	`CREATE TABLE dropzone_uploads (
+		id          INTEGER PRIMARY KEY,
+		dropzone_id TEXT    NOT NULL REFERENCES dropzones(id) ON DELETE CASCADE,
+		key         TEXT    NOT NULL,              -- full object key, prefix included
+		size        INTEGER NOT NULL,
+		uploaded_at INTEGER NOT NULL,              -- unix nanoseconds
+		remote      TEXT    NOT NULL DEFAULT '',   -- uploader IP
+		user_agent  TEXT    NOT NULL DEFAULT ''    -- uploader browser, as sent
+	);
+	CREATE INDEX dropzone_uploads_dropzone ON dropzone_uploads (dropzone_id, uploaded_at);`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

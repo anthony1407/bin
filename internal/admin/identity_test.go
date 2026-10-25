@@ -164,8 +164,13 @@ func TestOpenIDSignIn(t *testing.T) {
 		t.Errorf("forged callback landed on %s", resp.Request.URL)
 	}
 
-	// Errors name the field, so the console shows them under it.
+	// Errors name the field, so the console shows them under it. An empty
+	// form is refused even with sign-in off.
 	var bad map[string]string
+	if code := e.call("PUT", "/api/v1/identity/openid", map[string]any{"enabled": false}, &bad); code != 400 || bad["field"] != "configUrl" {
+		t.Errorf("empty form: %d %v", code, bad)
+	}
+	bad = nil
 	if code := e.call("PUT", "/api/v1/identity/openid", map[string]any{
 		"enabled": true, "configUrl": "https://idp.example.com/no-discovery", "clientId": "x", "adminValue": "a",
 	}, &bad); code != 400 || bad["field"] != "configUrl" {
@@ -220,7 +225,7 @@ func TestLDAPConfigValidation(t *testing.T) {
 		UserDNSearchBase: "ou=people,dc=example,dc=com", UserDNSearchFilter: "(uid=%s)",
 		GroupSearchBase: "ou=groups,dc=example,dc=com", GroupSearchFilter: "(member=%d)",
 		AdminGroupDN: "cn=admins,ou=groups,dc=example,dc=com"}
-	if _, msg := validateLDAP(ok); msg != "" {
+	if _, msg := validateLDAP(ok, true); msg != "" {
 		t.Fatalf("valid config refused: %s", msg)
 	}
 	for _, tc := range []struct {
@@ -235,14 +240,17 @@ func TestLDAPConfigValidation(t *testing.T) {
 	} {
 		c := ok
 		tc.mutate(&c)
-		if field, msg := validateLDAP(c); msg == "" || field != tc.field {
+		if field, msg := validateLDAP(c, true); msg == "" || field != tc.field {
 			t.Errorf("%s: field %q, message %q", tc.name, field, msg)
 		}
 	}
-	// Disabled, an incomplete configuration can be saved as a draft.
-	draft := ldapConfig{TLSMode: "tls", ServerAddr: "ldap.example.com:636"}
-	if _, msg := validateLDAP(draft); msg != "" {
-		t.Errorf("draft refused: %s", msg)
+	// Saving needs every required field, even disabled; testing a connection does not.
+	partial := ldapConfig{TLSMode: "tls", ServerAddr: "ldap.example.com:636"}
+	if field, msg := validateLDAP(partial, true); field != "userDnSearchBase" {
+		t.Errorf("incomplete saved: %q %q", field, msg)
+	}
+	if _, msg := validateLDAP(partial, false); msg != "" {
+		t.Errorf("incomplete test refused: %s", msg)
 	}
 }
 

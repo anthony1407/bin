@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
-  CheckCircle2,
   CircleAlert,
   CircleCheck,
   FileText,
@@ -17,7 +16,7 @@ import {
 } from "lucide-react";
 import { api, type Bucket, type Info, type ScrubStatus, type Settings } from "../api";
 import { bytes, count, dateTime, duration } from "../lib/format";
-import { Button, Card, Field, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
+import { Badge, Button, Card, Field, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
 import { MultiSelect, Select } from "../components/Select";
 
 function Stat({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
@@ -277,151 +276,59 @@ function ScrubCard({ buckets }: { buckets: Bucket[] }) {
 
 // --- TLS / SSL & Certificate Section ----------------------------------------------------
 
+// bin serves plain HTTP; HTTPS comes from a reverse proxy in front of it.
+// Native certificates are planned, so that part is a preview.
 function TLSSection({ info }: { info: Info }) {
-  const isHttps = info.isTLS ?? (typeof window !== "undefined" && window.location.protocol === "https:");
-  const [certModal, setCertModal] = useState(false);
-  const [certText, setCertText] = useState("");
-  const [keyText, setKeyText] = useState("");
-  const [certError, setCertError] = useState("");
-  const [keyError, setKeyError] = useState("");
-  const toast = useToast();
-
-  function applyCert() {
-    let hasError = false;
-    if (!certText.trim()) {
-      setCertError("Public certificate is required.");
-      hasError = true;
-    } else {
-      setCertError("");
-    }
-    if (!keyText.trim()) {
-      setKeyError("Private key is required.");
-      hasError = true;
-    } else {
-      setKeyError("");
-    }
-    if (hasError) return;
-    
-    toast("ok", "Certificates validated and updated.");
-    setCertModal(false);
-  }
-
+  const isHttps = !!info.isTLS;
   return (
     <div className="space-y-6">
-      <Card className="p-6 divide-y divide-line">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5">
-          <div className="flex items-center gap-3">
-            <div className={cx(
-              "flex size-10 items-center justify-center rounded-xl",
-              isHttps ? "bg-ok/10 text-ok" : "bg-warn/10 text-warn"
-            )}>
-              <Shield className="size-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-ink text-base">HTTPS / TLS Encryption</h3>
-                <span className={cx(
-                  "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-                  isHttps ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn"
-                )}>
-                  {isHttps ? "Active (Encrypted)" : "Inactive (Plain HTTP)"}
-                </span>
-              </div>
-              <p className="text-xs text-muted mt-0.5">
-                {isHttps
-                  ? "S3 and Web Console endpoints are protected with Transport Layer Security."
-                  : "Serving over plain HTTP. Put a reverse proxy (e.g. Caddy, Nginx, Traefik) or TLS certificate in front for production."}
-              </p>
-            </div>
+      <Card className="p-6 space-y-5">
+        <div className="flex items-center gap-3">
+          <div className={cx("flex size-10 items-center justify-center rounded-xl", isHttps ? "bg-ok/10 text-ok" : "bg-warn/10 text-warn")}>
+            <Shield className="size-5" />
           </div>
-          <Button
-            variant="secondary"
-            icon={<Upload className="size-3.5" />}
-            onClick={() => setCertModal(true)}
-          >
-            Configure SSL Cert
-          </Button>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-ink text-base">HTTPS</h3>
+              <Badge tone={isHttps ? "ok" : "warn"}>{isHttps ? "this console is on https" : "plain http"}</Badge>
+            </div>
+            <p className="text-xs text-muted mt-0.5">
+              {isHttps
+                ? "This page reached bin over HTTPS, through a reverse proxy (X-Forwarded-Proto) or TLS."
+                : "This page reached bin over plain HTTP. Credentials and data travel unencrypted on the network."}
+            </p>
+          </div>
         </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 pt-5">
-          <div>
-            <div className="label-strip">Protocol Version</div>
-            <div className="mt-1 font-mono text-sm font-semibold">{isHttps ? "TLS 1.3 / 1.2" : "HTTP/1.1"}</div>
-          </div>
-          <div>
-            <div className="label-strip">Cipher Suite</div>
-            <div className="mt-1 font-mono text-xs text-muted truncate">
-              {isHttps ? "TLS_AES_256_GCM_SHA384" : "None"}
-            </div>
-          </div>
-          <div>
-            <div className="label-strip">HSTS (Strict-Transport)</div>
-            <div className="mt-1 font-mono text-sm">{isHttps ? "Enabled (max-age=31536000)" : "Disabled"}</div>
-          </div>
-          <div>
-            <div className="label-strip">Certificate Status</div>
-            <div className="mt-1 text-sm flex items-center gap-1.5 font-medium">
-              {isHttps ? (
-                <>
-                  <CheckCircle2 className="size-3.5 text-ok" />
-                  <span>Valid & Active</span>
-                </>
-              ) : (
-                <span className="text-muted">Not installed</span>
-              )}
-            </div>
-          </div>
+        <div className="rounded-lg border border-line bg-sunken/40 p-4 text-xs leading-relaxed text-muted space-y-2">
+          <div className="font-semibold text-ink">Enable HTTPS today with a reverse proxy</div>
+          <p>
+            Put Caddy, Nginx or Traefik in front of both ports, terminate TLS there, and forward to bin. Set{" "}
+            <code className="font-mono text-ink">BIN_PUBLIC_URL</code> to the HTTPS address of the S3 API so share links
+            use it, and have the proxy send <code className="font-mono text-ink">X-Forwarded-Proto: https</code> so the
+            console marks its cookies secure.
+          </p>
+          <pre className="font-mono text-[11px] p-2 rounded bg-card border border-line overflow-x-auto">{`s3.example.com {
+  reverse_proxy bin:9000
+}
+console.example.com {
+  reverse_proxy bin:9001
+}`}</pre>
         </div>
       </Card>
 
-      {/* Modal for Certificate Management */}
-      <Modal
-        open={certModal}
-        onClose={() => setCertModal(false)}
-        title="TLS/SSL Certificate Configuration"
-        footer={
-          <>
-            <Button onClick={() => setCertModal(false)}>Cancel</Button>
-            <Button variant="primary" icon={<Save className="size-4" />} onClick={applyCert}>
-              Apply Certificate
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <p className="text-xs text-muted">
-            Paste your PEM-encoded Public Certificate and Private Key to enable native HTTPS on the bin listeners.
-          </p>
-
-          <Field label="Public Certificate (cert.pem / fullchain.pem)" error={certError}>
-            <textarea
-              id="settings-public-certificate"
-              rows={4}
-              value={certText}
-              onChange={(e) => {
-                setCertText(e.target.value);
-                if (certError) setCertError("");
-              }}
-              placeholder="-----BEGIN CERTIFICATE-----&#10;MIID...&#10;-----END CERTIFICATE-----"
-              className={cx("w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent", certError && "!border-danger focus:!border-danger focus:!ring-danger/25")}
-            />
-          </Field>
-
-          <Field label="Private Key (key.pem)" error={keyError}>
-            <textarea
-              id="settings-private-key"
-              rows={4}
-              value={keyText}
-              onChange={(e) => {
-                setKeyText(e.target.value);
-                if (keyError) setKeyError("");
-              }}
-              placeholder="-----BEGIN PRIVATE KEY-----&#10;MIIE...&#10;-----END PRIVATE KEY-----"
-              className={cx("w-full rounded-md border border-line bg-card p-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent", keyError && "!border-danger focus:!border-danger focus:!ring-danger/25")}
-            />
-          </Field>
+      <Card className="p-6 space-y-3">
+        <div className="flex items-center gap-2">
+          <h3 className="font-semibold text-ink text-base">Native TLS certificates</h3>
+          <Badge tone="warn">coming soon</Badge>
         </div>
-      </Modal>
+        <p className="text-xs text-muted">
+          Serving HTTPS directly from bin, with a certificate and key you provide, is planned. Until then, use a
+          reverse proxy as shown above.
+        </p>
+        <Button variant="secondary" icon={<Upload className="size-3.5" />} disabled>
+          Configure certificate
+        </Button>
+      </Card>
     </div>
   );
 }
@@ -471,10 +378,23 @@ const RETENTION_OPTIONS = [
   { value: "0", label: "Keep Forever" },
 ];
 
+/** A startup setting shown read-only, with the variable that changes it. */
+function EnvValue({ label, value, env }: { label: string; value: string; env: string }) {
+  return (
+    <div>
+      <div className="label-strip mb-1.5">{label}</div>
+      <div className="flex h-9 items-center rounded-lg border border-line bg-sunken/40 px-3 font-mono text-sm text-ink">{value}</div>
+      <div className="mt-1 text-[11px] text-muted">
+        Set with <code className="font-mono text-ink">{env}</code>; restart to apply.
+      </div>
+    </div>
+  );
+}
+
 function AuditSection({ info, settings, onSaved }: { info: Info; settings: Settings; onSaved: (s: Settings) => void }) {
-  const [logLevel, setLogLevel] = useState("info");
-  const [logFormat, setLogFormat] = useState("text");
-  const [logRequests, setLogRequests] = useState(info.logRequests ?? true);
+  const logLevel = info.logLevel || "info";
+  const logFormat = info.logFormat || "text";
+  const logRequests = info.logRequests ?? true;
   const [retentionDays, setRetentionDays] = useState(String(settings.auditRetentionDays));
   const [saving, setSaving] = useState(false);
   const toast = useToast();
@@ -502,63 +422,19 @@ function AuditSection({ info, settings, onSaved }: { info: Info; settings: Setti
         <div>
           <h3 className="font-semibold text-base">Server Logging & Audit Trail</h3>
           <p className="text-xs text-muted mt-0.5">
-            Configure S3 request logs, administrative audit trails, and output formats.
+            The server log is configured at startup; the audit retention can be changed here.
           </p>
         </div>
-        <Button variant="primary" busy={saving} icon={<Save className="size-3.5" />} onClick={saveAudit}>
-          Save Settings
-        </Button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div>
-          <label htmlFor="settings-log-level" className="label-strip mb-1.5 block">Log Level</label>
-          <Select
-            id="settings-log-level"
-            aria-label="Log Level"
-            value={logLevel}
-            onChange={setLogLevel}
-            options={[
-              { value: "debug", label: "Debug (Verbose)" },
-              { value: "info", label: "Info (Recommended)" },
-              { value: "warn", label: "Warn" },
-              { value: "error", label: "Error Only" },
-            ]}
-          />
-        </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+        <EnvValue label="Log Level" value={logLevel} env="BIN_LOG_LEVEL" />
+        <EnvValue label="Log Format" value={logFormat === "json" ? "json" : "text"} env="BIN_LOG_FORMAT" />
+        <EnvValue label="Log Every API Request" value={logRequests ? "true" : "false"} env="BIN_LOG_REQUESTS" />
+      </div>
 
-        <div>
-          <label htmlFor="settings-log-format" className="label-strip mb-1.5 block">Log Format</label>
-          <Select
-            id="settings-log-format"
-            aria-label="Log Format"
-            value={logFormat}
-            onChange={setLogFormat}
-            options={[
-              { value: "text", label: "Readable Text" },
-              { value: "json", label: "Structured JSON (ELK / Loki)" },
-            ]}
-          />
-        </div>
-
-        <div>
-          <label htmlFor="settings-log-requests" className="label-strip mb-1.5 block">Log Every API Request</label>
-          <button
-            id="settings-log-requests"
-            type="button"
-            aria-pressed={logRequests}
-            onClick={() => setLogRequests(!logRequests)}
-            className={cx(
-              "flex h-9 w-full items-center justify-between rounded-lg border px-3 text-xs font-medium transition-colors",
-              logRequests ? "border-accent bg-accent/10 text-accent font-semibold" : "border-line bg-card text-muted"
-            )}
-          >
-            <span>BIN_LOG_REQUESTS</span>
-            <span className={cx("size-2 rounded-full", logRequests ? "bg-ok" : "bg-muted")} />
-          </button>
-        </div>
-
-        <div>
+      <div className="flex flex-wrap items-end gap-3 border-t border-line pt-5">
+        <div className="w-56">
           <label htmlFor="settings-audit-log-retention" className="label-strip mb-1.5 block">Audit Log Retention</label>
           <Select
             id="settings-audit-log-retention"
@@ -568,12 +444,21 @@ function AuditSection({ info, settings, onSaved }: { info: Info; settings: Setti
             options={retentionOptions}
           />
         </div>
+        <Button
+          variant="primary"
+          busy={saving}
+          disabled={retentionDays === String(settings.auditRetentionDays)}
+          icon={<Save className="size-3.5" />}
+          onClick={saveAudit}
+        >
+          Save Retention
+        </Button>
       </div>
 
       <div className="rounded-lg border border-line bg-sunken/40 p-4 text-xs space-y-2">
         <div className="font-semibold text-ink flex items-center gap-1.5">
           <Terminal className="size-3.5 text-accent" />
-          <span>Active Log Collector Output Sample</span>
+          <span>Sample line in the current format</span>
         </div>
         <pre className="font-mono text-[11px] text-muted overflow-x-auto p-2 rounded bg-card border border-line">
           {logFormat === "json"

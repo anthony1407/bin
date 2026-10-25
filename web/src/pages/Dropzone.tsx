@@ -8,13 +8,47 @@ import {
   FileText,
   Plus,
   Check,
+  X,
+  ChevronDown,
+  ChevronRight,
+  FolderOpen,
 } from "lucide-react";
-import { api, dropzoneUpload, type Bucket, type Dropzone, type PublicDropzone } from "../api";
+import { Link } from "react-router";
+import { api, dropzoneUpload, type Bucket, type Dropzone, type DropzoneUpload, type PublicDropzone } from "../api";
 import { PageHeader, Card, Button, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 import { bytes, dateTime } from "../lib/format";
+import { describeUserAgent } from "../lib/useragent";
 
-type QueuedFile = { file: File; progress: number; status: "pending" | "uploading" | "done" | "error"; detail?: string };
+type QueuedFile = {
+  id: number;
+  file: File;
+  status: "pending" | "uploading" | "done" | "error" | "canceled";
+  /** Bytes sent so far, from the browser's upload progress. */
+  sent: number;
+  /** Bytes per second, smoothed. */
+  speed: number;
+  detail?: string;
+};
+
+/** "12 s", "3 min" for a remaining-time estimate. */
+function remaining(seconds: number): string {
+  if (!isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `${Math.ceil(seconds)} s left`;
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)} min left`;
+  return `${(seconds / 3600).toFixed(1)} h left`;
+}
+
+function ProgressBar({ value, tone = "accent" }: { value: number; tone?: "accent" | "ok" | "danger" }) {
+  return (
+    <div className="h-1.5 overflow-hidden rounded-full bg-sunken" role="progressbar" aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}>
+      <div
+        className={cx("h-full transition-[width] duration-200", tone === "ok" ? "bg-ok" : tone === "danger" ? "bg-danger" : "bg-accent")}
+        style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+      />
+    </div>
+  );
+}
 
 // --- Public upload page --------------------------------------------------------------
 
@@ -30,6 +64,10 @@ export function PublicUploadPage() {
   const [files, setFiles] = useState<QueuedFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // The queue as the upload loop sees it: files added meanwhile are picked up too.
+  const queue = useRef<QueuedFile[]>([]);
+  const nextId = useRef(1);
+  const aborts = useRef(new Map<number, AbortController>());
 
   useEffect(() => {
     if (!token) {
@@ -42,42 +80,90 @@ export function PublicUploadPage() {
       .catch((e) => setError(errorText(e)));
   }, [token]);
 
-  function update(i: number, patch: Partial<QueuedFile>) {
-    setFiles((prev) => prev.map((f, j) => (j === i ? { ...f, ...patch } : f)));
+  function setQueue(next: QueuedFile[]) {
+    queue.current = next;
+    setFiles(next);
+  }
+
+  function update(id: number, patch: Partial<QueuedFile>) {
+    setQueue(queue.current.map((f) => (f.id === id ? { ...f, ...patch } : f)));
   }
 
   function addFiles(list: FileList | null) {
     if (!list || !info) return;
-    const added = Array.from(list).map<QueuedFile>((file) =>
-      file.size > info.maxBytes
-        ? { file, progress: 0, status: "error", detail: `Larger than ${bytes(info.maxBytes)}` }
-        : { file, progress: 0, status: "pending" },
-    );
-    setFiles((prev) => [...prev, ...added]);
+    const added = Array.from(list).map<QueuedFile>((file) => ({
+      id: nextId.current++,
+      file,
+      sent: 0,
+      speed: 0,
+      ...(file.size > info.maxBytes
+        ? { status: "error" as const, detail: `Larger than the ${bytes(info.maxBytes)} this link allows` }
+        : { status: "pending" as const }),
+    }));
+    setQueue([...queue.current, ...added]);
+  }
+
+  async function uploadOne(item: QueuedFile) {
+    const ctrl = new AbortController();
+    aborts.current.set(item.id, ctrl);
+    update(item.id, { status: "uploading", sent: 0, speed: 0 });
+    let lastTime = performance.now();
+    let lastSent = 0;
+    let speed = 0;
+    try {
+      const stored = await dropzoneUpload(
+        token,
+        item.file,
+        (sent) => {
+          const now = performance.now();
+          const dt = (now - lastTime) / 1000;
+          if (dt >= 0.25) {
+            const instant = (sent - lastSent) / dt;
+            speed = speed === 0 ? instant : speed * 0.7 + instant * 0.3;
+            lastTime = now;
+            lastSent = sent;
+          }
+          update(item.id, { sent, speed });
+        },
+        ctrl.signal,
+      );
+      update(item.id, {
+        status: "done",
+        sent: item.file.size,
+        detail: stored !== item.file.name ? `Saved as ${stored}` : undefined,
+      });
+    } catch (e) {
+      if (ctrl.signal.aborted) update(item.id, { status: "canceled", detail: "Canceled" });
+      else update(item.id, { status: "error", detail: errorText(e) });
+    } finally {
+      aborts.current.delete(item.id);
+    }
   }
 
   async function uploadAll() {
     setIsUploading(true);
-    for (let i = 0; i < files.length; i++) {
-      const { file, status } = files[i];
-      if (status !== "pending") continue;
-      update(i, { status: "uploading", progress: 0 });
-      try {
-        const stored = await dropzoneUpload(
-          token,
-          file,
-          (sent) => update(i, { progress: Math.round((sent / Math.max(file.size, 1)) * 100) }),
-          new AbortController().signal,
-        );
-        update(i, { status: "done", progress: 100, detail: stored !== file.name ? `Saved as ${stored}` : undefined });
-      } catch (e) {
-        update(i, { status: "error", detail: errorText(e) });
-      }
+    // One file at a time, so each gets the full bandwidth and its progress is meaningful.
+    for (;;) {
+      const next = queue.current.find((f) => f.status === "pending");
+      if (!next) break;
+      await uploadOne(next);
     }
     setIsUploading(false);
   }
 
+  function cancel(id: number) {
+    const ctrl = aborts.current.get(id);
+    if (ctrl) ctrl.abort();
+    else update(id, { status: "canceled", detail: "Canceled" });
+  }
+
   const pending = files.filter((f) => f.status === "pending").length;
+  // The whole batch: everything queued or sent in this session, except refused files.
+  const batch = files.filter((f) => f.status !== "error" && f.status !== "canceled");
+  const batchTotal = batch.reduce((n, f) => n + f.file.size, 0);
+  const batchSent = batch.reduce((n, f) => n + (f.status === "done" ? f.file.size : f.sent), 0);
+  const current = files.find((f) => f.status === "uploading");
+  const doneCount = files.filter((f) => f.status === "done").length;
 
   return (
     <div className="min-h-dvh flex flex-col items-center justify-center p-4">
@@ -92,6 +178,9 @@ export function PublicUploadPage() {
               {info.note || "Drop your files below."}
               <span className="block text-xs text-faint mt-1">
                 Up to {bytes(info.maxBytes)} per file · link valid until {dateTime(info.expiresAt)}
+              </span>
+              <span className="block text-[11px] text-faint mt-1">
+                Your IP address and browser are recorded with each file you upload.
               </span>
             </p>
           )}
@@ -141,39 +230,92 @@ export function PublicUploadPage() {
 
               {files.length > 0 && (
                 <div className="space-y-3">
+                  {/* The whole batch at a glance. */}
+                  {batchTotal > 0 && (isUploading || doneCount > 0) && (
+                    <div className="space-y-1.5 rounded-lg border border-line bg-sunken/30 p-3">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-ink">
+                          {isUploading ? `Uploading ${doneCount + 1} of ${batch.length}` : `${doneCount} of ${batch.length} uploaded`}
+                        </span>
+                        <span className="font-mono text-muted">
+                          {bytes(batchSent)} / {bytes(batchTotal)} · {Math.round((batchSent / batchTotal) * 100)}%
+                        </span>
+                      </div>
+                      <ProgressBar value={(batchSent / batchTotal) * 100} tone={!isUploading && batchSent >= batchTotal ? "ok" : "accent"} />
+                      {current && current.speed > 0 && (
+                        <div className="text-right text-[11px] text-muted">
+                          {bytes(current.speed)}/s · {remaining((batchTotal - batchSent) / current.speed)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between text-xs font-medium text-muted">
                     <span>Files ({files.length})</span>
                     {!isUploading && (
-                      <button onClick={() => setFiles([])} className="hover:text-danger transition-colors">
+                      <button onClick={() => setQueue([])} className="hover:text-danger transition-colors">
                         Clear all
                       </button>
                     )}
                   </div>
 
-                  <div className="divide-y divide-line rounded-lg border border-line max-h-52 overflow-y-auto">
-                    {files.map((item, idx) => (
-                      <div key={idx} className="flex items-center justify-between p-3 text-xs">
-                        <div className="flex items-center gap-2 min-w-0 pr-4">
-                          <FileText className="size-4 shrink-0 text-muted" />
-                          <span className="font-mono truncate">{item.file.name}</span>
-                          <span className="text-[10px] text-muted">({bytes(item.file.size)})</span>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          {item.status === "done" ? (
-                            <span className="flex items-center gap-1 text-ok font-medium">
-                              <Check className="size-3.5" /> Uploaded
-                            </span>
-                          ) : item.status === "uploading" ? (
-                            <span className="font-mono text-accent">{item.progress}%</span>
-                          ) : item.status === "error" ? (
-                            <span className="text-danger font-medium">Not uploaded</span>
-                          ) : (
-                            <span className="text-muted">Pending</span>
+                  <div className="divide-y divide-line rounded-lg border border-line max-h-80 overflow-y-auto">
+                    {files.map((item) => {
+                      const pct = item.status === "done" ? 100 : (item.sent / Math.max(item.file.size, 1)) * 100;
+                      return (
+                        <div key={item.id} className="space-y-2 p-3 text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <FileText className="size-4 shrink-0 text-muted" />
+                              <span className="truncate font-mono">{item.file.name}</span>
+                              <span className="shrink-0 text-[10px] text-muted">({bytes(item.file.size)})</span>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              {item.status === "done" ? (
+                                <span className="flex items-center gap-1 font-medium text-ok">
+                                  <Check className="size-3.5" /> Uploaded
+                                </span>
+                              ) : item.status === "uploading" ? (
+                                <span className="font-mono font-semibold text-accent">{Math.floor(pct)}%</span>
+                              ) : item.status === "error" ? (
+                                <span className="font-medium text-danger">Not uploaded</span>
+                              ) : item.status === "canceled" ? (
+                                <span className="text-muted">Canceled</span>
+                              ) : (
+                                <span className="text-muted">Waiting</span>
+                              )}
+                              {(item.status === "uploading" || item.status === "pending") && (
+                                <button
+                                  type="button"
+                                  onClick={() => cancel(item.id)}
+                                  className="rounded p-0.5 text-muted hover:bg-sunken hover:text-danger"
+                                  aria-label={`Cancel ${item.file.name}`}
+                                  title="Cancel"
+                                >
+                                  <X className="size-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {(item.status === "uploading" || item.status === "done") && (
+                            <ProgressBar value={pct} tone={item.status === "done" ? "ok" : "accent"} />
                           )}
-                          {item.detail && <div className="text-[10px] text-muted">{item.detail}</div>}
+                          {item.status === "uploading" && (
+                            <div className="flex justify-between font-mono text-[10px] text-muted">
+                              <span>
+                                {bytes(item.sent)} of {bytes(item.file.size)}
+                              </span>
+                              <span>
+                                {item.speed > 0 ? `${bytes(item.speed)}/s · ${remaining((item.file.size - item.sent) / item.speed)}` : "starting…"}
+                              </span>
+                            </div>
+                          )}
+                          {item.detail && (
+                            <div className={cx("text-[11px]", item.status === "error" ? "text-danger" : "text-muted")}>{item.detail}</div>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   <Button
@@ -197,6 +339,60 @@ export function PublicUploadPage() {
 
 // --- Admin manager -------------------------------------------------------------------
 
+/**
+ * What came in through one link, newest first. It reloads whenever the
+ * link's upload count changes, so it follows the page's polling.
+ */
+function UploadsList({ link }: { link: Dropzone }) {
+  const [uploads, setUploads] = useState<DropzoneUpload[] | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api
+      .dropzoneUploads(link.id)
+      .then((list) => {
+        setUploads(list);
+        setError("");
+      })
+      .catch((e) => setError(errorText(e)));
+  }, [link.id, link.uploads]);
+
+  if (error) return <div className="text-xs text-danger">{error}</div>;
+  if (!uploads) {
+    return (
+      <div className="flex justify-center py-3">
+        <Spinner />
+      </div>
+    );
+  }
+  return (
+    <ul className="max-h-72 divide-y divide-line overflow-y-auto rounded-md border border-line text-xs">
+      {uploads.map((u) => {
+        const folder = u.key.slice(0, u.key.lastIndexOf("/") + 1);
+        return (
+          <li key={u.key + u.uploadedAt} className="space-y-1 px-3 py-2">
+            <div className="flex items-center justify-between gap-3">
+              <Link
+                to={`/buckets/${encodeURIComponent(link.bucket)}${folder ? `?prefix=${encodeURIComponent(folder)}` : ""}`}
+                className="truncate font-mono font-medium text-ink hover:text-accent hover:underline"
+                title={`Open s3://${link.bucket}/${folder}`}
+              >
+                {u.name}
+              </Link>
+              <span className="shrink-0 font-mono text-muted">{bytes(u.size)}</span>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted">
+              <span>{dateTime(u.uploadedAt)}</span>
+              {u.remote && <span className="font-mono">IP {u.remote}</span>}
+              <span title={u.userAgent || "The browser sent no User-Agent"}>{describeUserAgent(u.userAgent)}</span>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function DropzonePage() {
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [links, setLinks] = useState<Dropzone[] | null>(null);
@@ -209,6 +405,7 @@ export function DropzonePage() {
   const [note, setNote] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Dropzone | null>(null);
+  const [openUploads, setOpenUploads] = useState<Set<string>>(new Set());
   const toast = useToast();
 
   const load = () =>
@@ -219,6 +416,23 @@ export function DropzonePage() {
         setLinks([]);
         toast("error", errorText(e));
       });
+
+  // New uploads show up without reloading the page, while it is visible.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") api.dropzones().then(setLinks).catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  function toggleUploads(id: string) {
+    setOpenUploads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   useEffect(() => {
     load();
@@ -340,7 +554,7 @@ export function DropzonePage() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 text-xs border-t border-line pt-3 font-mono">
+              <div className="grid grid-cols-3 gap-2 text-xs border-t border-line pt-3 font-mono">
                 <div>
                   <span className="text-muted block text-[10px]">Expires:</span>
                   <span>{dateTime(link.expiresAt)}</span>
@@ -349,7 +563,30 @@ export function DropzonePage() {
                   <span className="text-muted block text-[10px]">Limit:</span>
                   <span>{bytes(link.maxBytes)} per file</span>
                 </div>
+                <div>
+                  <span className="text-muted block text-[10px]">Received:</span>
+                  <span className={cx(link.uploads > 0 && "font-semibold text-ink")}>
+                    {link.uploads === 0 ? "Nothing yet" : `${link.uploads} file${link.uploads === 1 ? "" : "s"} · ${bytes(link.uploadedBytes)}`}
+                  </span>
+                  {link.lastUploadAt && <span className="block text-[10px] text-muted">last {dateTime(link.lastUploadAt)}</span>}
+                </div>
               </div>
+
+              {link.uploads > 0 && (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleUploads(link.id)}
+                    className="flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+                    aria-expanded={openUploads.has(link.id)}
+                  >
+                    {openUploads.has(link.id) ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                    <FolderOpen className="size-3.5" />
+                    {openUploads.has(link.id) ? "Hide uploaded files" : "Show uploaded files"}
+                  </button>
+                  {openUploads.has(link.id) && <UploadsList link={link} />}
+                </div>
+              )}
 
               {!link.expired && link.url && (
                 <div className="flex items-center gap-2 pt-2">

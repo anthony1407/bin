@@ -158,6 +158,7 @@ export function UsersPage() {
   // Edit User State
   const [editingUser, setEditingUser] = useState<AccessKey | null>(null);
   const [editName, setEditName] = useState("");
+  const [editNameError, setEditNameError] = useState("");
   const [editReadOnly, setEditReadOnly] = useState(false);
   const [editBuckets, setEditBuckets] = useState<string[]>([]);
   const [editEnabled, setEditEnabled] = useState(true);
@@ -273,6 +274,7 @@ export function UsersPage() {
   function startEdit(u: AccessKey) {
     setEditingUser(u);
     setEditName(u.name || "");
+    setEditNameError("");
     setEditReadOnly(u.readOnly);
     setEditBuckets(u.buckets);
     setEditEnabled(u.enabled);
@@ -280,6 +282,10 @@ export function UsersPage() {
 
   async function handleUpdateUser() {
     if (!editingUser) return;
+    if (!editName.trim()) {
+      setEditNameError("User name is required.");
+      return;
+    }
     setUpdatingUser(true);
     try {
       await api.updateAccessKey(editingUser.accessKey, {
@@ -329,6 +335,7 @@ export function UsersPage() {
               {/* User Name */}
               <Field
                 label="User Name"
+                required
                 error={usernameError}
                 hint="A label for people. The access key and secret key are generated and shown once, after saving."
               >
@@ -336,6 +343,7 @@ export function UsersPage() {
                   id="users-user-name"
                   autoComplete="username"
                   autoFocus
+                  aria-invalid={!!usernameError}
                   value={username}
                   onChange={(e) => {
                     setUsername(e.target.value);
@@ -718,14 +726,17 @@ export function UsersPage() {
           }
         >
           <div className="space-y-4">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted">User Name / Display Name</label>
+            <Field label="User Name" required error={editNameError}>
               <Input
                 value={editName}
-                onChange={(e) => setEditName(e.target.value)}
+                aria-invalid={!!editNameError}
+                onChange={(e) => {
+                  setEditName(e.target.value);
+                  setEditNameError("");
+                }}
                 placeholder="User name"
               />
-            </div>
+            </Field>
 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted">Access</label>

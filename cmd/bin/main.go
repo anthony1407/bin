@@ -225,6 +225,8 @@ func runServer(args []string) error {
 			PublicURL:   cfg.PublicURL,
 			Log:         log.With("api", "console"),
 			LogRequests: cfg.LogRequests,
+			LogLevel:    strings.ToLower(cfg.LogLevel.String()),
+			LogFormat:   cfg.LogFormat,
 			Panel:       panel,
 		})},
 	)

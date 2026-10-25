@@ -41,6 +41,10 @@ type Options struct {
 	Log        *slog.Logger
 	// LogRequests logs one line per request; health probes only at debug level.
 	LogRequests bool
+	// LogLevel and LogFormat are reported by /info, read-only: they come from
+	// BIN_LOG_LEVEL and BIN_LOG_FORMAT at startup.
+	LogLevel  string
+	LogFormat string
 	// Panel serves everything outside /api/ (the embedded web panel).
 	Panel http.Handler
 }
@@ -139,6 +143,7 @@ func NewHandler(opts Options) http.Handler {
 	private("GET /api/v1/dropzones", h.listDropzones)
 	private("POST /api/v1/dropzones", h.createDropzone)
 	private("DELETE /api/v1/dropzones/{id}", h.deleteDropzone)
+	private("GET /api/v1/dropzones/{id}/uploads", h.listDropzoneUploads)
 	// The upload page: no session, the dropzone token authorizes.
 	public("GET /api/v1/public/dropzone", h.publicDropzone)
 	public("PUT /api/v1/public/dropzone/files", h.publicDropzoneUpload)

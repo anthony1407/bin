@@ -39,12 +39,17 @@ type dropzoneJSON struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 	Expired   bool      `json:"expired"`
 	URL       string    `json:"url,omitempty"`
+	// What was uploaded through the link.
+	Uploads       int        `json:"uploads"`
+	UploadedBytes int64      `json:"uploadedBytes"`
+	LastUploadAt  *time.Time `json:"lastUploadAt,omitempty"`
 }
 
 func (h *Handler) toDropzoneJSON(r *http.Request, d storage.Dropzone) dropzoneJSON {
 	j := dropzoneJSON{
 		ID: d.ID, Bucket: d.Bucket, Prefix: d.Prefix, Note: d.Note, MaxBytes: d.MaxBytes,
 		CreatedAt: d.Created, ExpiresAt: d.Expires, Expired: !d.Expires.After(time.Now()),
+		Uploads: d.Uploads, UploadedBytes: d.UploadedBytes, LastUploadAt: optionalTime(d.LastUpload),
 	}
 	if token, err := h.opts.Keys.Box.Decrypt(d.TokenEnc); err == nil {
 		j.URL = consoleBaseURL(r) + "/upload#" + token
@@ -125,6 +130,57 @@ func (h *Handler) createDropzone(w http.ResponseWriter, r *http.Request) {
 	d.Created = time.Now()
 	h.opts.Log.Info("dropzone created", "id", d.ID, "bucket", d.Bucket, "prefix", d.Prefix, "expires_in", expires.String())
 	writeJSON(w, http.StatusCreated, h.toDropzoneJSON(r, d))
+}
+
+type dropzoneUploadJSON struct {
+	Key        string    `json:"key"`  // full object key
+	Name       string    `json:"name"` // the key without the dropzone's prefix
+	Size       int64     `json:"size"`
+	UploadedAt time.Time `json:"uploadedAt"`
+	Remote     string    `json:"remote,omitempty"`    // uploader IP
+	UserAgent  string    `json:"userAgent,omitempty"` // uploader browser, as sent
+}
+
+// maxUserAgent bounds the stored User-Agent; real ones are a few hundred bytes.
+const maxUserAgent = 512
+
+// truncate cuts s to at most n bytes without splitting a UTF-8 character.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// maxDropzoneUploadsListed bounds GET /dropzones/{id}/uploads.
+const maxDropzoneUploadsListed = 500
+
+// listDropzoneUploads returns what was uploaded through a dropzone, newest first.
+func (h *Handler) listDropzoneUploads(w http.ResponseWriter, r *http.Request) {
+	list, err := h.opts.Store.DropzoneUploads(r.Context(), r.PathValue("id"), maxDropzoneUploadsListed)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	var prefix string
+	if all, err := h.opts.Store.ListDropzones(r.Context()); err == nil {
+		for _, d := range all {
+			if d.ID == r.PathValue("id") {
+				prefix = d.Prefix
+			}
+		}
+	}
+	out := make([]dropzoneUploadJSON, 0, len(list))
+	for _, u := range list {
+		out = append(out, dropzoneUploadJSON{
+			Key: u.Key, Name: strings.TrimPrefix(u.Key, prefix), Size: u.Size, UploadedAt: u.Uploaded,
+			Remote: u.Remote, UserAgent: u.UserAgent,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"uploads": out})
 }
 
 func (h *Handler) deleteDropzone(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +292,7 @@ func (h *Handler) publicDropzoneUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	setAuditResource(r, key)
 
-	_, err := h.opts.Store.PutObject(r.Context(), d.Bucket, key, r.Body, r.ContentLength,
+	info, err := h.opts.Store.PutObject(r.Context(), d.Bucket, key, r.Body, r.ContentLength,
 		storage.PutOptions{ContentType: contentType(r, key), IfNoneMatch: "*"})
 	switch {
 	case errors.Is(err, storage.ErrPrecondition):
@@ -246,5 +302,12 @@ func (h *Handler) publicDropzoneUpload(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
+	// The file is stored either way; a lost history row only hides it from the console list.
+	if err := h.opts.Store.RecordDropzoneUpload(r.Context(), d.ID, storage.DropzoneUpload{
+		Key: key, Size: info.Size, Remote: clientIP(r), UserAgent: truncate(r.UserAgent(), maxUserAgent),
+	}); err != nil {
+		h.opts.Log.Warn("dropzone: upload not recorded", "id", d.ID, "key", key, "err", err)
+	}
+	h.opts.Log.Info("dropzone upload", "id", d.ID, "bucket", d.Bucket, "key", key, "size", info.Size)
 	writeJSON(w, http.StatusCreated, map[string]string{"name": strings.TrimPrefix(key, d.Prefix)})
 }

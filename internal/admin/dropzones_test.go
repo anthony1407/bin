@@ -13,6 +13,7 @@ func (e *env) dropzoneUpload(token, name, body string) (int, map[string]string) 
 	e.t.Helper()
 	req, _ := http.NewRequest("PUT", e.console+"/api/v1/public/dropzone/files?name="+urlQuery(name), strings.NewReader(body))
 	req.Header.Set(dropzoneTokenHeader, token)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/141.0 Safari/537.36")
 	resp, err := http.DefaultClient.Do(req) // no cookie jar: an outside uploader
 	if err != nil {
 		e.t.Fatal(err)
@@ -83,6 +84,18 @@ func TestDropzones(t *testing.T) {
 	var list struct{ Dropzones []dropzoneJSON }
 	if e.call("GET", "/api/v1/dropzones", nil, &list); len(list.Dropzones) != 1 || list.Dropzones[0].URL != dz.URL {
 		t.Errorf("list: %+v", list.Dropzones)
+	}
+	// The console sees what came in through the link: rejected uploads are not counted.
+	if got := list.Dropzones[0]; got.Uploads != 2 || got.UploadedBytes != int64(len("signed")+len("again")) || got.LastUploadAt == nil {
+		t.Errorf("summary: %+v", got)
+	}
+	var uploads struct{ Uploads []dropzoneUploadJSON }
+	if code := e.call("GET", "/api/v1/dropzones/"+dz.ID+"/uploads", nil, &uploads); code != 200 || len(uploads.Uploads) != 2 ||
+		uploads.Uploads[0].Name != "contract (1).pdf" || uploads.Uploads[0].Key != "clients/contract (1).pdf" || uploads.Uploads[1].Size != 6 {
+		t.Errorf("uploads: %d %+v", code, uploads.Uploads)
+	}
+	if u := uploads.Uploads[0]; u.Remote != "127.0.0.1" || !strings.Contains(u.UserAgent, "Chrome/141") {
+		t.Errorf("uploader not recorded: %+v", u)
 	}
 	if code := e.call("DELETE", "/api/v1/dropzones/"+dz.ID, nil, nil); code != 204 {
 		t.Errorf("delete: %d", code)

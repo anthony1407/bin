@@ -21,6 +21,20 @@ type Dropzone struct {
 	MaxBytes  int64
 	Created   time.Time
 	Expires   time.Time
+
+	// Filled by ListDropzones: what was uploaded through the link.
+	Uploads       int
+	UploadedBytes int64
+	LastUpload    time.Time // zero: nothing yet
+}
+
+// DropzoneUpload is one file uploaded through a dropzone.
+type DropzoneUpload struct {
+	Key       string // full object key
+	Size      int64
+	Uploaded  time.Time
+	Remote    string // uploader IP
+	UserAgent string // uploader browser, as sent
 }
 
 const dropzoneColumns = `id, token_hash, token_enc, bucket, prefix, note, max_bytes, created_at, expires_at`
@@ -48,20 +62,62 @@ func (s *Store) CreateDropzone(ctx context.Context, d Dropzone) error {
 	})
 }
 
-// ListDropzones returns every dropzone, expired ones included, newest first.
+// ListDropzones returns every dropzone, expired ones included, newest first,
+// with a summary of what was uploaded through each.
 func (s *Store) ListDropzones(ctx context.Context) ([]Dropzone, error) {
-	rows, err := s.read.QueryContext(ctx, `SELECT `+dropzoneColumns+` FROM dropzones ORDER BY created_at DESC`)
+	rows, err := s.read.QueryContext(ctx, `SELECT d.id, d.token_hash, d.token_enc, d.bucket, d.prefix, d.note,
+		d.max_bytes, d.created_at, d.expires_at,
+		count(u.id), coalesce(sum(u.size), 0), coalesce(max(u.uploaded_at), 0)
+		FROM dropzones d LEFT JOIN dropzone_uploads u ON u.dropzone_id = d.id
+		GROUP BY d.id ORDER BY d.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Dropzone
 	for rows.Next() {
-		d, err := scanDropzone(rows.Scan)
-		if err != nil {
+		var d Dropzone
+		var created, expires, last int64
+		if err := rows.Scan(&d.ID, &d.TokenHash, &d.TokenEnc, &d.Bucket, &d.Prefix, &d.Note, &d.MaxBytes,
+			&created, &expires, &d.Uploads, &d.UploadedBytes, &last); err != nil {
 			return nil, err
 		}
+		d.Created, d.Expires, d.LastUpload = fromNanos(created), fromNanos(expires), timeOrZero(last)
 		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// RecordDropzoneUpload remembers a file uploaded through a dropzone.
+func (s *Store) RecordDropzoneUpload(ctx context.Context, id string, u DropzoneUpload) error {
+	_, err := s.write.ExecContext(ctx, `INSERT INTO dropzone_uploads (dropzone_id, key, size, uploaded_at, remote, user_agent)
+		VALUES (?, ?, ?, ?, ?, ?)`, id, u.Key, u.Size, s.nowNanos(), u.Remote, u.UserAgent)
+	return err
+}
+
+// DropzoneUploads returns up to limit uploads of a dropzone, newest first.
+func (s *Store) DropzoneUploads(ctx context.Context, id string, limit int) ([]DropzoneUpload, error) {
+	var one int
+	if err := s.read.QueryRowContext(ctx, `SELECT 1 FROM dropzones WHERE id = ?`, id).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNoSuchDropzone
+	} else if err != nil {
+		return nil, err
+	}
+	rows, err := s.read.QueryContext(ctx, `SELECT key, size, uploaded_at, remote, user_agent FROM dropzone_uploads
+		WHERE dropzone_id = ? ORDER BY uploaded_at DESC, id DESC LIMIT ?`, id, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DropzoneUpload{}
+	for rows.Next() {
+		var u DropzoneUpload
+		var at int64
+		if err := rows.Scan(&u.Key, &u.Size, &at, &u.Remote, &u.UserAgent); err != nil {
+			return nil, err
+		}
+		u.Uploaded = fromNanos(at)
+		out = append(out, u)
 	}
 	return out, rows.Err()
 }

@@ -196,15 +196,13 @@ func validateOpenID(c openIDConfig) (field, message string) {
 	if !strings.Contains(" "+c.Scopes+" ", " openid ") {
 		return "scopes", "The scopes must include openid."
 	}
-	if c.Enabled {
-		for _, f := range []struct{ name, value, label string }{
-			{"configUrl", c.ConfigURL, "configuration URL"},
-			{"clientId", c.ClientID, "client ID"},
-			{"adminValue", c.AdminValue, "admin claim value"},
-		} {
-			if f.value == "" {
-				return f.name, "Required to enable sign-in: enter the " + f.label + "."
-			}
+	for _, f := range []struct{ name, value, label string }{
+		{"configUrl", c.ConfigURL, "configuration URL"},
+		{"clientId", c.ClientID, "client ID"},
+		{"adminValue", c.AdminValue, "admin claim value"},
+	} {
+		if f.value == "" {
+			return f.name, "Required: enter the " + f.label + "."
 		}
 	}
 	return "", ""
@@ -240,7 +238,7 @@ func (h *Handler) getLDAP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) putLDAP(w http.ResponseWriter, r *http.Request) {
-	c, ok := h.readLDAPConfig(w, r)
+	c, ok := h.readLDAPConfig(w, r, true)
 	if !ok {
 		return
 	}
@@ -253,8 +251,9 @@ func (h *Handler) putLDAP(w http.ResponseWriter, r *http.Request) {
 }
 
 // readLDAPConfig reads and validates an LDAP configuration from the body,
-// keeping the stored lookup password when none is given.
-func (h *Handler) readLDAPConfig(w http.ResponseWriter, r *http.Request) (ldapConfig, bool) {
+// keeping the stored lookup password when none is given. complete requires
+// every field sign-in needs, as saving does.
+func (h *Handler) readLDAPConfig(w http.ResponseWriter, r *http.Request, complete bool) (ldapConfig, bool) {
 	var in ldapJSON
 	if !readJSON(w, r, &in) {
 		return ldapConfig{}, false
@@ -275,7 +274,7 @@ func (h *Handler) readLDAPConfig(w http.ResponseWriter, r *http.Request) (ldapCo
 		c.LookupPasswordEnc = h.opts.Keys.Box.Encrypt(in.LookupPassword)
 	}
 	c = c.withDefaults()
-	if field, msg := validateLDAP(c); msg != "" {
+	if field, msg := validateLDAP(c, complete); msg != "" {
 		writeFieldError(w, "invalid_ldap_config", field, msg)
 		return ldapConfig{}, false
 	}

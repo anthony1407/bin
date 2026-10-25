@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Check, Copy, FileText, Plus, Search, ShieldCheck, Trash2 } from "lucide-react";
 import Editor from "../components/CodeEditor";
-import { Button, Field, IconButton, Input, Modal, useToast } from "../components/ui";
+import { Link } from "react-router";
+import { Button, ComingSoon, Field, IconButton, Input, Modal, useToast } from "../components/ui";
 
 interface PolicyItem {
   name: string;
@@ -165,10 +166,17 @@ export function PoliciesPage() {
     <div className="space-y-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold tracking-tight text-ink">IAM Policies</h1>
-        <Button variant="primary" icon={<Plus className="size-4" />} onClick={openCreate}>
+        <Button variant="primary" icon={<Plus className="size-4" />} onClick={openCreate} disabled title="Coming soon">
           Create Policy
         </Button>
       </div>
+
+      <ComingSoon>
+        JSON policies are planned; the ones below are examples and are not applied. Today, access is set per key in{" "}
+        <Link to="/access-keys" className="font-semibold underline">Access Keys</Link> and{" "}
+        <Link to="/identity/groups" className="font-semibold underline">Groups</Link> (buckets and read-only), and
+        anonymous access per bucket in its settings.
+      </ComingSoon>
 
       {/* Search Bar */}
       <div className="relative max-w-sm">

@@ -21,11 +21,11 @@ function requestErrors(e: unknown): Errors {
   return { "": errorText(e) };
 }
 
-/** Errors for required fields left empty, keyed by field. */
-function missing<T>(cfg: T, fields: (keyof T & string)[]): Errors {
+/** "<Label> is required." for each required field left empty, keyed by field. */
+function missing<T>(cfg: T, required: Partial<Record<keyof T & string, string>>): Errors {
   const out: Errors = {};
-  for (const f of fields) {
-    if (!String(cfg[f] ?? "").trim()) out[f] = "Required to enable sign-in.";
+  for (const [f, label] of Object.entries(required) as [keyof T & string, string][]) {
+    if (!String(cfg[f] ?? "").trim()) out[f] = `${label} is required.`;
   }
   return out;
 }
@@ -39,8 +39,8 @@ function EnabledSwitch({ enabled, onChange }: { enabled: boolean; onChange: (v: 
         <Badge tone={enabled ? "ok" : "neutral"}>{enabled ? "on" : "off"}</Badge>
       </label>
       <p className="text-xs text-muted">
-        Fields marked <span className="text-danger">*</span> are required to enable sign-in. While it is off, you can
-        save an incomplete configuration.
+        Fields marked <span className="text-danger">*</span> are required. Turn sign-in off to stop offering it
+        without losing the configuration.
       </p>
     </div>
   );
@@ -82,10 +82,16 @@ function FormError({ text }: { text?: string }) {
 
 // --- OpenID Connect ---------------------------------------------------------------------
 
-const OPENID_REQUIRED: (keyof OpenIDConfig & string)[] = ["configUrl", "clientId", "claimName", "adminValue", "scopes"];
+const OPENID_REQUIRED: Partial<Record<keyof OpenIDConfig & string, string>> = {
+  configUrl: "Configuration URL",
+  clientId: "Client ID",
+  claimName: "Claim name",
+  adminValue: "Admin claim value",
+  scopes: "Scopes",
+};
 
 function validateOpenID(c: OpenIDConfig): Errors {
-  const errs = c.enabled ? missing(c, OPENID_REQUIRED) : {};
+  const errs = missing(c, OPENID_REQUIRED);
   if (c.configUrl.trim() && !/^https?:\/\/[^/]+.*\/\.well-known\/openid-configuration$/.test(c.configUrl.trim())) {
     errs.configUrl = "Use the provider's discovery address, ending in /.well-known/openid-configuration.";
   }
@@ -99,7 +105,14 @@ function validateOpenID(c: OpenIDConfig): Errors {
 }
 
 export function OpenIDPage() {
-  const [cfg, setCfg] = useState<OpenIDConfig | null>(null);
+  const [cfg, setCfgState] = useState<OpenIDConfig | null>(null);
+  // What the server holds, to enable Save only when something changed.
+  const [savedCfg, setSavedCfg] = useState("");
+  const loaded = (c: OpenIDConfig) => {
+    setCfgState(c);
+    setSavedCfg(JSON.stringify(c));
+  };
+  const setCfg = setCfgState;
   const [secret, setSecret] = useState("");
   const [errors, setErrors] = useState<Errors>({});
   const [saving, setSaving] = useState(false);
@@ -108,7 +121,8 @@ export function OpenIDPage() {
   const toast = useToast();
 
   useEffect(() => {
-    api.openIDConfig().then(setCfg).catch((e) => setErrors(requestErrors(e)));
+    api.openIDConfig().then(loaded).catch((e) => setErrors(requestErrors(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!cfg) {
@@ -129,9 +143,13 @@ export function OpenIDPage() {
     const errs = validateOpenID(cfg!);
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
+    if (JSON.stringify(cfg) === savedCfg && !secret) {
+      toast("ok", "No changes to save.");
+      return;
+    }
     setSaving(true);
     try {
-      setCfg(await api.saveOpenIDConfig({ ...cfg!, ...(secret ? { clientSecret: secret } : {}) }));
+      loaded(await api.saveOpenIDConfig({ ...cfg!, ...(secret ? { clientSecret: secret } : {}) }));
       setSecret("");
       toast("ok", "OpenID configuration saved.");
     } catch (e) {
@@ -230,7 +248,12 @@ export function OpenIDPage() {
             <Button icon={<PlugZap className="size-4" />} busy={testing} onClick={runTest}>
               Test Provider
             </Button>
-            <Button variant="primary" icon={<Save className="size-4" />} busy={saving} onClick={save}>
+            <Button
+              variant="primary"
+              icon={<Save className="size-4" />}
+              busy={saving}
+              onClick={save}
+            >
               Save
             </Button>
           </div>
@@ -253,17 +276,18 @@ export function OpenIDPage() {
 
 // --- LDAP ------------------------------------------------------------------------------------
 
-const LDAP_REQUIRED: (keyof LDAPConfig & string)[] = [
-  "serverAddr",
-  "userDnSearchBase",
-  "userDnSearchFilter",
-  "groupSearchBase",
-  "groupSearchFilter",
-  "adminGroupDn",
-];
+const LDAP_REQUIRED: Partial<Record<keyof LDAPConfig & string, string>> = {
+  serverAddr: "Server address",
+  userDnSearchBase: "User DN search base",
+  userDnSearchFilter: "User DN search filter",
+  groupSearchBase: "Group search base",
+  groupSearchFilter: "Group search filter",
+  adminGroupDn: "Admin group DN",
+};
 
-function validateLDAP(c: LDAPConfig): Errors {
-  const errs = c.enabled ? missing(c, LDAP_REQUIRED) : {};
+/** complete also requires every field sign-in needs (to save, not to test). */
+function validateLDAP(c: LDAPConfig, complete: boolean): Errors {
+  const errs = complete ? missing(c, LDAP_REQUIRED) : {};
   if (c.serverAddr.trim() && !/^[^\s:]+:\d+$|^\[[^\]]+\]:\d+$/.test(c.serverAddr.trim())) {
     errs.serverAddr = "Use host:port, e.g. ldap.example.com:636.";
   }
@@ -278,6 +302,12 @@ function validateLDAP(c: LDAPConfig): Errors {
 
 export function LDAPPage() {
   const [cfg, setCfg] = useState<LDAPConfig | null>(null);
+  // What the server holds, to enable Save only when something changed.
+  const [savedCfg, setSavedCfg] = useState("");
+  const loaded = (c: LDAPConfig) => {
+    setCfg(c);
+    setSavedCfg(JSON.stringify(c));
+  };
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<Errors>({});
   const [saving, setSaving] = useState(false);
@@ -286,7 +316,8 @@ export function LDAPPage() {
   const toast = useToast();
 
   useEffect(() => {
-    api.ldapConfig().then(setCfg).catch((e) => setErrors(requestErrors(e)));
+    api.ldapConfig().then(loaded).catch((e) => setErrors(requestErrors(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!cfg) {
@@ -305,12 +336,16 @@ export function LDAPPage() {
   const body = () => ({ ...cfg!, ...(password ? { lookupBindPassword: password } : {}) });
 
   async function save() {
-    const errs = validateLDAP(cfg!);
+    const errs = validateLDAP(cfg!, true);
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
+    if (JSON.stringify(cfg) === savedCfg && !password) {
+      toast("ok", "No changes to save.");
+      return;
+    }
     setSaving(true);
     try {
-      setCfg(await api.saveLDAPConfig(body()));
+      loaded(await api.saveLDAPConfig(body()));
       setPassword("");
       toast("ok", "LDAP configuration saved.");
     } catch (e) {
@@ -323,7 +358,7 @@ export function LDAPPage() {
   async function runTest() {
     setTest(null);
     // Tested as typed, even before saving; it need not be complete to be tested.
-    const errs = validateLDAP({ ...cfg!, enabled: false });
+    const errs = validateLDAP(cfg!, false);
     if (!cfg!.serverAddr.trim()) errs.serverAddr = "Enter the server address to test the connection.";
     if (Object.keys(errs).length > 0) {
       setErrors(errs);
@@ -460,7 +495,12 @@ export function LDAPPage() {
             <Button icon={<PlugZap className="size-4" />} busy={testing} onClick={runTest}>
               Test Connection
             </Button>
-            <Button variant="primary" icon={<Save className="size-4" />} busy={saving} onClick={save}>
+            <Button
+              variant="primary"
+              icon={<Save className="size-4" />}
+              busy={saving}
+              onClick={save}
+            >
               Save
             </Button>
           </div>

@@ -99,6 +99,9 @@ export interface Info {
   s3Addr?: string;
   publicUrl?: string;
   logRequests?: boolean;
+  /** From BIN_LOG_LEVEL / BIN_LOG_FORMAT at startup; empty on older servers. */
+  logLevel?: string;
+  logFormat?: string;
   isTLS?: boolean;
   startedAt: string;
   uptime: number;
@@ -320,6 +323,8 @@ export const api = {
   createDropzone: (body: { bucket: string; prefix: string; note: string; expiresIn: number; maxBytes: number }) =>
     request<Dropzone>("POST", "/dropzones", body),
   deleteDropzone: (id: string) => request<void>("DELETE", `/dropzones/${enc(id)}`),
+  dropzoneUploads: (id: string) =>
+    request<{ uploads: DropzoneUpload[] }>("GET", `/dropzones/${enc(id)}/uploads`).then((r) => r.uploads),
   /** What a dropzone link allows, for its public upload page (no session). */
   publicDropzone: async (token: string): Promise<PublicDropzone> => {
     const res = await fetch("/api/v1/public/dropzone", { headers: { "X-Dropzone-Token": token } });
@@ -375,6 +380,23 @@ export interface Dropzone {
   expired: boolean;
   /** The public upload page; the token is after "#". */
   url?: string;
+  /** What was uploaded through the link. */
+  uploads: number;
+  uploadedBytes: number;
+  lastUploadAt?: string;
+}
+
+export interface DropzoneUpload {
+  /** Full object key, folder included. */
+  key: string;
+  /** The key without the link's folder. */
+  name: string;
+  size: number;
+  uploadedAt: string;
+  /** Uploader IP. */
+  remote?: string;
+  /** Uploader browser, as it identified itself. */
+  userAgent?: string;
 }
 
 export interface PublicDropzone {

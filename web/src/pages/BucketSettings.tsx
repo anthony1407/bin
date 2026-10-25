@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { AlertTriangle, Clock, Code2, Globe, Info, Lock, Plus, Save, Shield, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { api, type Access, type Bucket, type Policy, type Rule } from "../api";
 import { bytes, count, dateTime } from "../lib/format";
-import { Badge, Button, Card, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+import { Badge, Button, Card, ComingSoon, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 import { accessLabel } from "./Buckets";
 
@@ -406,7 +406,9 @@ export function BucketSettingsPage() {
         title="Versioning"
         description="When enabled, multiple versions of the same object are preserved. Versioning can be enabled but not fully disabled once turned on."
       >
-        <VersioningPanel bucket={bucket} />
+        <Preview note="Versioning is planned. The S3 API reports this bucket as unversioned; turning it on here has no effect yet.">
+          <VersioningPanel bucket={bucket} />
+        </Preview>
       </Section>
 
       {/* CORS Rules */}
@@ -414,7 +416,9 @@ export function BucketSettingsPage() {
         title="CORS Configuration"
         description={<>Cross-Origin Resource Sharing rules control which browser-based applications can access objects directly. Configure CORS to allow your web app to fetch objects from <span className="font-mono text-xs">{bucket.name}</span>.</>}
       >
-        <CORSEditor bucket={bucket} />
+        <Preview note="CORS rules are planned; bin does not send CORS headers yet, so these rules are not applied.">
+          <CORSEditor bucket={bucket} />
+        </Preview>
       </Section>
 
       {/* Lifecycle Rules */}
@@ -422,7 +426,9 @@ export function BucketSettingsPage() {
         title="Lifecycle Rules"
         description="Automatically manage objects over time. Set rules to expire (delete) objects after a specified number of days, or clean up incomplete multipart uploads."
       >
-        <LifecycleEditor bucket={bucket} />
+        <Preview note="Lifecycle rules are planned; objects are not expired automatically yet.">
+          <LifecycleEditor bucket={bucket} />
+        </Preview>
       </Section>
 
       <Section title="Tags" description="Free-form labels, also visible to S3 clients through GetBucketTagging.">
@@ -436,6 +442,18 @@ export function BucketSettingsPage() {
 }
 
 // --- versioning panel ----------------------------------------------------------------
+
+/** A section that is not connected to the server yet: shown, but not usable. */
+function Preview({ note, children }: { note: string; children: ReactNode }) {
+  return (
+    <div className="space-y-3">
+      <ComingSoon>{note}</ComingSoon>
+      <fieldset disabled aria-disabled="true" className="pointer-events-none select-none opacity-60">
+        {children}
+      </fieldset>
+    </div>
+  );
+}
 
 function VersioningPanel({ bucket }: { bucket: Bucket }) {
   const status = bucket.versioning || "Disabled";

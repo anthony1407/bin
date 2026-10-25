@@ -1,4 +1,16 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronsUpDown, Search, X } from "lucide-react";
 import { cx } from "./ui";
 
@@ -29,6 +41,54 @@ interface SelectProps {
 
 // Lists that would not fit below the field open upwards.
 const LIST_ROOM = 280;
+const LIST_MAX_HEIGHT = 256;
+const LIST_GAP = 4;
+
+/**
+ * Places an open list next to its field with fixed positioning, rendered in a
+ * portal (see FloatingList), so no scrolling or clipping container around the
+ * field (a modal's body, a card) cuts it off or grows a scroll bar. It follows
+ * the field while anything scrolls or the window resizes.
+ */
+function useFloatingPosition(anchor: RefObject<HTMLElement | null>, open: boolean): CSSProperties {
+  const [style, setStyle] = useState<CSSProperties>({ position: "fixed", visibility: "hidden" });
+  useLayoutEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const el = anchor.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom - LIST_GAP * 2;
+      const above = r.top - LIST_GAP * 2;
+      const up = below < LIST_ROOM && above > below;
+      const maxHeight = Math.max(120, Math.min(LIST_MAX_HEIGHT, up ? above : below));
+      setStyle({
+        position: "fixed",
+        left: r.left,
+        width: r.width,
+        maxHeight,
+        ...(up ? { bottom: window.innerHeight - r.top + LIST_GAP } : { top: r.bottom + LIST_GAP }),
+      });
+    };
+    update();
+    window.addEventListener("scroll", update, true); // any scrolling ancestor
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [anchor, open]);
+  return style;
+}
+
+/**
+ * Renders a list outside the field's containers. Inside a modal <dialog> it
+ * must stay in the dialog: everything outside an open modal dialog is inert.
+ */
+function FloatingList({ anchor, children }: { anchor: RefObject<HTMLElement | null>; children: ReactNode }) {
+  const host = anchor.current?.closest("dialog") ?? document.body;
+  return createPortal(children, host);
+}
 
 /**
  * A styled replacement for <select>, following the ARIA combobox pattern:
@@ -54,9 +114,10 @@ export function Select({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const [above, setAbove] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLUListElement>(null);
   const field = useRef<HTMLInputElement & HTMLButtonElement>(null);
+  const listStyle = useFloatingPosition(root, open);
 
   const selected = options.find((o) => o.value === value);
   const q = query.trim().toLowerCase();
@@ -64,9 +125,6 @@ export function Select({
 
   function openList() {
     if (disabled || open) return;
-    const r = root.current!.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom;
-    setAbove(below < LIST_ROOM && r.top > below);
     setActive(Math.max(0, options.findIndex((o) => o.value === value)));
     setOpen(true);
   }
@@ -80,11 +138,13 @@ export function Select({
     field.current?.focus();
   }
 
-  // Click outside closes; the active option stays in view while moving.
+  // Click outside closes (the list is portaled, so it counts as inside); the
+  // active option stays in view while moving.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) close();
+      const t = e.target as Node;
+      if (!root.current?.contains(t) && !list.current?.contains(t)) close();
     };
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
@@ -170,7 +230,7 @@ export function Select({
               openList();
             }}
             onClick={openList}
-            onBlur={(e) => !root.current?.contains(e.relatedTarget) && close()}
+            onBlur={(e) => !root.current?.contains(e.relatedTarget) && !list.current?.contains(e.relatedTarget) && close()}
             className={cx(fieldClass, "pr-9 pl-9 placeholder:text-faint")}
           />
         </>
@@ -189,14 +249,16 @@ export function Select({
       <ChevronsUpDown className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-faint" />
 
       {open && (
+        <FloatingList anchor={root}>
         <ul
+          ref={list}
           id={listId}
           role="listbox"
           aria-label={label}
-          className={cx(
-            "absolute z-50 max-h-64 w-full min-w-44 overflow-y-auto rounded-md border border-line bg-surface p-1 shadow-lg",
-            above ? "bottom-full mb-1" : "top-full mt-1",
-          )}
+          style={listStyle}
+          // Clicks on the list (its scroll bar included) keep focus in the field.
+          onMouseDown={(e) => e.preventDefault()}
+          className="z-50 min-w-44 overflow-y-auto rounded-md border border-line bg-surface p-1 text-ink shadow-lg"
         >
           {shown.length === 0 && <li className="px-3 py-2 text-sm text-faint">{emptyText}</li>}
           {shown.map((o, i) => {
@@ -226,6 +288,7 @@ export function Select({
             );
           })}
         </ul>
+        </FloatingList>
       )}
     </div>
   );
@@ -268,9 +331,10 @@ export function MultiSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const [above, setAbove] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLUListElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const listStyle = useFloatingPosition(root, open);
 
   const q = query.trim().toLowerCase();
   const none: Option = { value: "", label: noneLabel, hint: noneHint, mono: false };
@@ -280,9 +344,6 @@ export function MultiSelect({
 
   function openList() {
     if (disabled || open) return;
-    const r = root.current!.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom;
-    setAbove(below < LIST_ROOM && r.top > below);
     setOpen(true);
   }
   function close() {
@@ -300,7 +361,8 @@ export function MultiSelect({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) close();
+      const t = e.target as Node;
+      if (!root.current?.contains(t) && !list.current?.contains(t)) close();
     };
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
@@ -391,22 +453,24 @@ export function MultiSelect({
             openList();
           }}
           onKeyDown={onKeyDown}
-          onBlur={(e) => !root.current?.contains(e.relatedTarget) && close()}
+          onBlur={(e) => !root.current?.contains(e.relatedTarget) && !list.current?.contains(e.relatedTarget) && close()}
           className={cx("h-7 min-w-16 flex-1 bg-transparent text-ink placeholder:text-faint focus:outline-none disabled:cursor-not-allowed", mono && "font-mono")}
         />
       </div>
       <ChevronsUpDown className="pointer-events-none absolute top-2.5 right-3 size-4 text-faint" />
 
       {open && (
+        <FloatingList anchor={root}>
         <ul
+          ref={list}
           id={listId}
           role="listbox"
           aria-label={label}
           aria-multiselectable="true"
-          className={cx(
-            "absolute z-50 max-h-64 w-full min-w-44 overflow-y-auto rounded-md border border-line bg-surface p-1 shadow-lg",
-            above ? "bottom-full mb-1" : "top-full mt-1",
-          )}
+          style={listStyle}
+          // Clicks on the list (its scroll bar included) keep focus in the field.
+          onMouseDown={(e) => e.preventDefault()}
+          className="z-50 min-w-44 overflow-y-auto rounded-md border border-line bg-surface p-1 text-ink shadow-lg"
         >
           {shown.length === 0 && <li className="px-3 py-2 text-sm text-faint">{emptyText}</li>}
           {shown.map((o, i) => {
@@ -443,6 +507,7 @@ export function MultiSelect({
             );
           })}
         </ul>
+        </FloatingList>
       )}
     </div>
   );

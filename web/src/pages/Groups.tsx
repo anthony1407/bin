@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Pencil, Plus, Trash2, Users as UsersIcon } from "lucide-react";
-import { api, type AccessKey, type Bucket, type Group } from "../api";
+import { api, ApiError, type AccessKey, type Bucket, type Group } from "../api";
 import { date } from "../lib/format";
 import { Badge, Button, EmptyState, Field, IconButton, Input, Modal, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
 import { MultiSelect } from "../components/Select";
@@ -25,6 +25,7 @@ export function GroupsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [nameTouched, setNameTouched] = useState(false);
+  const [serverNameError, setServerNameError] = useState("");
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<Group | null>(null);
   const toast = useToast();
@@ -46,6 +47,7 @@ export function GroupsPage() {
     setDraft(emptyDraft);
     setFormOpen(true);
     setNameTouched(false);
+    setServerNameError("");
   }
 
   function openEdit(g: Group) {
@@ -53,19 +55,22 @@ export function GroupsPage() {
     setDraft({ name: g.name, description: g.description, buckets: g.buckets, readOnly: g.readOnly, members: g.members });
     setFormOpen(true);
     setNameTouched(false);
+    setServerNameError("");
   }
 
-  const nameError = (!editing && nameTouched) ? (
-    draft.name && !NAME_RULE.test(draft.name)
-      ? "Use 1-64 letters, digits, dots, underscores and hyphens, starting with a letter or digit."
-      : !draft.name.trim()
-      ? "The group needs a name."
-      : undefined
-  ) : undefined;
+  // The name's own problem, whether or not the field was touched yet.
+  const nameProblem = editing
+    ? undefined
+    : !draft.name.trim()
+      ? "Name is required."
+      : !NAME_RULE.test(draft.name)
+        ? "Use 1-64 letters, digits, dots, underscores and hyphens, starting with a letter or digit."
+        : undefined;
+  const nameError = serverNameError || (nameTouched ? nameProblem : undefined);
 
   async function submit() {
     setNameTouched(true);
-    if (nameError) return;
+    if (nameProblem) return;
     setBusy(true);
     try {
       if (editing) {
@@ -83,7 +88,12 @@ export function GroupsPage() {
       setFormOpen(false);
       load();
     } catch (e) {
-      toast("error", errorText(e));
+      // A taken or invalid name belongs under the field, not in a toast.
+      if (e instanceof ApiError && (e.code === "group_exists" || e.code === "invalid_group_name")) {
+        setServerNameError(e.message);
+      } else {
+        toast("error", errorText(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -237,7 +247,7 @@ export function GroupsPage() {
         footer={
           <>
             <Button onClick={() => setFormOpen(false)}>Cancel</Button>
-            <Button variant="primary" busy={busy} disabled={!!nameError} onClick={submit}>
+            <Button variant="primary" busy={busy} onClick={submit}>
               {editing ? "Save" : "Create"}
             </Button>
           </>
@@ -251,12 +261,16 @@ export function GroupsPage() {
           }}
         >
           {!editing && (
-            <Field label="Name" error={nameError} hint="Used in the audit log; it cannot change later.">
+            <Field label="Name" required error={nameError} hint="Used in the audit log; it cannot change later.">
               <Input
                 autoFocus
                 name="name"
+                aria-invalid={!!nameError}
                 value={draft.name}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                onChange={(e) => {
+                  setDraft({ ...draft, name: e.target.value });
+                  setServerNameError("");
+                }}
                 onBlur={() => setNameTouched(true)}
                 placeholder="e.g. analytics-team"
                 mono

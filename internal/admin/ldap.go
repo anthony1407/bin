@@ -27,7 +27,8 @@ var (
 )
 
 // validateLDAP returns the JSON name of the first invalid field and why.
-func validateLDAP(c ldapConfig) (field, message string) {
+// complete also requires every field sign-in needs (to save, not to test).
+func validateLDAP(c ldapConfig, complete bool) (field, message string) {
 	if c.ServerAddr != "" {
 		if _, port, err := net.SplitHostPort(c.ServerAddr); err != nil || port == "" {
 			return "serverAddr", "Use host:port, e.g. ldap.example.com:636."
@@ -54,18 +55,19 @@ func validateLDAP(c ldapConfig) (field, message string) {
 			}
 		}
 	}
-	if c.Enabled {
-		for _, f := range []struct{ name, value, label string }{
-			{"serverAddr", c.ServerAddr, "server address"},
-			{"userDnSearchBase", c.UserDNSearchBase, "user DN search base"},
-			{"userDnSearchFilter", c.UserDNSearchFilter, "user DN search filter"},
-			{"groupSearchBase", c.GroupSearchBase, "group search base"},
-			{"groupSearchFilter", c.GroupSearchFilter, "group search filter"},
-			{"adminGroupDn", c.AdminGroupDN, "admin group DN"},
-		} {
-			if f.value == "" {
-				return f.name, "Required to enable sign-in: enter the " + f.label + "."
-			}
+	if !complete {
+		return "", ""
+	}
+	for _, f := range []struct{ name, value, label string }{
+		{"serverAddr", c.ServerAddr, "server address"},
+		{"userDnSearchBase", c.UserDNSearchBase, "user DN search base"},
+		{"userDnSearchFilter", c.UserDNSearchFilter, "user DN search filter"},
+		{"groupSearchBase", c.GroupSearchBase, "group search base"},
+		{"groupSearchFilter", c.GroupSearchFilter, "group search filter"},
+		{"adminGroupDn", c.AdminGroupDN, "admin group DN"},
+	} {
+		if f.value == "" {
+			return f.name, "Required: enter the " + f.label + "."
 		}
 	}
 	return "", ""
@@ -226,7 +228,7 @@ func (h *Handler) loginLDAP(w http.ResponseWriter, r *http.Request) {
 // testLDAP connects with the configuration in the body (stored password if
 // none is given) and, with a username, checks that it is found.
 func (h *Handler) testLDAP(w http.ResponseWriter, r *http.Request) {
-	c, ok := h.readLDAPConfig(w, r)
+	c, ok := h.readLDAPConfig(w, r, false)
 	if !ok {
 		return
 	}

@@ -32,7 +32,7 @@ Errors always look like `{"error": "<code>", "message": "<human text>"}`.
 | Method and path | Body / query | Response |
 |---|---|---|
 | `GET /api/v1/health` | (no session needed) | `{"status":"ok","version","commit"}` |
-| `GET /api/v1/info` | | version, region, `s3Endpoint`, uptime, totals (`buckets`, `objects`, `bytes`), `disk {total, free}` |
+| `GET /api/v1/info` | | version, region, `s3Endpoint`, uptime, totals (`buckets`, `objects`, `bytes`), `disk {total, free}`, and the startup log settings `logLevel`, `logFormat`, `logRequests` (read-only) |
 | `GET /api/v1/settings` | | `{"shareMaxExpirySeconds","auditRetentionDays","publicUrl","region"}` |
 | `PUT /api/v1/settings` | any of `{"shareMaxExpirySeconds": 60..604800, "auditRetentionDays": 0..3650}` (0 days: keep forever) | settings |
 | `POST /api/v1/settings/revoke-share-links` | | `204`; every share link issued so far stops working |
@@ -212,9 +212,14 @@ Upload links for people without an account.
 | `GET /api/v1/dropzones` | | `{"dropzones": [dropzone]}` newest first, expired ones included |
 | `POST /api/v1/dropzones` | `{"bucket", "prefix"?, "note"?, "expiresIn": 60..2592000 (seconds), "maxBytes": 1..5 GiB (per file)}` | `201` dropzone |
 | `DELETE /api/v1/dropzones/{id}` | | `204`; the link stops working at once |
+| `GET /api/v1/dropzones/{id}/uploads` | | `{"uploads": [{"key","name","size","uploadedAt","remote","userAgent"}]}`, newest first, at most 500 |
 
 A dropzone is
-`{"id","bucket","prefix","note","maxBytes","createdAt","expiresAt","expired","url"}`.
+`{"id","bucket","prefix","note","maxBytes","createdAt","expiresAt","expired","url","uploads","uploadedBytes","lastUploadAt"?}`.
+Every accepted upload is recorded with the uploader's IP (`remote`, the
+connection's address: behind a reverse proxy, the proxy's) and User-Agent; the
+upload page tells uploaders so. The record goes with its dropzone; the files
+stay in the bucket.
 `url` is the console's `/upload` page with the token after `#`, so browsers
 never send it to the server. The token is stored hashed for lookups and
 encrypted with the master key so the console can show the link again.

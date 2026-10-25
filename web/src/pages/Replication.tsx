@@ -13,7 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api, ApiError, type Bucket, type ImportJob, type ImportSkipped, type RemoteBucket } from "../api";
-import { PageHeader, Card, Button, Input, Modal, Spinner, cx, useToast } from "../components/ui";
+import { PageHeader, Card, Button, ComingSoon, Input, Modal, Spinner, cx, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 import { bytes, count, dateTime } from "../lib/format";
 
@@ -480,26 +480,34 @@ export function ReplicationPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeader
           title="Bucket Replication & Backup"
-          subtitle="Configure continuous, asynchronous replication between bin and remote S3 targets (AWS S3, Cloudflare R2, Wasabi, Backblaze B2 or any S3-compatible server)."
+          subtitle="Copy buckets from AWS S3, Cloudflare R2, Wasabi, Backblaze B2 or any S3-compatible server into bin."
         />
         <Button
           variant="primary"
-          icon={<Plus className="size-4" />}
-          onClick={() => handleOpenModal()}
-          className="shrink-0"
-        >
-          Add Replication Rule
-        </Button>
-        <Button
-          variant="secondary"
           icon={<ArrowDownLeft className="size-4" />}
           onClick={openImportModal}
           className="shrink-0"
         >
           Import from Remote
         </Button>
+        <Button
+          variant="secondary"
+          icon={<Plus className="size-4" />}
+          onClick={() => handleOpenModal()}
+          disabled
+          title="Coming soon"
+          className="shrink-0"
+        >
+          Add Replication Rule
+        </Button>
       </div>
 
+      <ComingSoon>
+        Continuous replication rules are planned; the rules below are not run and are kept only in this browser.
+        <span className="font-semibold"> Import from Remote</span> works today: it copies whole buckets once.
+      </ComingSoon>
+
+      <fieldset disabled aria-disabled="true" className="pointer-events-none select-none opacity-60">
       {rules.length === 0 ? (
         <Card className="py-16 text-center text-muted text-sm space-y-3">
           <ArrowLeftRight className="size-10 mx-auto text-faint" />
@@ -627,6 +635,7 @@ export function ReplicationPage() {
           })}
         </div>
       )}
+      </fieldset>
 
       {/* Create Rule Modal */}
       <Modal

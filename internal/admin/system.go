@@ -41,6 +41,8 @@ func (h *Handler) info(w http.ResponseWriter, r *http.Request) {
 		"s3Addr":      h.opts.S3Addr,
 		"publicUrl":   h.opts.PublicURL,
 		"logRequests": h.opts.LogRequests,
+		"logLevel":    h.opts.LogLevel,
+		"logFormat":   h.opts.LogFormat,
 		"isTLS":       r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 		"startedAt":   h.started.UTC(),
 		"uptime":      int64(time.Since(h.started).Seconds()),
