@@ -95,6 +95,28 @@ rclone_() { rclone_as "$SK" "$@"; }
 
 curl_() { docker run --rm --network "$NET" "$CURL_IMAGE" "$@"; }
 
+# --- console API -------------------------------------------------------------------
+
+# api METHOD PATH [JSON] [extra curl args...]: a console request with the
+# session cookie ($WORK/jar) and CSRF token, printing the body and then
+# "status=<code>" on its own line.
+api() {
+  local method=$1 path=$2 body=${3:-}
+  docker run --rm --network "$NET" -v "$WORK_NATIVE:/work" "$CURL_IMAGE" -s -w '\nstatus=%{http_code}' \
+    -b /work/jar -c /work/jar -X "$method" -H "X-CSRF-Token: ${CSRF:-}" -H 'Content-Type: application/json' \
+    ${body:+--data "$body"} "${@:4}" "http://$HOST:$CONSOLE_PORT/api/v1$path"
+}
+
+# console_login signs in as root and sets CSRF for api.
+console_login() {
+  rm -f "$WORK/jar"
+  CSRF=$(api POST /login '{"accessKey":"'"$AK"'","secretKey":"'"$SK"'"}' | sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p')
+  [ -n "$CSRF" ] || { echo "console login failed" >&2; exit 1; }
+}
+
+# json_field <name> reads the first "name":"value" string from stdin.
+json_field() { sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p' | head -n 1; }
+
 # --- assertions --------------------------------------------------------------------
 
 PASS=0

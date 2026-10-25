@@ -479,18 +479,6 @@ function VersioningPanel({ bucket }: { bucket: Bucket }) {
         </div>
       </div>
 
-      {!isEnabled && (
-        <div className="rounded-md border border-line bg-sunken/40 px-4 py-3 text-xs text-muted">
-          <p className="font-medium text-ink mb-1">How to enable versioning</p>
-          <p>Use the S3 API to enable versioning on this bucket:</p>
-          <pre className="mt-2 rounded bg-surface p-2 font-mono text-[11px] text-ink overflow-x-auto">
-{`aws s3api put-bucket-versioning \\
-  --bucket ${bucket.name} \\
-  --versioning-configuration Status=Enabled`}
-          </pre>
-        </div>
-      )}
-
       {isEnabled && (
         <div className="rounded-md border border-ok/20 bg-ok/5 px-4 py-3 text-xs text-muted">
           <p>Versioned objects can be listed and restored using the S3 API or any compatible client.</p>

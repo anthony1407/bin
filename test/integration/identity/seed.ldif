@@ -1,0 +1,32 @@
+dn: ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=org
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=ana,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: ana
+cn: Ana
+sn: Admin
+userPassword: ana-pass
+
+dn: uid=luis,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: luis
+cn: Luis
+sn: User
+userPassword: luis-pass
+
+dn: cn=bin-admins,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: bin-admins
+member: uid=ana,ou=people,dc=example,dc=org
+
+dn: cn=dev,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: dev
+member: uid=luis,ou=people,dc=example,dc=org
+member: uid=ana,ou=people,dc=example,dc=org

@@ -203,7 +203,7 @@ func runServer(args []string) error {
 	}
 	defer os.Remove(healthAddrFile())
 	err = server.Run(ctx, log, ready,
-		server.Listener{Name: "s3", Addr: cfg.S3Addr, Handler: s3.NewHandler(s3.Options{
+		server.Listener{Name: "s3", Addr: cfg.S3Addr, Handler: server.RealIP(cfg.TrustedProxies, s3.NewHandler(s3.Options{
 			Store:       store,
 			Region:      cfg.Region,
 			Domain:      cfg.Domain,
@@ -214,8 +214,8 @@ func runServer(args []string) error {
 			Audit:       auditLog,
 			Log:         log.With("api", "s3"),
 			LogRequests: cfg.LogRequests,
-		})},
-		server.Listener{Name: "console", Addr: cfg.ConsoleAddr, Handler: admin.NewHandler(admin.Options{
+		}))},
+		server.Listener{Name: "console", Addr: cfg.ConsoleAddr, Handler: server.RealIP(cfg.TrustedProxies, admin.NewHandler(admin.Options{
 			Store:       store,
 			Keys:        keys,
 			Audit:       auditLog,
@@ -228,7 +228,7 @@ func runServer(args []string) error {
 			LogLevel:    strings.ToLower(cfg.LogLevel.String()),
 			LogFormat:   cfg.LogFormat,
 			Panel:       panel,
-		})},
+		}))},
 	)
 	if err == nil {
 		log.Info("bin stopped")

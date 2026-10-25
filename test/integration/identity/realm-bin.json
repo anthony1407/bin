@@ -1,0 +1,56 @@
+{
+  "realm": "bin",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [{ "name": "bin-admins" }, { "name": "dev" }],
+  "users": [
+    {
+      "username": "ana",
+      "enabled": true,
+      "email": "ana@example.org",
+      "emailVerified": true,
+      "firstName": "Ana",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "ana-pass", "temporary": false }],
+      "groups": ["/bin-admins", "/dev"]
+    },
+    {
+      "username": "luis",
+      "enabled": true,
+      "email": "luis@example.org",
+      "emailVerified": true,
+      "firstName": "Luis",
+      "lastName": "User",
+      "credentials": [{ "type": "password", "value": "luis-pass", "temporary": false }],
+      "groups": ["/dev"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "bin-console",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "bin-console-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://bin-test:9001/oauth_callback"],
+      "webOrigins": ["+"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

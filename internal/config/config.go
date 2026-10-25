@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"bin/internal/server"
 )
 
 // Config holds every server setting.
@@ -30,23 +33,28 @@ type Config struct {
 	LogLevel    slog.Level
 	LogFormat   string // "text" or "json"
 	LogRequests bool   // one log line per request
+
+	// TrustedProxies are reverse proxies whose X-Forwarded-For names the real
+	// client; empty = the connection's own address is the client.
+	TrustedProxies []netip.Prefix
 }
 
 // Recognized variables. Listed here so the config file can be validated.
 const (
-	envConfigFile    = "BIN_CONFIG_FILE"
-	envDataDir       = "BIN_DATA_DIR"
-	envS3Addr        = "BIN_S3_ADDR"
-	envConsoleAddr   = "BIN_CONSOLE_ADDR"
-	envRegion        = "BIN_REGION"
-	envDomain        = "BIN_DOMAIN"
-	envRootAccessKey = "BIN_ROOT_ACCESS_KEY"
-	envRootSecretKey = "BIN_ROOT_SECRET_KEY"
-	envMasterKey     = "BIN_MASTER_KEY"
-	envLogLevel      = "BIN_LOG_LEVEL"
-	envLogFormat     = "BIN_LOG_FORMAT"
-	envLogRequests   = "BIN_LOG_REQUESTS"
-	envPublicURL     = "BIN_PUBLIC_URL"
+	envConfigFile     = "BIN_CONFIG_FILE"
+	envDataDir        = "BIN_DATA_DIR"
+	envS3Addr         = "BIN_S3_ADDR"
+	envConsoleAddr    = "BIN_CONSOLE_ADDR"
+	envRegion         = "BIN_REGION"
+	envDomain         = "BIN_DOMAIN"
+	envRootAccessKey  = "BIN_ROOT_ACCESS_KEY"
+	envRootSecretKey  = "BIN_ROOT_SECRET_KEY"
+	envMasterKey      = "BIN_MASTER_KEY"
+	envLogLevel       = "BIN_LOG_LEVEL"
+	envLogFormat      = "BIN_LOG_FORMAT"
+	envLogRequests    = "BIN_LOG_REQUESTS"
+	envPublicURL      = "BIN_PUBLIC_URL"
+	envTrustedProxies = "BIN_TRUSTED_PROXIES"
 )
 
 // Setting documents one configuration variable, for --help and validation.
@@ -69,6 +77,7 @@ var Settings = []Setting{
 	{envRegion, nil, "us-east-1", "region reported to clients and required in signatures"},
 	{envDomain, nil, "", "domain for virtual-host style requests (bucket.domain); empty = path style only"},
 	{envPublicURL, nil, "", "S3 API URL as clients see it (e.g. https://s3.example.com), used in share links"},
+	{envTrustedProxies, nil, "", "reverse proxies (IPs or CIDRs, comma separated) whose X-Forwarded-For gives the client IP"},
 	{envMasterKey, nil, "(generated)", "key that encrypts secrets at rest; generated in the data directory if unset"},
 	{envLogLevel, nil, "info", "debug, info, warn or error"},
 	{envLogFormat, nil, "text", "text (readable) or json (for log collectors)"},
@@ -225,6 +234,11 @@ func Load(getenv func(string) string) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("%s must be true or false, got %q", envLogRequests, v)
 	}
+	proxies, err := server.ParseTrustedProxies(get(envTrustedProxies, ""))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", envTrustedProxies, err)
+	}
+	c.TrustedProxies = proxies
 	if err := c.LogLevel.UnmarshalText([]byte(get(envLogLevel, "info"))); err != nil {
 		return nil, fmt.Errorf("%s: %w", envLogLevel, err)
 	}

@@ -166,6 +166,7 @@ Settings come from environment variables or from `KEY=VALUE` lines in
 | `BIN_REGION` | `us-east-1` | Region reported to clients and required in signatures |
 | `BIN_DOMAIN` | | Enables virtual-host style requests (`bucket.domain`) |
 | `BIN_PUBLIC_URL` | | S3 URL as clients see it (e.g. `https://s3.example.com`); used in share links |
+| `BIN_TRUSTED_PROXIES` | | Reverse proxies (IPs or CIDRs, comma separated) whose `X-Forwarded-For` gives the real client IP for the audit log, sign-in limits and dropzone records; see below |
 | `BIN_MASTER_KEY` | generated | Key that encrypts secrets at rest; see [Backups](#backups) |
 | `BIN_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `BIN_LOG_FORMAT` | `text` | `text` or `json` |
@@ -181,6 +182,23 @@ bin server /data --address :9100 --console-address :9101
 
 Unknown `BIN_*` variables are reported at startup with a suggestion, so typos
 do not go unnoticed.
+
+### Client IP addresses
+
+bin records who connects (audit log, dropzone uploads) by the connection's
+address. Two setups hide it:
+
+- **Docker Desktop** (Windows, macOS) forwards published ports through its own
+  network, so every client shows up as the Docker gateway (e.g. `172.21.0.1`).
+  On a Linux host, published ports keep the real address.
+- **A reverse proxy** (Caddy, Nginx, Traefik) shows up as the proxy.
+
+Put a reverse proxy in front that sets `X-Forwarded-For` (Caddy and Traefik do
+by default; Nginx needs `proxy_set_header X-Forwarded-For
+$proxy_add_x_forwarded_for;`), and set `BIN_TRUSTED_PROXIES` to its address or
+network, e.g. `BIN_TRUSTED_PROXIES=172.16.0.0/12` for a proxy on the same
+Docker network. bin only reads the header from those addresses: from anyone
+else it could be forged.
 
 ## Operations
 

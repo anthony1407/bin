@@ -7,17 +7,7 @@ VOL=bin-test-admin
 docker volume rm -f "$VOL" >/dev/null 2>&1
 start_server -v "$VOL:/data"
 trap 'stop_server; docker volume rm -f "$VOL" >/dev/null 2>&1' EXIT
-API="http://$HOST:$CONSOLE_PORT/api/v1"
 rm -f "$WORK/jar"
-
-# api METHOD PATH [JSON] [extra curl args...]: a console request with the
-# session cookie and CSRF token, printing the status and the body.
-api() {
-  local method=$1 path=$2 body=${3:-}
-  docker run --rm --network "$NET" -v "$WORK_NATIVE:/work" "$CURL_IMAGE" -s -w '\nstatus=%{http_code}' \
-    -b /work/jar -c /work/jar -X "$method" -H "X-CSRF-Token: ${CSRF:-}" -H 'Content-Type: application/json' \
-    ${body:+--data "$body"} "${@:4}" "$API$path"
-}
 
 PANEL="http://$HOST:$CONSOLE_PORT"
 check "panel served from the binary" '<div id="root">' "$(curl_ -s "$PANEL/")"

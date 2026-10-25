@@ -35,6 +35,8 @@ services:
       BIN_ROOT_PASSWORD: ${BIN_ROOT_PASSWORD:-}
       BIN_SECRET_KEY: ${BIN_SECRET_KEY:-}
       BIN_REGION: us-east-1
+      # Behind a reverse proxy, its address/network, so bin records real client IPs.
+      BIN_TRUSTED_PROXIES: ${BIN_TRUSTED_PROXIES:-}
     volumes:
       - bin-data:/data
     # The image has no curl or wget: bin checks itself.
