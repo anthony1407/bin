@@ -140,6 +140,10 @@ func (h *Handler) revokeShareLinks(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
+	// The rotation already stops them; the records say so too.
+	if err := h.opts.Store.RevokeAllShareLinks(r.Context()); err != nil {
+		h.opts.Log.Warn("marking share links revoked", "err", err)
+	}
 	h.opts.Log.Warn("all share links revoked from the console")
 	w.WriteHeader(http.StatusNoContent)
 }

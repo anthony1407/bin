@@ -6,7 +6,20 @@ import { api, type AccessKey, type Bucket, type Info } from "../api";
 import { PageHeader, Card, Button, Input, Spinner, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 
-type SDKLang = "javascript" | "python" | "go" | "cli";
+type SDKLang = "javascript" | "python" | "go" | "java" | "dotnet" | "php" | "ruby" | "curl" | "cli";
+
+// Tabs in display order, with the editor's highlighting for each.
+const LANG_TABS: { id: SDKLang; label: string; editor: string; terminal?: boolean }[] = [
+  { id: "javascript", label: "TypeScript / Node.js", editor: "typescript" },
+  { id: "python", label: "Python (boto3)", editor: "python" },
+  { id: "go", label: "Go (aws-sdk-go-v2)", editor: "go" },
+  { id: "java", label: "Java (SDK v2)", editor: "java" },
+  { id: "dotnet", label: "C# / .NET", editor: "csharp" },
+  { id: "php", label: "PHP", editor: "php" },
+  { id: "ruby", label: "Ruby", editor: "ruby" },
+  { id: "curl", label: "cURL", editor: "shell", terminal: true },
+  { id: "cli", label: "AWS CLI & rclone", editor: "shell", terminal: true },
+];
 type SDKOp = "all" | "init" | "upload" | "download" | "list";
 
 export function ConnectSDKPage() {
@@ -364,9 +377,205 @@ func main() {
 }`;
     }
 
-    // CLI / rclone / cURL
+    if (lang === "curl") {
+      return `# ==========================================
+# bin S3 API with cURL (SigV4 signing built in)
+# Needs curl 7.75+; curl 8 also sends the payload hash S3 requires.
+# ==========================================
+
+AUTH=(--aws-sigv4 "aws:amz:${region}:s3" --user "${accessKeyId}:${secretKey}")
+S3="${endpoint}"
+
+# 1. List buckets
+curl "\${AUTH[@]}" "$S3/"
+
+# 2. List objects in ${bucketName} (add &prefix=folder/ to narrow it)
+curl "\${AUTH[@]}" "$S3/${bucketName}/?list-type=2"
+
+# 3. Upload a file
+curl "\${AUTH[@]}" -T ./local-file.txt "$S3/${bucketName}/${objectKey}"
+
+# 4. Download it
+curl "\${AUTH[@]}" -o ./downloaded-file "$S3/${bucketName}/${objectKey}"
+
+# 5. Object metadata only (size, type, ETag)
+curl "\${AUTH[@]}" -I "$S3/${bucketName}/${objectKey}"
+
+# 6. Delete it
+curl "\${AUTH[@]}" -X DELETE "$S3/${bucketName}/${objectKey}"
+
+# 7. Create a bucket
+curl "\${AUTH[@]}" -X PUT "$S3/new-bucket-name"
+
+# Keys with spaces or special characters must be URL-encoded,
+# e.g. "my report.pdf" -> my%20report.pdf
+# Windows PowerShell: use curl.exe and --user "${accessKeyId}:${secretKey}" inline.`;
+    }
+
+    if (lang === "java") {
+      return `// ==========================================
+// bin S3 Client - Java (AWS SDK for Java v2)
+// Maven: software.amazon.awssdk:s3
+// ==========================================
+
+import java.net.URI;
+import java.nio.file.Paths;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.core.sync.ResponseTransformer;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.*;
+
+public class BinExample {
+    public static void main(String[] args) {
+        S3Client s3 = S3Client.builder()
+            .endpointOverride(URI.create("${endpoint}"))
+            .region(Region.of("${region}"))
+            .credentialsProvider(StaticCredentialsProvider.create(
+                AwsBasicCredentials.create("${accessKeyId}", "${secretKey}")))
+            .forcePathStyle(true) // Always required for bin / path-style
+            .build();
+
+        // 1. Upload
+        s3.putObject(PutObjectRequest.builder()
+                .bucket("${bucketName}").key("${objectKey}").contentType("text/plain").build(),
+            RequestBody.fromString("Hello from bin Java Client!"));
+
+        // 2. Download
+        s3.getObject(GetObjectRequest.builder().bucket("${bucketName}").key("${objectKey}").build(),
+            ResponseTransformer.toFile(Paths.get("downloaded-file")));
+
+        // 3. List
+        s3.listObjectsV2Paginator(ListObjectsV2Request.builder().bucket("${bucketName}").build())
+            .contents()
+            .forEach(o -> System.out.printf("  - %s (%d bytes)%n", o.key(), o.size()));
+    }
+}`;
+    }
+
+    if (lang === "dotnet") {
+      return `// ==========================================
+// bin S3 Client - C# / .NET (AWSSDK.S3)
+// Install: dotnet add package AWSSDK.S3
+// ==========================================
+
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
+
+var s3 = new AmazonS3Client(
+    new BasicAWSCredentials("${accessKeyId}", "${secretKey}"),
+    new AmazonS3Config
+    {
+        ServiceURL = "${endpoint}",
+        AuthenticationRegion = "${region}",
+        ForcePathStyle = true, // Always required for bin / path-style
+    });
+
+// 1. Upload
+await s3.PutObjectAsync(new PutObjectRequest
+{
+    BucketName = "${bucketName}",
+    Key = "${objectKey}",
+    ContentBody = "Hello from bin .NET Client!",
+    ContentType = "text/plain",
+});
+
+// 2. Download
+using (var obj = await s3.GetObjectAsync("${bucketName}", "${objectKey}"))
+{
+    await obj.WriteResponseStreamToFileAsync("downloaded-file", false, default);
+}
+
+// 3. List
+var page = await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = "${bucketName}" });
+foreach (var o in page.S3Objects)
+    Console.WriteLine($"  - {o.Key} ({o.Size} bytes)");`;
+    }
+
+    if (lang === "php") {
+      return `<?php
+// ==========================================
+// bin S3 Client - PHP (AWS SDK for PHP v3)
+// Install: composer require aws/aws-sdk-php
+// ==========================================
+
+require 'vendor/autoload.php';
+
+use Aws\\S3\\S3Client;
+
+$s3 = new S3Client([
+    'version'                 => 'latest',
+    'region'                  => '${region}',
+    'endpoint'                => '${endpoint}',
+    'use_path_style_endpoint' => true, // Always required for bin / path-style
+    'credentials'             => ['key' => '${accessKeyId}', 'secret' => '${secretKey}'],
+]);
+
+// 1. Upload
+$s3->putObject([
+    'Bucket'      => '${bucketName}',
+    'Key'         => '${objectKey}',
+    'Body'        => 'Hello from bin PHP Client!',
+    'ContentType' => 'text/plain',
+]);
+
+// 2. Download
+$s3->getObject(['Bucket' => '${bucketName}', 'Key' => '${objectKey}', 'SaveAs' => 'downloaded-file']);
+
+// 3. List
+foreach ($s3->getPaginator('ListObjectsV2', ['Bucket' => '${bucketName}']) as $page) {
+    foreach ($page['Contents'] ?? [] as $o) {
+        echo "  - {$o['Key']} ({$o['Size']} bytes)\\n";
+    }
+}
+
+// 4. A link that works for an hour without credentials
+$url = (string) $s3->createPresignedRequest(
+    $s3->getCommand('GetObject', ['Bucket' => '${bucketName}', 'Key' => '${objectKey}']),
+    '+1 hour'
+)->getUri();
+echo $url, "\\n";`;
+    }
+
+    if (lang === "ruby") {
+      return `# ==========================================
+# bin S3 Client - Ruby (aws-sdk-s3)
+# Install: gem install aws-sdk-s3
+# ==========================================
+
+require "aws-sdk-s3"
+
+s3 = Aws::S3::Client.new(
+  endpoint: "${endpoint}",
+  region: "${region}",
+  access_key_id: "${accessKeyId}",
+  secret_access_key: "${secretKey}",
+  force_path_style: true # Always required for bin / path-style
+)
+
+# 1. Upload
+s3.put_object(bucket: "${bucketName}", key: "${objectKey}",
+              body: "Hello from bin Ruby Client!", content_type: "text/plain")
+
+# 2. Download
+s3.get_object(bucket: "${bucketName}", key: "${objectKey}", response_target: "downloaded-file")
+
+# 3. List
+s3.list_objects_v2(bucket: "${bucketName}").each do |page|
+  page.contents.each { |o| puts "  - #{o.key} (#{o.size} bytes)" }
+end
+
+# 4. A link that works for an hour without credentials
+puts Aws::S3::Presigner.new(client: s3)
+  .presigned_url(:get_object, bucket: "${bucketName}", key: "${objectKey}", expires_in: 3600)`;
+    }
+
+    // AWS CLI / rclone
     return `# ==========================================
-# bin S3 Client - AWS CLI, rclone & cURL
+# bin S3 Client - AWS CLI & rclone
 # ==========================================
 
 # 1. AWS CLI Configuration
@@ -503,48 +712,21 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
       <div className="rounded-xl border border-line bg-card overflow-hidden shadow-sm">
         {/* Navigation & Tabs */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-line bg-sunken/60 px-4 py-2.5 gap-3">
-          <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
-            <button
-              onClick={() => setLang("javascript")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                lang === "javascript"
-                  ? "bg-accent text-white shadow-sm font-semibold"
-                  : "text-muted hover:text-ink hover:bg-sunken"
-              }`}
-            >
-              <span>TypeScript / Node.js</span>
-            </button>
-            <button
-              onClick={() => setLang("python")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                lang === "python"
-                  ? "bg-accent text-white shadow-sm font-semibold"
-                  : "text-muted hover:text-ink hover:bg-sunken"
-              }`}
-            >
-              <span>Python (boto3)</span>
-            </button>
-            <button
-              onClick={() => setLang("go")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                lang === "go"
-                  ? "bg-accent text-white shadow-sm font-semibold"
-                  : "text-muted hover:text-ink hover:bg-sunken"
-              }`}
-            >
-              <span>Go (aws-sdk-go-v2)</span>
-            </button>
-            <button
-              onClick={() => setLang("cli")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                lang === "cli"
-                  ? "bg-accent text-white shadow-sm font-semibold"
-                  : "text-muted hover:text-ink hover:bg-sunken"
-              }`}
-            >
-              <Terminal className="size-3.5" />
-              <span>AWS CLI & rclone</span>
-            </button>
+          <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0" role="tablist" aria-label="Language">
+            {LANG_TABS.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={lang === t.id}
+                onClick={() => setLang(t.id)}
+                className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                  lang === t.id ? "bg-accent text-white shadow-sm font-semibold" : "text-muted hover:text-ink hover:bg-sunken"
+                }`}
+              >
+                {t.terminal && <Terminal className="size-3.5" />}
+                <span>{t.label}</span>
+              </button>
+            ))}
           </div>
 
           <div className="flex items-center gap-2">
@@ -597,7 +779,7 @@ aws --endpoint-url ${endpoint} s3 sync ./my-folder s3://${bucketName}/backup/
         <div className="h-[460px] w-full bg-[#1e1e1e]">
           <Editor
             height="100%"
-            language={lang === "javascript" ? "typescript" : lang === "python" ? "python" : lang === "go" ? "go" : "shell"}
+            language={LANG_TABS.find((t) => t.id === lang)?.editor ?? "shell"}
             value={codeSnippet}
             theme="vs-dark"
             options={{

@@ -96,7 +96,7 @@ func (e *env) openIDSignIn() (*http.Client, *url.URL) {
 	return client, resp.Request.URL
 }
 
-func sessionUser(t *testing.T, client *http.Client, console string) string {
+func sessionUserOf(t *testing.T, client *http.Client, console string) string {
 	resp, err := client.Get(console + "/api/v1/session")
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestOpenIDSignIn(t *testing.T) {
 	if final.Path != "/buckets/photos" {
 		t.Errorf("landed on %s", final)
 	}
-	if u := sessionUser(t, client, e.console); u != "openid:ana" {
+	if u := sessionUserOf(t, client, e.console); u != "openid:ana" {
 		t.Errorf("session user %q", u)
 	}
 
@@ -150,7 +150,7 @@ func TestOpenIDSignIn(t *testing.T) {
 	if final.Path != "/login" || !strings.Contains(final.Query().Get("error"), "not allowed") {
 		t.Errorf("non-admin landed on %s", final)
 	}
-	if u := sessionUser(t, client, e.console); u != "" {
+	if u := sessionUserOf(t, client, e.console); u != "" {
 		t.Errorf("non-admin got a session: %q", u)
 	}
 
@@ -289,7 +289,7 @@ func TestLDAPSignIn(t *testing.T) {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		return resp.StatusCode, sessionUser(t, client, e.console)
+		return resp.StatusCode, sessionUserOf(t, client, e.console)
 	}
 	if code, user := login("ana", "ana-pass"); code != 200 || user != "ldap:ana" {
 		t.Errorf("admin: %d %q", code, user)

@@ -101,6 +101,8 @@ func NewHandler(opts Options) http.Handler {
 	private("PUT /api/v1/buckets/{bucket}/upload", h.upload)
 	private("POST /api/v1/buckets/{bucket}/folders", h.createFolder)
 	private("POST /api/v1/buckets/{bucket}/share", h.share)
+	private("GET /api/v1/buckets/{bucket}/shares", h.listShares)
+	private("DELETE /api/v1/shares/{id}", h.revokeShare)
 	private("POST /api/v1/buckets/{bucket}/uploads", h.createUpload)
 	private("PUT /api/v1/buckets/{bucket}/uploads/{id}/parts/{n}", h.uploadPart)
 	private("POST /api/v1/buckets/{bucket}/uploads/{id}/complete", h.completeUpload)
@@ -233,6 +235,7 @@ func (h *Handler) storageError(w http.ResponseWriter, r *http.Request, err error
 		{storage.ErrNoSuchGroup, 404, "no_such_group", "The group does not exist."},
 		{storage.ErrGroupExists, 409, "group_exists", "A group with this name already exists."},
 		{storage.ErrNoSuchDropzone, 404, "no_such_dropzone", "The upload link does not exist."},
+		{storage.ErrNoSuchShareLink, 404, "no_such_share_link", "The share link does not exist."},
 	} {
 		if errors.Is(err, m.err) {
 			writeError(w, m.status, m.code, m.message)

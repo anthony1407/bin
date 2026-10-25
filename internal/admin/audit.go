@@ -45,6 +45,7 @@ var auditedRoutes = map[string]string{
 	"GET " + oauthCallbackPath:                            "LoginOpenID",
 	"PUT /api/v1/identity/openid":                         "UpdateOpenIDConfig",
 	"PUT /api/v1/identity/ldap":                           "UpdateLDAPConfig",
+	"DELETE /api/v1/shares/{id}":                          "RevokeShareLink",
 }
 
 // auditInfo lets a handler fill in what the route alone does not tell.

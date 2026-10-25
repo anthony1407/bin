@@ -134,6 +134,7 @@ func (s *Store) gcLoop(ctx context.Context, log *slog.Logger) {
 			}
 			s.collectQueued(ctx)
 			s.deleteExpiredSessions(ctx)
+			s.pruneShareLinks(ctx)
 		}
 	}
 }

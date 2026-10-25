@@ -80,6 +80,19 @@ export interface ObjectInfo {
   metadata?: Record<string, string>;
   checksums?: Record<string, string>;
   partsCount?: number;
+  /** Active share links, and until when the last one works. */
+  shares?: number;
+  shareExpiresAt?: string;
+}
+
+export interface ShareLink {
+  id: string;
+  url?: string;
+  /** Forces "save as" instead of opening in the browser. */
+  download: boolean;
+  createdBy?: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface ObjectPage {
@@ -236,7 +249,10 @@ export const api = {
     request<{ deleted: number }>("DELETE", `/buckets/${enc(bucket)}/objects`, { keys, prefixes }),
   createFolder: (bucket: string, prefix: string) => request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/folders`, { prefix }),
   share: (bucket: string, key: string, expiresIn: number, download: boolean) =>
-    request<{ url: string; expiresAt: string }>("POST", `/buckets/${enc(bucket)}/share`, { key, expiresIn, download }),
+    request<{ id: string; url: string; expiresAt: string }>("POST", `/buckets/${enc(bucket)}/share`, { key, expiresIn, download }),
+  shareLinks: (bucket: string, key: string) =>
+    request<{ links: ShareLink[] }>("GET", `/buckets/${enc(bucket)}/shares?key=${enc(key)}`).then((r) => r.links),
+  revokeShare: (id: string) => request<void>("DELETE", `/shares/${enc(id)}`),
   downloadURL: (bucket: string, key: string, inline = false) =>
     `/api/v1/buckets/${enc(bucket)}/download?key=${enc(key)}${inline ? "&inline=1" : ""}`,
 

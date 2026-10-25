@@ -151,6 +151,9 @@ func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM dropzones WHERE bucket = ?`, name); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM share_links WHERE bucket = ?`, name); err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM buckets WHERE id = ?`, id)
 		return err
 	})

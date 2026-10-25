@@ -208,6 +208,24 @@ var migrations = []string{
 		user_agent  TEXT    NOT NULL DEFAULT ''    -- uploader browser, as sent
 	);
 	CREATE INDEX dropzone_uploads_dropzone ON dropzone_uploads (dropzone_id, uploaded_at);`,
+
+	// 9: share links, recorded so the console can show which objects are
+	// shared and until when, and revoke one link without the others. A link
+	// is found by the hash of its signature; the URL itself is kept encrypted
+	// so the console can show it again.
+	`CREATE TABLE share_links (
+		id             TEXT    PRIMARY KEY,
+		bucket         TEXT    NOT NULL,
+		key            TEXT    NOT NULL,
+		signature_hash TEXT    NOT NULL UNIQUE,
+		url_enc        TEXT    NOT NULL,
+		download       INTEGER NOT NULL DEFAULT 0,  -- forces "save as"
+		created_by     TEXT    NOT NULL DEFAULT '',
+		created_at     INTEGER NOT NULL,
+		expires_at     INTEGER NOT NULL,
+		revoked_at     INTEGER NOT NULL DEFAULT 0   -- 0 = not revoked
+	) WITHOUT ROWID;
+	CREATE INDEX share_links_object ON share_links (bucket, key, expires_at);`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

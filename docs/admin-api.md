@@ -86,7 +86,9 @@ Object keys travel in the `key` query parameter (URL-encoded).
 | `PUT /api/v1/buckets/{bucket}/upload?key=` | raw body, `Content-Length` required, up to 5 GiB | `201` object |
 | `POST /api/v1/buckets/{bucket}/folders` | `{"prefix"}` | `201`; creates the empty `prefix/` object |
 | `DELETE /api/v1/buckets/{bucket}/objects` | `{"keys": [...], "prefixes": [...]}` | `{"deleted": n}` |
-| `POST /api/v1/buckets/{bucket}/share` | `{"key", "expiresIn": seconds, "download": bool}` | `{"url", "expiresAt"}` |
+| `POST /api/v1/buckets/{bucket}/share` | `{"key", "expiresIn": seconds, "download": bool}` | `{"id", "url", "expiresAt"}` |
+| `GET /api/v1/buckets/{bucket}/shares?key=` | | `{"links": [{"id","url","download","createdBy","createdAt","expiresAt"}]}`: the object's live links, longest-lived first |
+| `DELETE /api/v1/shares/{id}` | | `204`; that link stops working at once, the others keep working |
 | `POST /api/v1/buckets/{bucket}/uploads?key=` | | `{"uploadId"}` (files over 5 GiB) |
 | `PUT /api/v1/buckets/{bucket}/uploads/{id}/parts/{n}?key=` | raw body, ≥ 5 MiB except the last | `{"number","etag","size"}` |
 | `POST /api/v1/buckets/{bucket}/uploads/{id}/complete?key=` | `{"parts": [{"number","etag"}]}` | object |
@@ -94,7 +96,15 @@ Object keys travel in the `key` query parameter (URL-encoded).
 
 Share links are presigned S3 URLs signed with an internal read-only key
 (never the root key). Their base URL is `BIN_PUBLIC_URL`, or else the host
-the console was reached on with the S3 port.
+the console was reached on with the S3 port. They last from 1 minute to the
+`shareMaxExpirySeconds` setting, which cannot exceed 7 days (the SigV4 limit).
+
+Each link is recorded: object listings include `shares` (live links) and
+`shareExpiresAt` (when the last one ends), and the URL is kept encrypted so
+the console can show it again. A revoked link's signature is still valid, so
+the S3 API checks every presigned request against the revoked records and
+answers `403 AccessDenied` ("This share link was revoked."). Links that ended
+over a week ago are forgotten.
 
 ### Access keys
 

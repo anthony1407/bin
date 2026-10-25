@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -33,6 +35,25 @@ type objectJSON struct {
 	Metadata     map[string]string `json:"metadata,omitempty"`
 	Checksums    map[string]string `json:"checksums,omitempty"`
 	PartsCount   int               `json:"partsCount,omitempty"`
+	// Active share links: how many, and until when the last one works.
+	Shares         int        `json:"shares,omitempty"`
+	ShareExpiresAt *time.Time `json:"shareExpiresAt,omitempty"`
+}
+
+// withShares adds the active share links to each listed object.
+func (h *Handler) withShares(r *http.Request, bucket string, objs []objectJSON) []objectJSON {
+	sums, err := h.opts.Store.ShareSummaries(r.Context(), bucket)
+	if err != nil {
+		h.opts.Log.Warn("share summaries unavailable", "bucket", bucket, "err", err)
+		return objs
+	}
+	for i := range objs {
+		if s, ok := sums[objs[i].Key]; ok {
+			objs[i].Shares = s.Active
+			objs[i].ShareExpiresAt = optionalTime(s.LastExpires)
+		}
+	}
+	return objs
 }
 
 func toObjectJSON(o storage.ObjectInfo) objectJSON {
@@ -75,7 +96,7 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 				out = append(out, toObjectJSON(o))
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"objects": out, "prefixes": []string{}, "truncated": len(found) > limit})
+		writeJSON(w, http.StatusOK, map[string]any{"objects": h.withShares(r, bucket, out), "prefixes": []string{}, "truncated": len(found) > limit})
 		return
 	}
 	delimiter := "/"
@@ -98,7 +119,7 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 		prefixes = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"objects": out, "prefixes": prefixes, "truncated": res.IsTruncated, "nextAfter": res.NextMarker,
+		"objects": h.withShares(r, bucket, out), "prefixes": prefixes, "truncated": res.IsTruncated, "nextAfter": res.NextMarker,
 	})
 }
 
@@ -309,8 +330,76 @@ func (h *Handler) share(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_expiry", err.Error())
 		return
 	}
+	link := storage.ShareLink{
+		ID: "sl_" + randomToken()[:12], Bucket: bucket, Key: in.Key, Download: in.Download,
+		SignatureHash: signatureHash(signed), URLEnc: h.opts.Keys.Box.Encrypt(signed),
+		CreatedBy: sessionUser(r), Expires: now.Add(expires),
+	}
+	if err := h.opts.Store.CreateShareLink(r.Context(), link); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	setAuditResource(r, in.Key)
 	h.opts.Log.Info("share link created", "bucket", bucket, "key", in.Key, "expires_in", expires.String())
-	writeJSON(w, http.StatusOK, map[string]any{"url": signed, "expiresAt": now.Add(expires).UTC()})
+	writeJSON(w, http.StatusOK, map[string]any{"id": link.ID, "url": signed, "expiresAt": link.Expires.UTC()})
+}
+
+// signatureHash identifies a presigned URL by its signature, which the S3
+// API sees on every use.
+func signatureHash(signedURL string) string {
+	u, err := url.Parse(signedURL)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(u.Query().Get("X-Amz-Signature")))
+	return hex.EncodeToString(sum[:])
+}
+
+func sessionUser(r *http.Request) string {
+	if s, ok := r.Context().Value(sessionKey{}).(storage.Session); ok {
+		return s.User
+	}
+	return ""
+}
+
+type shareLinkJSON struct {
+	ID        string    `json:"id"`
+	URL       string    `json:"url,omitempty"`
+	Download  bool      `json:"download"`
+	CreatedBy string    `json:"createdBy,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// listShares returns the active share links of one object (?key=).
+func (h *Handler) listShares(w http.ResponseWriter, r *http.Request) {
+	links, err := h.opts.Store.ActiveShareLinks(r.Context(), r.PathValue("bucket"), r.URL.Query().Get("key"))
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	out := make([]shareLinkJSON, 0, len(links))
+	for _, l := range links {
+		j := shareLinkJSON{ID: l.ID, Download: l.Download, CreatedBy: l.CreatedBy, CreatedAt: l.Created, ExpiresAt: l.Expires}
+		if u, err := h.opts.Keys.Box.Decrypt(l.URLEnc); err == nil {
+			j.URL = u
+		}
+		out = append(out, j)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"links": out})
+}
+
+// revokeShare stops one share link at once; the others keep working.
+func (h *Handler) revokeShare(w http.ResponseWriter, r *http.Request) {
+	l, err := h.opts.Store.RevokeShareLink(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	setAuditBucket(r, l.Bucket)
+	setAuditResource(r, l.Key)
+	h.opts.Log.Info("share link revoked", "bucket", l.Bucket, "key", l.Key, "id", l.ID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // s3BaseURL is where clients reach the S3 API: BIN_PUBLIC_URL when set,

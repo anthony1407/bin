@@ -53,6 +53,12 @@ export function duration(seconds: number): string {
   return `${Math.floor(seconds)}s`;
 }
 
+/** "2h 15m left" until iso, or "expired". */
+export function timeLeft(iso: string, now = Date.now()): string {
+  const s = (new Date(iso).getTime() - now) / 1000;
+  return s <= 0 ? "expired" : `${duration(s)} left`;
+}
+
 /** The last path segment of a key, or of a prefix without its trailing slash. */
 export function baseName(key: string): string {
   const trimmed = key.endsWith("/") ? key.slice(0, -1) : key;

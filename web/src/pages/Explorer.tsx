@@ -27,6 +27,7 @@ import {
   Info,
   LayoutGrid,
   LayoutList,
+  Link2,
   Lock,
   Maximize2,
   Plus,
@@ -44,8 +45,8 @@ import {
 } from "lucide-react";
 import JSZip from "jszip";
 import Editor, { DiffEditor } from "../components/CodeEditor";
-import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo } from "../api";
-import { baseName, bytes, count, dateTime, relative } from "../lib/format";
+import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo, type ShareLink } from "../api";
+import { baseName, bytes, count, dateTime, duration, relative, timeLeft } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 import { accessLabel } from "./Buckets";
@@ -200,39 +201,129 @@ function UploadPanel({ jobs, onClear }: { jobs: UploadJob[]; onClear: () => void
 // --- share dialog ----------------------------------------------------------------------
 
 const EXPIRY_CHOICES = [
+  { label: "5 min", seconds: 300 },
   { label: "15 min", seconds: 900 },
   { label: "1 hour", seconds: 3600 },
-  { label: "12 hours", seconds: 43200 },
+  { label: "6 hours", seconds: 6 * 3600 },
+  { label: "12 hours", seconds: 12 * 3600 },
   { label: "1 day", seconds: 86400 },
+  { label: "3 days", seconds: 3 * 86400 },
   { label: "7 days", seconds: 7 * 86400 },
 ];
+const CUSTOM_UNITS = [
+  { value: "60", label: "minutes" },
+  { value: "3600", label: "hours" },
+  { value: "86400", label: "days" },
+];
 
-function ShareModal({ bucket, object, onClose }: { bucket: string; object: ObjectInfo | null; onClose: () => void }) {
-  const [expires, setExpires] = useState(86400);
+function copyLink(url: string, toast: ReturnType<typeof useToast>) {
+  navigator.clipboard.writeText(url).then(
+    () => toast("ok", "Link copied."),
+    () => toast("error", "Could not copy the link."),
+  );
+}
+
+/**
+ * Creates share links for one object and lists its live ones, each with the
+ * time it has left, to copy again or revoke on its own. onLinks tells the
+ * listing what is shared now, so its marker follows.
+ */
+function ShareModal({
+  bucket,
+  object,
+  onClose,
+  onLinks,
+}: {
+  bucket: string;
+  object: ObjectInfo | null;
+  onClose: () => void;
+  onLinks: (key: string, links: ShareLink[]) => void;
+}) {
+  const [expires, setExpires] = useState<number | "custom">(86400);
+  const [customAmount, setCustomAmount] = useState("2");
+  const [customUnit, setCustomUnit] = useState("3600");
+  const [customError, setCustomError] = useState("");
   const [download, setDownload] = useState(false);
-  const [link, setLink] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [created, setCreated] = useState<{ id: string; url: string; expiresAt: string } | null>(null);
+  const [links, setLinks] = useState<ShareLink[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [revoking, setRevoking] = useState<string | null>(null);
   const [max, setMax] = useState(7 * 86400);
+  const [now, setNow] = useState(Date.now());
   const toast = useToast();
+
+  const reloadLinks = useCallback(async () => {
+    if (!object) return;
+    const list = await api.shareLinks(bucket, object.key);
+    setLinks(list);
+    onLinks(object.key, list);
+  }, [bucket, object, onLinks]);
 
   useEffect(() => {
     if (!object) return;
-    setLink(null);
+    setCreated(null);
+    setLinks(null);
+    setCustomError("");
+    reloadLinks().catch((e) => toast("error", errorText(e)));
     api.settings().then((s) => {
       setMax(s.shareMaxExpirySeconds);
-      setExpires((e) => Math.min(e, s.shareMaxExpirySeconds));
+      setExpires((e) => (e === "custom" ? e : Math.min(e, s.shareMaxExpirySeconds)));
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [object]);
+
+  // The time left on each link counts down while the dialog is open.
+  useEffect(() => {
+    if (!object) return;
+    const t = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, [object]);
+
+  function chosenSeconds(): number | null {
+    if (expires !== "custom") return expires;
+    const n = Number(customAmount);
+    const secs = Math.round(n * Number(customUnit));
+    if (!customAmount.trim() || !Number.isFinite(n) || n <= 0) {
+      setCustomError("Enter how long the link should work.");
+      return null;
+    }
+    if (secs < 60) {
+      setCustomError("The shortest link lasts 1 minute.");
+      return null;
+    }
+    if (secs > max) {
+      setCustomError(`The longest link allowed is ${duration(max)} (set in Settings; S3 links cannot exceed 7 days).`);
+      return null;
+    }
+    return secs;
+  }
 
   async function create() {
     if (!object) return;
+    const secs = chosenSeconds();
+    if (secs === null) return;
     setBusy(true);
     try {
-      setLink(await api.share(bucket, object.key, expires, download));
+      setCreated(await api.share(bucket, object.key, secs, download));
+      await reloadLinks();
     } catch (e) {
       toast("error", errorText(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function revoke(id: string) {
+    setRevoking(id);
+    try {
+      await api.revokeShare(id);
+      if (created?.id === id) setCreated(null);
+      await reloadLinks();
+      toast("ok", "Link revoked. It stopped working immediately.");
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setRevoking(null);
     }
   }
 
@@ -241,9 +332,15 @@ function ShareModal({ bucket, object, onClose }: { bucket: string; object: Objec
       open={!!object}
       onClose={onClose}
       title="Share link"
+      size="lg"
       footer={
-        link ? (
-          <Button onClick={onClose}>Done</Button>
+        created ? (
+          <>
+            <Button onClick={() => setCreated(null)}>Create another</Button>
+            <Button variant="primary" onClick={onClose}>
+              Done
+            </Button>
+          </>
         ) : (
           <>
             <Button onClick={onClose}>Cancel</Button>
@@ -255,11 +352,25 @@ function ShareModal({ bucket, object, onClose }: { bucket: string; object: Objec
       }
     >
       {object && (
-        <div className="space-y-4">
+        <div className="space-y-5">
           <p className="text-sm text-muted">
             Anyone with the link can download <span className="font-mono text-ink">{baseName(object.key)}</span> until it expires, without signing in.
           </p>
-          {!link ? (
+
+          {created ? (
+            <div className="space-y-2 rounded-md border border-ok/30 bg-ok-soft/40 p-3">
+              <div className="text-sm font-medium text-ok">Link created</div>
+              <div className="flex gap-2">
+                <Input mono readOnly value={created.url} onFocus={(e) => e.target.select()} className="text-xs" />
+                <Button icon={<Copy className="size-4" />} onClick={() => copyLink(created.url, toast)}>
+                  Copy
+                </Button>
+              </div>
+              <p className="text-xs text-muted">
+                Works until {dateTime(created.expiresAt)} ({timeLeft(created.expiresAt, now)}).
+              </p>
+            </div>
+          ) : (
             <>
               <div>
                 <div className="mb-1.5 text-sm font-medium">Expires after</div>
@@ -267,6 +378,7 @@ function ShareModal({ bucket, object, onClose }: { bucket: string; object: Objec
                   {EXPIRY_CHOICES.filter((c) => c.seconds <= max).map((c) => (
                     <button
                       key={c.seconds}
+                      type="button"
                       onClick={() => setExpires(c.seconds)}
                       className={cx(
                         "h-8 rounded-md border px-3 text-sm",
@@ -276,30 +388,95 @@ function ShareModal({ bucket, object, onClose }: { bucket: string; object: Objec
                       {c.label}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() => setExpires("custom")}
+                    className={cx(
+                      "h-8 rounded-md border px-3 text-sm",
+                      expires === "custom" ? "border-accent bg-accent-soft text-accent-ink" : "border-line-strong hover:bg-sunken",
+                    )}
+                  >
+                    Custom
+                  </button>
                 </div>
-                <p className="mt-1.5 text-xs text-muted">The maximum allowed is set in Settings.</p>
+                {expires === "custom" && (
+                  <div className="mt-3 flex items-start gap-2">
+                    <div className="w-28">
+                      <Input
+                        type="number"
+                        min={1}
+                        aria-label="Custom duration"
+                        aria-invalid={!!customError}
+                        value={customAmount}
+                        onChange={(e) => {
+                          setCustomAmount(e.target.value);
+                          setCustomError("");
+                        }}
+                      />
+                    </div>
+                    <Select
+                      className="w-36"
+                      aria-label="Custom duration unit"
+                      value={customUnit}
+                      onChange={(v) => {
+                        setCustomUnit(v);
+                        setCustomError("");
+                      }}
+                      options={CUSTOM_UNITS}
+                    />
+                  </div>
+                )}
+                {customError ? (
+                  <p className="mt-1.5 text-xs font-medium text-danger">{customError}</p>
+                ) : (
+                  <p className="mt-1.5 text-xs text-muted">Up to {duration(max)}, the maximum set in Settings.</p>
+                )}
               </div>
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" name="download" checked={download} onChange={(e) => setDownload(e.target.checked)} className="size-4 accent-[var(--accent)]" />
                 Download instead of opening in the browser
               </label>
             </>
-          ) : (
-            <>
-              <div className="flex gap-2">
-                <Input mono readOnly value={link.url} onFocus={(e) => e.target.select()} className="text-xs" />
-                <Button
-                  icon={<Copy className="size-4" />}
-                  onClick={() => navigator.clipboard.writeText(link.url).then(() => toast("ok", "Link copied."))}
-                >
-                  Copy
-                </Button>
-              </div>
-              <p className="text-xs text-muted">
-                Expires {dateTime(link.expiresAt)}. To cut every link short, use “Revoke all share links” in Settings.
-              </p>
-            </>
           )}
+
+          <div className="border-t border-line pt-4">
+            <div className="mb-2 flex items-center justify-between text-sm font-medium">
+              <span>Active links{links ? ` (${links.length})` : ""}</span>
+            </div>
+            {links === null ? (
+              <div className="flex justify-center py-3">
+                <Spinner />
+              </div>
+            ) : links.length === 0 ? (
+              <p className="text-xs text-muted">This file is not shared right now.</p>
+            ) : (
+              <ul className="max-h-56 divide-y divide-line overflow-y-auto rounded-md border border-line">
+                {links.map((l) => (
+                  <li key={l.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className="flex size-2 shrink-0 rounded-full bg-ok" aria-hidden="true" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-ink">
+                        {timeLeft(l.expiresAt, now)}
+                        {l.download && <span className="ml-2 rounded bg-sunken px-1.5 py-0.5 text-[10px] text-muted">download</span>}
+                      </div>
+                      <div className="text-muted">
+                        until {dateTime(l.expiresAt)} · created {relative(l.createdAt)}
+                        {l.createdBy ? ` by ${l.createdBy}` : ""}
+                      </div>
+                    </div>
+                    {l.url && (
+                      <IconButton label="Copy link" onClick={() => copyLink(l.url!, toast)}>
+                        <Copy className="size-3.5" />
+                      </IconButton>
+                    )}
+                    <Button variant="ghost" busy={revoking === l.id} onClick={() => revoke(l.id)} className="text-danger">
+                      Revoke
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       )}
     </Modal>
@@ -1499,6 +1676,19 @@ export function ExplorerPage() {
     return () => clearTimeout(t);
   }, [load, search]);
 
+  // The share dialog reports an object's live links; its row marker follows.
+  const updateShares = useCallback((key: string, links: ShareLink[]) => {
+    const last = links.reduce<string | undefined>((m, l) => (!m || l.expiresAt > m ? l.expiresAt : m), undefined);
+    setObjects((cur) => cur.map((o) => (o.key === key ? { ...o, shares: links.length, shareExpiresAt: last } : o)));
+  }, []);
+
+  // Share markers count down, and drop when a link expires.
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setClock(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
   // Keyboard shortcuts: "/" focuses search, "u" opens the file picker.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2206,6 +2396,20 @@ export function ExplorerPage() {
                           {search ? o.key : baseName(o.key)}
                         </span>
                         {objPublic && <span title="Public"><Globe className="size-3 shrink-0 text-warn" /></span>}
+                        {!!o.shares && o.shareExpiresAt && new Date(o.shareExpiresAt).getTime() > clock && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSharing(o);
+                            }}
+                            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/30 bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink hover:border-accent"
+                            title={`${o.shares} active share link${o.shares === 1 ? "" : "s"}; the last one works until ${dateTime(o.shareExpiresAt)}`}
+                          >
+                            <Link2 className="size-3" />
+                            Shared{o.shares > 1 ? ` ×${o.shares}` : ""} · {timeLeft(o.shareExpiresAt, clock)}
+                          </button>
+                        )}
                       </div>
                       <div className="num mt-0.5 pl-6.5 text-[11px] text-muted sm:hidden">
                         {bytes(o.size)} · {relative(o.lastModified)}
@@ -2285,7 +2489,7 @@ export function ExplorerPage() {
           }}
         />
       )}
-      <ShareModal bucket={bucket} object={sharing} onClose={() => setSharing(null)} />
+      <ShareModal bucket={bucket} object={sharing} onClose={() => setSharing(null)} onLinks={updateShares} />
       <FileDiffModal bucket={bucket} files={diffFiles} onClose={() => setDiffFiles(null)} />
       <UploadPanel jobs={jobs} onClear={() => setJobs([])} />
 

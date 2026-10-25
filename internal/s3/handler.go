@@ -3,6 +3,8 @@ package s3
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -148,6 +150,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		if err != nil && auth.Anonymous() {
 			err = s3err.ErrAccessDenied
 		}
+		if err == nil {
+			err = h.checkShareRevoked(r)
+		}
 	}
 	if req.Op != "" {
 		server.Annotate(r.Context(), slog.String("op", string(req.Op)))
@@ -168,6 +173,26 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeError(w, r, req, err)
 	}
+}
+
+var errShareRevoked = s3err.ErrAccessDenied.WithMessage("This share link was revoked.")
+
+// checkShareRevoked refuses a presigned URL whose share link was revoked from
+// the console. Its signature is still valid, so only this record stops it.
+func (h *Handler) checkShareRevoked(r *http.Request) error {
+	sig := r.URL.Query().Get("X-Amz-Signature")
+	if sig == "" || h.opts.Store == nil {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(sig))
+	revoked, err := h.opts.Store.ShareSignatureRevoked(r.Context(), hex.EncodeToString(sum[:]))
+	if err != nil {
+		return err
+	}
+	if revoked {
+		return errShareRevoked
+	}
+	return nil
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, req Request, err error) {
