@@ -78,14 +78,23 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.limiter.reset(ip)
+	sess, err := h.startSession(w, r, in.AccessKey)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
 
+// startSession creates a console session for user and sets its cookie. Every
+// sign-in method (root, OpenID, LDAP) ends here; all sessions are admins.
+func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user string) (sessionResponse, error) {
 	token, csrf := randomToken(), randomToken()
 	expires := time.Now().Add(h.opts.SessionTTL)
 	if err := h.opts.Store.CreateSession(r.Context(), storage.Session{
-		TokenHash: hashToken(token), CSRF: csrf, User: in.AccessKey, Expires: expires,
+		TokenHash: hashToken(token), CSRF: csrf, User: user, Expires: expires,
 	}); err != nil {
-		h.storageError(w, r, err)
-		return
+		return sessionResponse{}, err
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -96,8 +105,8 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteStrictMode,
 	})
-	server.Annotate(r.Context(), slog.String("login", "ok"))
-	writeJSON(w, http.StatusOK, sessionResponse{User: in.AccessKey, CSRFToken: csrf, ExpiresAt: expires})
+	server.Annotate(r.Context(), slog.String("login", "ok"), slog.String("user", user))
+	return sessionResponse{User: user, CSRFToken: csrf, ExpiresAt: expires}, nil
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {

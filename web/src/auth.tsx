@@ -7,6 +7,8 @@ interface AuthState {
   loading: boolean;
   /** Signs in and then shows the panel at `to`. */
   signIn: (accessKey: string, secretKey: string, to: string) => Promise<void>;
+  /** Signs in with directory credentials and then shows the panel at `to`. */
+  signInLDAP: (username: string, password: string, to: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -40,9 +42,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const navigate = useNavigate();
-  const signIn = useCallback(
-    async (accessKey: string, secretKey: string, to: string) => {
-      const s = await atLeast(MIN_SIGN_IN_MS, api.login(accessKey, secretKey));
+  const finish = useCallback(
+    async (login: Promise<Session>, to: string) => {
+      const s = await atLeast(MIN_SIGN_IN_MS, login);
       // The router navigates inside a transition; putting the session update
       // in the same transition renders both at once, so the panel replaces
       // the form directly, with no empty redirect frame between.
@@ -53,12 +55,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     [navigate],
   );
+  const signIn = useCallback(
+    (accessKey: string, secretKey: string, to: string) => finish(api.login(accessKey, secretKey), to),
+    [finish],
+  );
+  const signInLDAP = useCallback(
+    (username: string, password: string, to: string) => finish(api.loginLDAP(username, password), to),
+    [finish],
+  );
   const signOut = useCallback(async () => {
     await api.logout().catch(() => {});
     setSession(null);
   }, []);
 
-  return <AuthContext.Provider value={{ session, loading, signIn, signOut }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ session, loading, signIn, signInLDAP, signOut }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

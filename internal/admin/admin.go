@@ -1,8 +1,9 @@
 // Package admin implements the console listener: the JSON admin API under
 // /api/v1 used by the web panel, and the panel itself (Options.Panel).
 //
-// Every endpoint except health, login and the dropzone upload page (which
-// authorizes with the link's token) needs a session cookie; requests
+// Every endpoint except health, the sign-in endpoints (root, LDAP, OpenID and
+// its /oauth_callback) and the dropzone upload page (which authorizes with
+// the link's token) needs a session cookie; requests
 // that change state also need the session's CSRF token in X-CSRF-Token and,
 // when the browser sends one, an Origin matching the host.
 package admin
@@ -53,7 +54,8 @@ type Handler struct {
 	scrubMu sync.Mutex
 	scrub   scrubStatus
 
-	imports *importJobs
+	imports    *importJobs
+	oidcStates *oidcStates
 }
 
 // NewHandler returns the console HTTP handler.
@@ -61,7 +63,8 @@ func NewHandler(opts Options) http.Handler {
 	if opts.SessionTTL == 0 {
 		opts.SessionTTL = 12 * time.Hour
 	}
-	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs()}
+	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs(),
+		oidcStates: newOIDCStates()}
 
 	mux := http.NewServeMux()
 	public := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, h.audited(pattern, fn)) }
@@ -71,6 +74,10 @@ func NewHandler(opts Options) http.Handler {
 
 	public("GET /api/v1/health", h.health)
 	public("POST /api/v1/login", h.login)
+	public("GET /api/v1/login/providers", h.loginProviders)
+	public("POST /api/v1/login/ldap", h.loginLDAP)
+	public("GET /api/v1/login/openid", h.loginOpenID)
+	public("GET "+oauthCallbackPath, h.oauthCallback)
 	private("POST /api/v1/logout", h.logout)
 	private("GET /api/v1/session", h.session)
 	private("GET /api/v1/info", h.info)
@@ -121,6 +128,13 @@ func NewHandler(opts Options) http.Handler {
 	private("POST /api/v1/import/start", h.handleImportStart)
 	private("GET /api/v1/import/jobs", h.listImportJobs)
 	private("DELETE /api/v1/import/jobs/{id}", h.cancelImportJob)
+
+	private("GET /api/v1/identity/openid", h.getOpenID)
+	private("PUT /api/v1/identity/openid", h.putOpenID)
+	private("POST /api/v1/identity/openid/test", h.testOpenID)
+	private("GET /api/v1/identity/ldap", h.getLDAP)
+	private("PUT /api/v1/identity/ldap", h.putLDAP)
+	private("POST /api/v1/identity/ldap/test", h.testLDAP)
 
 	private("GET /api/v1/dropzones", h.listDropzones)
 	private("POST /api/v1/dropzones", h.createDropzone)

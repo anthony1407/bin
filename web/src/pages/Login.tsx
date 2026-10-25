@@ -1,32 +1,45 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useLocation } from "react-router";
-import { ArrowRight, Eye, EyeOff } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, KeyRound } from "lucide-react";
 import { useAuth } from "../auth";
-import { ApiError } from "../api";
-import { BinLogo, BinMark, Button, Field, Input } from "../components/ui";
+import { api, ApiError, type LoginProviders } from "../api";
+import { BinLogo, BinMark, Button, Field, Input, cx } from "../components/ui";
+
+type Mode = "root" | "ldap";
 
 export function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, signInLDAP } = useAuth();
   const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const nextParam = params.get("next");
+  const next = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/buckets";
+  const [providers, setProviders] = useState<LoginProviders>({ openid: null, ldap: false });
+  const [mode, setMode] = useState<Mode>("root");
   const [accessKey, setAccessKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  // An OpenID sign-in that failed comes back here with the reason.
+  const [error, setError] = useState(params.get("error") ?? "");
+
+  useEffect(() => {
+    api.loginProviders().then(setProviders).catch(() => {});
+  }, []);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
     setError("");
-    const next = new URLSearchParams(location.search).get("next");
     try {
-      await signIn(accessKey, secretKey, next && next.startsWith("/") && !next.startsWith("//") ? next : "/buckets");
+      await (mode === "ldap" ? signInLDAP(accessKey, secretKey, next) : signIn(accessKey, secretKey, next));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Cannot reach the server.");
       setBusy(false);
     }
   }
+
+  const ldap = mode === "ldap";
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1.1fr_1fr]">
@@ -59,16 +72,41 @@ export function LoginPage() {
         <div className="w-full max-w-sm">
           <BinLogo className="mb-10 h-9 w-auto lg:hidden" />
           <h2 className="text-2xl font-semibold tracking-tight">Sign in</h2>
-          <p className="mt-1.5 text-sm text-muted">Use the root credentials this server was started with.</p>
+          <p className="mt-1.5 text-sm text-muted">
+            {ldap ? "Use your directory username and password." : "Use the root credentials this server was started with."}
+          </p>
 
-          <form onSubmit={submit} className="mt-8 space-y-5">
-            <Field label="Access key">
-              <Input mono autoFocus autoComplete="username" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} readOnly={busy} required />
+          {providers.ldap && (
+            <div className="mt-6 grid grid-cols-2 rounded-md border border-line p-0.5 text-sm" role="tablist">
+              {(["root", "ldap"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === m}
+                  onClick={() => {
+                    setMode(m);
+                    setError("");
+                  }}
+                  className={cx(
+                    "rounded px-3 py-1.5 font-medium transition-colors",
+                    mode === m ? "bg-accent-soft text-accent-ink" : "text-muted hover:text-ink",
+                  )}
+                >
+                  {m === "root" ? "Root credentials" : "LDAP"}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={submit} className={cx("space-y-5", providers.ldap ? "mt-6" : "mt-8")}>
+            <Field label={ldap ? "Username" : "Access key"}>
+              <Input mono={!ldap} autoFocus autoComplete="username" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} readOnly={busy} required />
             </Field>
-            <Field label="Secret key">
+            <Field label={ldap ? "Password" : "Secret key"}>
               <div className="relative">
                 <Input
-                  mono
+                  mono={!ldap}
                   readOnly={busy}
                   type={show ? "text" : "password"}
                   autoComplete="current-password"
@@ -81,7 +119,7 @@ export function LoginPage() {
                   type="button"
                   onClick={() => setShow(!show)}
                   className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-faint hover:text-ink"
-                  aria-label={show ? "Hide secret key" : "Show secret key"}
+                  aria-label={show ? `Hide ${ldap ? "password" : "secret key"}` : `Show ${ldap ? "password" : "secret key"}`}
                 >
                   {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                 </button>
@@ -92,9 +130,24 @@ export function LoginPage() {
               {busy ? "Signing in…" : "Sign in"}
             </Button>
           </form>
-          <p className="mt-8 text-xs text-faint">
-            These are the values of <span className="font-mono">BIN_ROOT_ACCESS_KEY</span> and <span className="font-mono">BIN_ROOT_SECRET_KEY</span>.
-          </p>
+
+          {providers.openid && (
+            <>
+              <div className="my-6 flex items-center gap-3 text-xs text-faint">
+                <span className="h-px flex-1 bg-line" />
+                or
+                <span className="h-px flex-1 bg-line" />
+              </div>
+              {/* A full navigation: the provider's page takes over, then sends the browser back. */}
+              <a
+                href={api.openIDLoginURL(next)}
+                className="flex w-full items-center justify-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-sunken"
+              >
+                <KeyRound className="size-4 text-accent" />
+                Sign in with {providers.openid.displayName}
+              </a>
+            </>
+          )}
         </div>
       </section>
     </div>

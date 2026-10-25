@@ -41,6 +41,10 @@ var auditedRoutes = map[string]string{
 	"POST /api/v1/dropzones":                              "CreateDropzone",
 	"DELETE /api/v1/dropzones/{id}":                       "DeleteDropzone",
 	"PUT /api/v1/public/dropzone/files":                   "DropzoneUpload",
+	"POST /api/v1/login/ldap":                             "LoginLDAP",
+	"GET " + oauthCallbackPath:                            "LoginOpenID",
+	"PUT /api/v1/identity/openid":                         "UpdateOpenIDConfig",
+	"PUT /api/v1/identity/ldap":                           "UpdateLDAPConfig",
 }
 
 // auditInfo lets a handler fill in what the route alone does not tell.

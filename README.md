@@ -35,6 +35,10 @@ serves two ports:
   optionally read-only, with an expiry date. Groups grant the same bucket
   scope to many keys at once and can be disabled in one step. Secrets are
   encrypted at rest.
+- **Single sign-on**: console sign-in with OpenID Connect (Keycloak, Google
+  Workspace, Microsoft Entra ID, Okta, ...) or LDAP / Active Directory, for
+  members of an admin group. Configured in **Identity**; root can always sign
+  in.
 - **Audit log**: sign-ins, changes and refused requests, from the console and
   the S3 API, searchable in the console. Reads are not recorded; entries are
   kept for 30 days by default (configurable in **Settings**, 0 keeps them
@@ -267,8 +271,8 @@ erasure coding. Not supported yet:
   replication.
 
 Some console screens are previews of planned features and are not connected
-to the server yet: **Policies**, **Identity providers**, **Logs**,
-**Metrics**, replication rules, and the versioning, CORS and
+to the server yet: **Policies**, **Logs**, **Metrics**, replication rules,
+and the versioning, CORS and
 lifecycle sections of bucket settings. What you enter there stays in your
 browser and does not change how the server behaves.
 

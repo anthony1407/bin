@@ -33,7 +33,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 401 && path !== "/login") onUnauthorized();
+    if (res.status === 401 && !path.startsWith("/login")) onUnauthorized();
     throw new ApiError(res.status, data.error ?? "error", data.message ?? res.statusText, data);
   }
   return data as T;
@@ -183,11 +183,31 @@ export const api = {
     csrfToken = s.csrfToken;
     return s;
   },
+  async loginLDAP(username: string, password: string) {
+    const s = await request<Session>("POST", "/login/ldap", { username, password });
+    csrfToken = s.csrfToken;
+    return s;
+  },
+  loginProviders: () => request<LoginProviders>("GET", "/login/providers"),
+  /** The browser navigates here to start an OpenID sign-in. */
+  openIDLoginURL: (next: string) => `/api/v1/login/openid?next=${enc(next)}`,
   async session() {
     const s = await request<Session>("GET", "/session");
     csrfToken = s.csrfToken;
     return s;
   },
+
+  openIDConfig: () => request<OpenIDConfig>("GET", "/identity/openid"),
+  saveOpenIDConfig: (c: OpenIDConfig & { clientSecret?: string }) => request<OpenIDConfig>("PUT", "/identity/openid", c),
+  testOpenID: (configUrl: string) =>
+    request<{ issuer: string; authorizationEndpoint: string; scopesSupported?: string[]; claimsSupported?: string[] }>(
+      "POST",
+      "/identity/openid/test",
+      { configUrl },
+    ),
+  ldapConfig: () => request<LDAPConfig>("GET", "/identity/ldap"),
+  saveLDAPConfig: (c: LDAPConfig & { lookupBindPassword?: string }) => request<LDAPConfig>("PUT", "/identity/ldap", c),
+  testLDAP: (c: LDAPConfig & { lookupBindPassword?: string }) => request<{ status: string }>("POST", "/identity/ldap/test", c),
   logout: () => request<void>("POST", "/logout"),
   info: () => request<Info>("GET", "/info"),
 
@@ -308,6 +328,41 @@ export const api = {
     return data;
   },
 };
+
+export interface LoginProviders {
+  openid: { displayName: string } | null;
+  ldap: boolean;
+}
+
+export interface OpenIDConfig {
+  enabled: boolean;
+  configUrl: string;
+  clientId: string;
+  /** Read only: whether a client secret is stored (it is never sent back). */
+  clientSecretSet?: boolean;
+  claimName: string;
+  adminValue: string;
+  displayName: string;
+  scopes: string;
+  redirectUri: string;
+  /** Read only: what to register at the provider when redirectUri is empty. */
+  defaultRedirectUri?: string;
+}
+
+export interface LDAPConfig {
+  enabled: boolean;
+  serverAddr: string;
+  tlsMode: "tls" | "starttls" | "none";
+  tlsSkipVerify: boolean;
+  lookupBindDn: string;
+  /** Read only: whether a lookup password is stored (it is never sent back). */
+  lookupBindPasswordSet?: boolean;
+  userDnSearchBase: string;
+  userDnSearchFilter: string;
+  groupSearchBase: string;
+  groupSearchFilter: string;
+  adminGroupDn: string;
+}
 
 export interface Dropzone {
   id: string;

@@ -128,6 +128,54 @@ not from its own `buckets`/`readOnly`: it may do what any one of its
 **enabled** groups allows. A key whose groups are all disabled has no access.
 Leaving every group (or deleting the group) restores the key's own scope.
 
+### Identity providers (OpenID Connect and LDAP)
+
+People can sign in to the console with an OpenID Connect provider or an LDAP
+directory. Only members of the configured admin group get in, with full
+access, like root; root can always sign in, so a broken configuration cannot
+lock anyone out. Sessions are named `openid:<preferred_username|email|sub>`
+or `ldap:<username>` in the audit log.
+
+| Method and path | Body | Response |
+|---|---|---|
+| `GET /api/v1/identity/openid` | | openid config |
+| `PUT /api/v1/identity/openid` | openid config, plus `"clientSecret"` (write only; empty keeps the stored one) | openid config |
+| `POST /api/v1/identity/openid/test` | `{"configUrl"}` | `{"issuer","authorizationEndpoint","scopesSupported"?,"claimsSupported"?}` |
+| `GET /api/v1/identity/ldap` | | ldap config |
+| `PUT /api/v1/identity/ldap` | ldap config, plus `"lookupBindPassword"` (write only) | ldap config |
+| `POST /api/v1/identity/ldap/test` | ldap config | `{"status":"ok"}`: connected and bound with the lookup account |
+
+An openid config is
+`{"enabled","configUrl","clientId","clientSecretSet","claimName","adminValue","displayName","scopes","redirectUri","defaultRedirectUri"}`.
+`configUrl` is the provider's `/.well-known/openid-configuration` address.
+`claimName` (default `groups`) is read from the ID token, or from UserInfo when
+the ID token lacks it; it may be a list or a space or comma separated string,
+and must contain `adminValue`. `redirectUri` defaults to
+`<console>/oauth_callback` (`defaultRedirectUri`), which must be registered at
+the provider.
+
+An ldap config is
+`{"enabled","serverAddr","tlsMode","tlsSkipVerify","lookupBindDn","lookupBindPasswordSet","userDnSearchBase","userDnSearchFilter","groupSearchBase","groupSearchFilter","adminGroupDn"}`.
+`tlsMode` is `tls` (ldaps, default), `starttls` or `none`. In the filters,
+`%s` is the username and `%d` the user's DN, both escaped. Sign-in binds with
+the lookup account, finds exactly one user, binds as that user with the typed
+password (an empty password is refused, as it would be an anonymous bind),
+then searches the groups as the lookup account; `adminGroupDn` is compared
+case-insensitively.
+
+Sign-in endpoints, no session needed:
+
+| Method and path | Body | Response |
+|---|---|---|
+| `GET /api/v1/login/providers` | | `{"openid": {"displayName"} \| null, "ldap": bool}` |
+| `POST /api/v1/login/ldap` | `{"username","password"}` | session, as `POST /login`; `401` wrong credentials, `403 not_allowed` outside the admin group |
+| `GET /api/v1/login/openid?next=/path` | | `302` to the provider |
+| `GET /oauth_callback` | | `302` to `next`, or to `/login?error=<reason>` |
+
+OpenID uses the authorization code flow with PKCE (S256), a nonce, and a state
+bound to the browser by a cookie; each state works once, for 10 minutes.
+LDAP sign-ins share the root login's rate limit per IP.
+
 ### Import from another S3 server
 
 | Method and path | Body | Response |

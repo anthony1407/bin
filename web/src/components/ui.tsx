@@ -71,13 +71,37 @@ export function IconButton({ label, className, children, ...rest }: ButtonHTMLAt
 
 // --- form fields --------------------------------------------------------------------
 
-export function Field({ label, hint, error, children }: { label: string; hint?: ReactNode; error?: string; children: ReactNode }) {
+export function Field({
+  label,
+  hint,
+  error,
+  required,
+  children,
+}: {
+  label: string;
+  hint?: ReactNode;
+  error?: string;
+  /** Marks the field with a red asterisk. */
+  required?: boolean;
+  children: ReactNode;
+}) {
   return (
     <div>
       {/* Only the title and the control are in the label, so the hint is not
           read out as part of the field's name. */}
       <label className="block">
-        <span className="mb-1.5 block text-sm font-medium text-ink">{label}</span>
+        <span className="mb-1.5 block text-sm font-medium text-ink">
+          {label}
+          {required && (
+            <>
+              {" "}
+              <span className="text-danger" aria-hidden="true">
+                *
+              </span>
+              <span className="sr-only">(required)</span>
+            </>
+          )}
+        </span>
         {children}
       </label>
       {error ? (
@@ -101,6 +125,8 @@ export function Input({ className, mono, id, ...rest }: ComponentProps<"input"> 
         !/(^|\s)w-/.test(className ?? "") && "w-full",
         "h-9 rounded-md border border-line-strong bg-surface px-3 text-sm text-ink placeholder:text-faint",
         "focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25",
+        // A field with an error (aria-invalid) gets a red border.
+        "aria-invalid:border-danger aria-invalid:focus:border-danger aria-invalid:focus:ring-danger/25",
         mono && "font-mono",
         className,
       )}
