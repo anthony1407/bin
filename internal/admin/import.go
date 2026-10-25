@@ -159,6 +159,9 @@ var importTransport = func() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
 	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: guardDial}).DialContext
+	// A remote that accepts the connection but never answers must not hold a
+	// job (or an import slot) forever.
+	t.ResponseHeaderTimeout = time.Minute
 	return t
 }()
 

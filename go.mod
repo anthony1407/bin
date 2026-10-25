@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.23.15
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.4
 	github.com/aws/smithy-go v1.28.5
+	github.com/minio/minio-go/v7 v7.4.1
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.61.0
 )
@@ -30,7 +31,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
-	github.com/minio/minio-go/v7 v7.4.1 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

@@ -171,6 +171,30 @@ var migrations = []string{
 		created_at INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL
 	) WITHOUT ROWID;`,
+
+	// 7: per-bucket usage counters, kept by triggers in the same transaction
+	// as every object row change, so quota checks and usage reports read one
+	// row instead of summing the bucket. used_bytes counts every version, as
+	// quotas do; used_objects counts rows that are not delete markers.
+	`ALTER TABLE buckets ADD COLUMN used_objects INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE buckets ADD COLUMN used_bytes INTEGER NOT NULL DEFAULT 0;
+	UPDATE buckets SET
+		used_objects = (SELECT count(*) FROM objects WHERE bucket_id = buckets.id AND delete_marker = 0),
+		used_bytes = (SELECT coalesce(sum(size), 0) FROM objects WHERE bucket_id = buckets.id);
+	CREATE TRIGGER objects_usage_insert AFTER INSERT ON objects BEGIN
+		UPDATE buckets SET used_objects = used_objects + (NEW.delete_marker = 0), used_bytes = used_bytes + NEW.size
+		WHERE id = NEW.bucket_id;
+	END;
+	CREATE TRIGGER objects_usage_delete AFTER DELETE ON objects BEGIN
+		UPDATE buckets SET used_objects = used_objects - (OLD.delete_marker = 0), used_bytes = used_bytes - OLD.size
+		WHERE id = OLD.bucket_id;
+	END;
+	CREATE TRIGGER objects_usage_update AFTER UPDATE OF bucket_id, size, delete_marker ON objects BEGIN
+		UPDATE buckets SET used_objects = used_objects - (OLD.delete_marker = 0), used_bytes = used_bytes - OLD.size
+		WHERE id = OLD.bucket_id;
+		UPDATE buckets SET used_objects = used_objects + (NEW.delete_marker = 0), used_bytes = used_bytes + NEW.size
+		WHERE id = NEW.bucket_id;
+	END;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

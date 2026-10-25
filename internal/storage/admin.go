@@ -232,11 +232,10 @@ type Usage struct {
 	Bytes   int64
 }
 
-// BucketUsage returns the usage of every bucket.
+// BucketUsage returns the usage of every bucket, from the counters the
+// objects triggers keep (migration 7).
 func (s *Store) BucketUsage(ctx context.Context) (map[string]Usage, error) {
-	rows, err := s.read.QueryContext(ctx, `SELECT b.name, count(o.id), coalesce(sum(o.size), 0)
-		FROM buckets b LEFT JOIN objects o ON o.bucket_id = b.id AND o.delete_marker = 0
-		GROUP BY b.id`)
+	rows, err := s.read.QueryContext(ctx, `SELECT name, used_objects, used_bytes FROM buckets`)
 	if err != nil {
 		return nil, err
 	}
@@ -257,14 +256,11 @@ func (s *Store) BucketUsage(ctx context.Context) (map[string]Usage, error) {
 // the write replaces) would take the bucket over its quota.
 func checkQuota(ctx context.Context, q rowsQuerier, bucketID, grow int64) error {
 	var quota, used int64
-	if err := q.QueryRowContext(ctx, `SELECT quota_bytes FROM buckets WHERE id = ?`, bucketID).Scan(&quota); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT quota_bytes, used_bytes FROM buckets WHERE id = ?`, bucketID).Scan(&quota, &used); err != nil {
 		return err
 	}
 	if quota <= 0 || grow <= 0 {
 		return nil
-	}
-	if err := q.QueryRowContext(ctx, `SELECT coalesce(sum(size), 0) FROM objects WHERE bucket_id = ?`, bucketID).Scan(&used); err != nil {
-		return err
 	}
 	if used+grow > quota {
 		return ErrQuotaExceeded
