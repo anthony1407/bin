@@ -448,6 +448,10 @@ func (h *Handler) readReplicationRule(w http.ResponseWriter, r *http.Request, ol
 		_, msg := remoteErrorMessage(err)
 		return fail("endpoint", msg)
 	}
+	if literalHostBlocked(rule.Endpoint) {
+		_, msg := remoteErrorMessage(errBlockedAddress)
+		return fail("endpoint", msg)
+	}
 	return rule, true
 }
 

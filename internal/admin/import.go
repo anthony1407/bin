@@ -153,6 +153,18 @@ func guardDial(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
+// literalHostBlocked reports whether an endpoint names a refused address
+// directly (e.g. http://127.0.0.1:9000), so a form can say so at once. Host
+// names are checked when dialed, which also covers DNS tricks.
+func literalHostBlocked(endpoint string) bool {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return false
+	}
+	ip, err := netip.ParseAddr(u.Hostname())
+	return err == nil && dialGuard("tcp", net.JoinHostPort(ip.String(), "1"), nil) != nil
+}
+
 // dialGuard is guardDial; tests that use a remote on 127.0.0.1 replace it.
 var dialGuard = guardDial
 

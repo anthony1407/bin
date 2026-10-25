@@ -199,11 +199,18 @@ func TestReplicationRuleValidation(t *testing.T) {
 			t.Errorf("%s=%v: %d %v", field, bad, code, out)
 		}
 	}
-	// A failing remote is reported on the rule, without echoing the remote's answer.
-	var rule replicationRuleJSON
+	// A refused address written as an IP is caught by the form.
 	base["endpoint"] = "http://127.0.0.1:1"
+	var refused map[string]string
+	if code := e.call("POST", "/api/v1/replication/rules", base, &refused); code != 400 || refused["field"] != "endpoint" ||
+		!strings.Contains(refused["message"], "loopback") {
+		t.Errorf("loopback endpoint: %d %v", code, refused)
+	}
+	// A remote that cannot be reached is reported on the rule, without echoing its answer.
+	var rule replicationRuleJSON
+	base["endpoint"] = "http://unreachable.invalid"
 	e.call("POST", "/api/v1/replication/rules", base, &rule)
-	if r := e.runRule(rule.ID); r.LastStatus != "error" || !strings.Contains(r.LastError, "loopback") {
+	if r := e.runRule(rule.ID); r.LastStatus != "error" || !strings.Contains(r.LastError, "Could not reach") {
 		t.Errorf("unreachable remote: %+v", r)
 	}
 }
