@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img src="docs/logo-light.svg" alt="bin" height="80">
+  </picture>
+</p>
+
 # bin
 
 **bin** is a single-node, S3-compatible object storage server with a built-in
@@ -24,8 +31,20 @@ serves two ports:
   preview, share links, folders, bucket quota, tags and anonymous access
   policies, scoped access keys, and server status. Light and dark themes, and
   it works on phones.
-- **Access keys**: per-app credentials limited to chosen buckets, optionally
-  read-only, with an expiry date. Secrets are encrypted at rest.
+- **Access keys and groups**: per-app credentials limited to chosen buckets,
+  optionally read-only, with an expiry date. Groups grant the same bucket
+  scope to many keys at once and can be disabled in one step. Secrets are
+  encrypted at rest.
+- **Audit log**: sign-ins, changes and refused requests, from the console and
+  the S3 API, searchable in the console. Reads are not recorded; entries are
+  kept for 30 days by default (configurable in **Settings**, 0 keeps them
+  forever).
+- **Import from another S3 server**: copy buckets from AWS S3, Cloudflare R2,
+  Wasabi, Backblaze B2 or any S3-compatible server into bin, from
+  **Replication → Import**.
+- **Console tools**: an S3 terminal in the browser, ready-to-paste SDK
+  snippets with your endpoint and keys, and a speed test for bandwidth,
+  latency and disk throughput.
 
 ## Quick start
 
@@ -237,10 +256,21 @@ make check        # all of the above
 bin targets single-node deployments: one process, one disk, no replication or
 erasure coding. Not supported yet:
 
-- **Versioning, lifecycle rules, object lock, event webhooks**: planned. The
-  storage schema is already ready for versions.
-- **Replication, KMS encryption, IAM policies and audit**: out of scope.
+- **Versioning, lifecycle rules, CORS, object lock, event webhooks**: planned.
+  The storage schema is already ready for versions; `GetBucketVersioning`
+  answers, but versioning cannot be turned on yet.
+- **Continuous replication, KMS encryption, IAM policies**: out of scope.
+  Importing buckets from another S3 server is a one-time copy, not ongoing
+  replication.
+
+Some console screens are previews of planned features and are not connected
+to the server yet: **Policies**, **Identity providers**, **Logs**,
+**Metrics**, **Dropzone**, replication rules, and the versioning, CORS and
+lifecycle sections of bucket settings. What you enter there stays in your
+browser and does not change how the server behaves.
 
 ## Documentation
 
 - [docs/admin-api.md](docs/admin-api.md): the console's admin API.
+- [docs/compat/README.md](docs/compat/README.md): how real S3 clients behave against other S3 servers, with the captured
+  logs bin's behavior is matched against.
