@@ -13,7 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api, ApiError, type Bucket, type ReplicationRule, type ReplicationRuleInput } from "../api";
-import { Badge, Button, Card, Field, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+import { Badge, Button, Card, Field, Input, Modal, PasswordInput, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 import { bytes, count, dateTime, relative } from "../lib/format";
 
@@ -455,8 +455,7 @@ function RuleForm({
             <Input mono value={form.accessKey} aria-invalid={!!errors.accessKey} onChange={(e) => set("accessKey", e.target.value)} autoComplete="off" />
           </Field>
           <Field label="Secret key" required={!rule?.secretKeySet} hint={rule?.secretKeySet ? "Stored. Leave blank to keep it." : undefined} error={errors.secretKey}>
-            <Input
-              type="password"
+            <PasswordInput
               autoComplete="new-password"
               value={form.secretKey ?? ""}
               aria-invalid={!!errors.secretKey}

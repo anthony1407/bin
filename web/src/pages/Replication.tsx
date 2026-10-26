@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { AlertCircle, ArrowDownLeft, CheckCircle2, CircleAlert } from "lucide-react";
 import { api, ApiError, type Bucket, type ImportJob, type ImportSkipped, type RemoteBucket } from "../api";
-import { PageHeader, Button, Input, Modal, Spinner, cx, useToast } from "../components/ui";
+import { PageHeader, Button, Input, Modal, PasswordInput, Spinner, cx, useToast } from "../components/ui";
 import { ReplicationRules } from "./ReplicationRules";
 import { bytes, count } from "../lib/format";
 
@@ -281,9 +281,8 @@ export function ReplicationPage() {
                 <label htmlFor="import-secret-key" className="label-strip mb-1.5 block">
                   Secret Access Key <span className="text-danger">*</span>
                 </label>
-                <Input
+                <PasswordInput
                   id="import-secret-key"
-                  type="password"
                   autoComplete="current-password"
                   value={importSecretKey}
                   onChange={(e) => {

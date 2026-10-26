@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CheckCircle2, Info, KeyRound, LogIn, PlugZap, Save } from "lucide-react";
 import { api, ApiError, type LDAPConfig, type OpenIDConfig } from "../api";
-import { Badge, Button, Card, Field, Input, PageHeader, Spinner, errorText, useToast } from "../components/ui";
+import { Badge, Button, Card, Field, Input, PageHeader, PasswordInput, Spinner, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 
 // Console sign-in with an OpenID Connect provider or an LDAP directory. Only
@@ -207,8 +207,7 @@ export function OpenIDPage() {
               <Input value={cfg.clientId} aria-invalid={!!errors.clientId} onChange={(e) => set("clientId", e.target.value)} placeholder="bin-console" />
             </Field>
             <Field label="Client Secret" hint={cfg.clientSecretSet ? "Stored. Leave blank to keep it." : "Leave blank for a public client."}>
-              <Input
-                type="password"
+              <PasswordInput
                 autoComplete="new-password"
                 value={secret}
                 onChange={(e) => setSecret(e.target.value)}
@@ -436,8 +435,7 @@ export function LDAPPage() {
               />
             </Field>
             <Field label="Lookup Bind Password" hint={cfg.lookupBindPasswordSet ? "Stored. Leave blank to keep it." : undefined}>
-              <Input
-                type="password"
+              <PasswordInput
                 autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

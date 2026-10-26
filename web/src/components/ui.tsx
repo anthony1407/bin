@@ -10,7 +10,7 @@ import {
   type ComponentProps,
   type ReactNode,
 } from "react";
-import { CircleAlert, CircleCheck, X } from "lucide-react";
+import { CircleAlert, CircleCheck, Eye, EyeOff, X } from "lucide-react";
 
 export function cx(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(" ");
@@ -151,6 +151,25 @@ export function Input({ className, mono, id, ...rest }: ComponentProps<"input"> 
         className,
       )}
     />
+  );
+}
+
+// PasswordInput is an Input for secrets, with a button that shows what was typed.
+export function PasswordInput({ className, ...rest }: Omit<ComponentProps<typeof Input>, "type">) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <Input {...rest} type={show ? "text" : "password"} className={cx(className, "pr-10")} />
+      <button
+        type="button"
+        onClick={() => setShow(!show)}
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-faint hover:text-ink"
+        aria-label={show ? "Hide secret" : "Show secret"}
+        title={show ? "Hide" : "Show"}
+      >
+        {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+      </button>
+    </div>
   );
 }
 
