@@ -17,11 +17,13 @@ import (
 // MaxKeyLength is the longest object key S3 accepts, in bytes.
 const MaxKeyLength = 1024
 
-// ObjectInfo describes the current version of an object.
+// ObjectInfo describes one version of an object, usually the current one.
 type ObjectInfo struct {
 	Bucket       string
 	Key          string
-	VersionID    string
+	VersionID    string // NullVersion unless written with versioning enabled
+	IsLatest     bool   // set by version lookups and listings
+	DeleteMarker bool
 	Size         int64
 	ETag         string // unquoted; "<md5>-<n>" for multipart objects
 	SHA256       []byte // whole-object hash; nil for multipart objects (see parts)
@@ -104,8 +106,9 @@ func ValidateKey(key string) error {
 	return nil
 }
 
-// PutObject stores size bytes from r as bucket/key, replacing the current
-// object. Nothing becomes visible until the data is durable and verified.
+// PutObject stores size bytes from r as bucket/key: a new version when the
+// bucket has versioning enabled, otherwise a replacement of the null version.
+// Nothing becomes visible until the data is durable and verified.
 func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, size int64, opts PutOptions) (ObjectInfo, error) {
 	if err := ValidateKey(key); err != nil {
 		return ObjectInfo{}, err
@@ -132,7 +135,7 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 	info := ObjectInfo{
 		Bucket:      bucket,
 		Key:         key,
-		VersionID:   "null",
+		IsLatest:    true,
 		Size:        n,
 		ETag:        hex.EncodeToString(sums.MD5),
 		SHA256:      sums.SHA256,
@@ -156,13 +159,13 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 		if err != nil {
 			return err
 		}
-		if replaced, err = s.replaceLatest(ctx, tx, bid, key, opts.IfMatch, opts.IfNoneMatch); err != nil {
+		if info.VersionID, replaced, err = s.beginWrite(ctx, tx, bid, key, opts.IfMatch, opts.IfNoneMatch); err != nil {
 			return err
 		}
 		if err := checkQuota(ctx, tx, bid, info.Size); err != nil {
-			return err // the replaced object is already excluded from the usage
+			return err // a replaced null version is already excluded from the usage
 		}
-		_, err = insertObject(ctx, tx, bid, info)
+		_, err = insertLatest(ctx, tx, bid, info)
 		return err
 	})
 	if err != nil {
@@ -185,74 +188,37 @@ func (s *Store) precheckQuota(ctx context.Context, bucket, key string, size int6
 		return err
 	}
 	grow := size
-	if cur, err := latest(ctx, s.read, bid, key); err == nil {
-		grow -= cur.Size
+	// Only the null version is replaced; with versioning enabled every
+	// write adds to the usage.
+	if v, err := bucketVersioning(ctx, s.read, bid); err == nil && v != VersioningEnabled {
+		if cur, err := loadVersion(ctx, s.read, bid, key, NullVersion); err == nil {
+			grow -= cur.Size
+		}
 	}
 	return checkQuota(ctx, s.read, bid, grow)
 }
 
-// replaceLatest evaluates a conditional write against the current object and
-// drops it, returning the blobs queued for deletion.
-func (s *Store) replaceLatest(ctx context.Context, tx *sql.Tx, bid int64, key, ifMatch, ifNoneMatch string) ([]string, error) {
-	cur, err := latest(ctx, tx, bid, key)
-	if err != nil && !errors.Is(err, ErrNoSuchKey) {
-		return nil, err
-	}
-	exists := err == nil
-	if ifNoneMatch != "" && exists && (ifNoneMatch == "*" || etagMatches(ifNoneMatch, cur.ETag)) {
-		return nil, ErrPrecondition
-	}
-	if ifMatch != "" {
-		if !exists {
-			return nil, ErrNoSuchKey
-		}
-		if !etagMatches(ifMatch, cur.ETag) {
-			return nil, ErrPrecondition
-		}
-	}
-	if !exists {
-		return nil, nil
-	}
-	return dropVersion(ctx, tx, bid, key, "null", s.nowNanos())
-}
-
-// StatObject returns the metadata of bucket/key.
+// StatObject returns the metadata of the current version of bucket/key. A key
+// whose latest version is a delete marker does not exist.
 func (s *Store) StatObject(ctx context.Context, bucket, key string) (ObjectInfo, error) {
-	bid, err := bucketID(ctx, s.read, bucket)
-	if err != nil {
-		return ObjectInfo{}, err
+	info, err := s.StatVersion(ctx, bucket, key, "")
+	if errors.Is(err, ErrDeleteMarker) {
+		return ObjectInfo{}, ErrNoSuchKey
 	}
-	info, err := latest(ctx, s.read, bid, key)
-	if err != nil {
-		return ObjectInfo{}, err
-	}
-	info.Bucket = bucket
-	return info, nil
+	return info, err
 }
 
-// DeleteObject removes bucket/key. Deleting a missing key succeeds, as in S3.
+// DeleteObject deletes bucket/key as DeleteVersion does without a version ID.
+// Deleting a missing key succeeds, as in S3.
 func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
-	var dropped []string
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		bid, err := bucketID(ctx, tx, bucket)
-		if err != nil {
-			return err
-		}
-		dropped, err = dropVersion(ctx, tx, bid, key, "null", s.nowNanos())
-		if errors.Is(err, ErrNoSuchKey) {
-			return nil
-		}
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	s.collect(ctx, dropped...)
-	return nil
+	_, err := s.DeleteVersion(ctx, bucket, key, "")
+	return err
 }
 
 // CopyOptions configures CopyObject.
 type CopyOptions struct {
+	// SourceVersionID copies that version of the source instead of its latest.
+	SourceVersionID string
 	// Check inspects the source before any data is copied, e.g. to evaluate
 	// x-amz-copy-source-if-* conditions. An error aborts the copy.
 	Check func(src ObjectInfo) error
@@ -270,7 +236,7 @@ type CopyOptions struct {
 // object. The source data is verified against its SHA-256 (per part for
 // multipart sources) while it is copied; corrupt data is not copied.
 func (s *Store) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey string, opts CopyOptions) (ObjectInfo, error) {
-	src, data, err := s.OpenObject(ctx, srcBucket, srcKey)
+	src, data, err := s.openSource(ctx, srcBucket, srcKey, opts.SourceVersionID)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
@@ -295,6 +261,15 @@ func (s *Store) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, ds
 		}
 	}
 	return s.PutObject(ctx, dstBucket, dstKey, data.Verified(), src.Size, put)
+}
+
+// openSource opens the source of a copy: a deleted object does not exist, and
+// naming a delete marker by its version ID fails with ErrDeleteMarker.
+func (s *Store) openSource(ctx context.Context, bucket, key, versionID string) (ObjectInfo, *ObjectData, error) {
+	if versionID == "" {
+		return s.OpenObject(ctx, bucket, key)
+	}
+	return s.OpenVersion(ctx, bucket, key, versionID)
 }
 
 func containsAlg(list []checksum.Algorithm, a checksum.Algorithm) bool {
@@ -334,27 +309,45 @@ func nonNil(m map[string]string) map[string]string {
 
 // --- rows -------------------------------------------------------------------
 
-const objectColumns = `id, version_id, blob, size, etag, sha256, content_type, headers, user_meta,
-	checksums, checksum_type, parts_count, modified_at`
+const objectColumns = `id, version_id, is_latest, delete_marker, blob, size, etag, sha256, content_type,
+	headers, user_meta, checksums, checksum_type, parts_count, modified_at`
 
 type rowsQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// latest returns the current, non-deleted version of a key.
+// latest returns the current version of a key; a key whose latest version is
+// a delete marker does not exist.
 func latest(ctx context.Context, q rowsQuerier, bucketID int64, key string) (ObjectInfo, error) {
+	info, err := loadVersion(ctx, q, bucketID, key, "")
+	if err == nil && info.DeleteMarker {
+		return ObjectInfo{}, ErrNoSuchKey
+	}
+	return info, err
+}
+
+// loadVersion returns one version of a key, delete markers included: the
+// given versionID, or the latest version when versionID is "".
+func loadVersion(ctx context.Context, q rowsQuerier, bucketID int64, key, versionID string) (ObjectInfo, error) {
 	var (
 		info                ObjectInfo
 		id, modified        int64
 		blob                sql.NullString
 		headers, meta, sums string
 	)
-	err := q.QueryRowContext(ctx, `SELECT `+objectColumns+` FROM objects
-		WHERE bucket_id = ? AND key = ? AND is_latest = 1 AND delete_marker = 0`, bucketID, key).
-		Scan(&id, &info.VersionID, &blob, &info.Size, &info.ETag, &info.SHA256, &info.ContentType,
-			&headers, &meta, &sums, &info.ChecksumType, &info.PartsCount, &modified)
+	query, args := `SELECT `+objectColumns+` FROM objects WHERE bucket_id = ? AND key = ? AND is_latest = 1`, []any{bucketID, key}
+	if versionID != "" {
+		query = `SELECT ` + objectColumns + ` FROM objects WHERE bucket_id = ? AND key = ? AND version_id = ?`
+		args = append(args, versionID)
+	}
+	err := q.QueryRowContext(ctx, query, args...).
+		Scan(&id, &info.VersionID, &info.IsLatest, &info.DeleteMarker, &blob, &info.Size, &info.ETag, &info.SHA256,
+			&info.ContentType, &headers, &meta, &sums, &info.ChecksumType, &info.PartsCount, &modified)
 	if errors.Is(err, sql.ErrNoRows) {
+		if versionID != "" {
+			return ObjectInfo{}, ErrNoSuchVersion
+		}
 		return ObjectInfo{}, ErrNoSuchKey
 	}
 	if err != nil {
@@ -399,7 +392,8 @@ func objectParts(ctx context.Context, q rowsQuerier, objectID int64) ([]partData
 	return parts, rows.Err()
 }
 
-// insertObject stores an object row (and its parts) and returns its row ID.
+// insertObject stores an object row (and its parts) as the latest version
+// and returns its row ID; see insertLatest.
 func insertObject(ctx context.Context, tx *sql.Tx, bucketID int64, o ObjectInfo) (int64, error) {
 	headers, _ := json.Marshal(o.Headers)
 	meta, _ := json.Marshal(o.UserMeta)
@@ -409,10 +403,10 @@ func insertObject(ctx context.Context, tx *sql.Tx, bucketID int64, o ObjectInfo)
 		blob = o.blob
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO objects (bucket_id, key, version_id, is_latest, blob,
+	err := tx.QueryRowContext(ctx, `INSERT INTO objects (bucket_id, key, version_id, is_latest, delete_marker, blob,
 		size, etag, sha256, content_type, headers, user_meta, checksums, checksum_type, parts_count, modified_at)
-		VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		bucketID, o.Key, o.VersionID, blob, o.Size, o.ETag, o.SHA256, o.ContentType,
+		VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		bucketID, o.Key, o.VersionID, o.DeleteMarker, blob, o.Size, o.ETag, o.SHA256, o.ContentType,
 		string(headers), string(meta), string(sums), o.ChecksumType, len(o.parts), o.ModTime.UnixNano()).Scan(&id)
 	if err != nil {
 		return 0, err

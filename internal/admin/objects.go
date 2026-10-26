@@ -26,7 +26,10 @@ import (
 const maxSingleUpload = 5 << 30
 
 type objectJSON struct {
-	Key          string            `json:"key"`
+	Key string `json:"key"`
+	// VersionID is left out for objects of buckets that were never
+	// versioned; in a listing of deleted objects it names the delete marker.
+	VersionID    string            `json:"versionId,omitempty"`
 	Size         int64             `json:"size"`
 	ETag         string            `json:"etag"`
 	LastModified time.Time         `json:"lastModified"`
@@ -58,8 +61,11 @@ func (h *Handler) withShares(r *http.Request, bucket string, objs []objectJSON) 
 
 func toObjectJSON(o storage.ObjectInfo) objectJSON {
 	j := objectJSON{
-		Key: o.Key, Size: o.Size, ETag: o.ETag, LastModified: o.ModTime, ContentType: o.ContentType,
+		Key: o.Key, VersionID: o.VersionID, Size: o.Size, ETag: o.ETag, LastModified: o.ModTime, ContentType: o.ContentType,
 		Headers: o.Headers, Metadata: o.UserMeta, PartsCount: o.PartsCount,
+	}
+	if j.VersionID == storage.NullVersion {
+		j.VersionID = ""
 	}
 	if len(o.Checksums) > 0 {
 		j.Checksums = map[string]string{}
@@ -71,7 +77,8 @@ func toObjectJSON(o storage.ObjectInfo) objectJSON {
 }
 
 // listObjects lists a "folder" (prefix + delimiter), or searches under the
-// prefix when ?search= is set.
+// prefix when ?search= is set. With ?deleted=true it lists the objects of the
+// folder whose latest version is a delete marker.
 func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	bucket, prefix := r.PathValue("bucket"), q.Get("prefix")
@@ -104,7 +111,7 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 		delimiter = q.Get("delimiter")
 	}
 	res, err := h.opts.Store.ListObjects(r.Context(), bucket, storage.ListOptions{
-		Prefix: prefix, Delimiter: delimiter, After: q.Get("after"), MaxKeys: limit,
+		Prefix: prefix, Delimiter: delimiter, After: q.Get("after"), MaxKeys: limit, Deleted: q.Get("deleted") == "true",
 	})
 	if err != nil {
 		h.storageError(w, r, err)
@@ -123,8 +130,14 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// statObject returns an object's metadata: its current version, or the one
+// named by ?versionId=.
 func (h *Handler) statObject(w http.ResponseWriter, r *http.Request) {
-	info, err := h.opts.Store.StatObject(r.Context(), r.PathValue("bucket"), r.URL.Query().Get("key"))
+	q := r.URL.Query()
+	info, err := h.opts.Store.StatVersion(r.Context(), r.PathValue("bucket"), q.Get("key"), q.Get("versionId"))
+	if errors.Is(err, storage.ErrDeleteMarker) && !q.Has("versionId") {
+		err = storage.ErrNoSuchKey
+	}
 	if err != nil {
 		h.storageError(w, r, err)
 		return
@@ -132,12 +145,17 @@ func (h *Handler) statObject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toObjectJSON(info))
 }
 
-// download streams an object for saving (attachment) or previewing (?inline=1).
-// Every response is sandboxed by CSP: the console origin also serves the admin
-// API, and an uploaded HTML or SVG file must never run scripts in it.
+// download streams an object (or the version named by ?versionId=) for saving
+// (attachment) or previewing (?inline=1). Every response is sandboxed by CSP:
+// the console origin also serves the admin API, and an uploaded HTML or SVG
+// file must never run scripts in it.
 func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
-	info, data, err := h.opts.Store.OpenObject(r.Context(), r.PathValue("bucket"), key)
+	q := r.URL.Query()
+	key := q.Get("key")
+	info, data, err := h.opts.Store.OpenVersion(r.Context(), r.PathValue("bucket"), key, q.Get("versionId"))
+	if errors.Is(err, storage.ErrDeleteMarker) && !q.Has("versionId") {
+		err = storage.ErrNoSuchKey
+	}
 	if err != nil {
 		h.storageError(w, r, err)
 		return
@@ -285,6 +303,82 @@ func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request) {
 	}
 	server.Annotate(r.Context(), slog.Int("deleted", deleted))
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted})
+}
+
+// --- versions ----------------------------------------------------------------------------
+
+// maxVersionsListed bounds the history the console shows for one object.
+const maxVersionsListed = 1000
+
+type versionJSON struct {
+	VersionID    string    `json:"versionId"`
+	IsLatest     bool      `json:"isLatest"`
+	DeleteMarker bool      `json:"deleteMarker"`
+	Size         int64     `json:"size"`
+	ETag         string    `json:"etag,omitempty"`
+	LastModified time.Time `json:"lastModified"`
+}
+
+// listVersions returns the history of one object, newest first.
+func (h *Handler) listVersions(w http.ResponseWriter, r *http.Request) {
+	versions, err := h.opts.Store.ObjectVersions(r.Context(), r.PathValue("bucket"), r.URL.Query().Get("key"), maxVersionsListed+1)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	out := make([]versionJSON, 0, len(versions))
+	for i, v := range versions {
+		if i == maxVersionsListed {
+			break
+		}
+		out = append(out, versionJSON{VersionID: v.VersionID, IsLatest: v.IsLatest, DeleteMarker: v.DeleteMarker,
+			Size: v.Size, ETag: v.ETag, LastModified: v.ModTime})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versions": out, "truncated": len(versions) > maxVersionsListed})
+}
+
+// deleteVersion removes one version of an object for good. Removing the
+// delete marker that hides an object brings the object back.
+func (h *Handler) deleteVersion(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	key, versionID := q.Get("key"), q.Get("versionId")
+	if versionID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_version", "Name the version to delete with versionId.")
+		return
+	}
+	setAuditResource(r, key+" (version "+versionID+")")
+	res, err := h.opts.Store.DeleteVersion(r.Context(), r.PathValue("bucket"), key, versionID)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	server.Annotate(r.Context(), slog.String("key", key), slog.String("version", versionID))
+	writeJSON(w, http.StatusOK, map[string]any{"versionId": res.VersionID, "deleteMarker": res.DeleteMarker})
+}
+
+// restoreVersion makes an older version current again by copying it over the
+// object, as S3 clients do; the history keeps every version.
+func (h *Handler) restoreVersion(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Key       string `json:"key"`
+		VersionID string `json:"versionId"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.VersionID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_version", "Name the version to restore.")
+		return
+	}
+	bucket := r.PathValue("bucket")
+	setAuditResource(r, in.Key+" (version "+in.VersionID+")")
+	info, err := h.opts.Store.CopyObject(r.Context(), bucket, in.Key, bucket, in.Key, storage.CopyOptions{SourceVersionID: in.VersionID})
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	server.Annotate(r.Context(), slog.String("key", in.Key), slog.String("version", in.VersionID))
+	writeJSON(w, http.StatusOK, toObjectJSON(info))
 }
 
 // share returns a presigned GET URL for an object, signed with the internal

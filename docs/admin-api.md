@@ -37,7 +37,7 @@ Errors always look like `{"error": "<code>", "message": "<human text>"}`.
 | `PUT /api/v1/settings` | any of `{"shareMaxExpirySeconds": 60..604800, "auditRetentionDays": 0..3650}` (0 days: keep forever) | settings |
 | `POST /api/v1/settings/revoke-share-links` | | `204`; every share link issued so far stops working |
 | `POST /api/v1/scrub` | `{"buckets": [...]}` (empty or missing: all buckets) | starts an integrity scan in the background; `404` for an unknown bucket, `409` if one is running |
-| `GET /api/v1/scrub` | | `{"state": idle/running/done/failed, "buckets", "objects", "bytes", "corrupt": [{"bucket","key"}]}` |
+| `GET /api/v1/scrub` | | `{"state": idle/running/done/failed, "buckets", "objects", "bytes", "corrupt": [{"bucket","key","versionId"?}]}`; every stored version is read, older ones included |
 
 ### Buckets
 
@@ -46,13 +46,25 @@ Errors always look like `{"error": "<code>", "message": "<human text>"}`.
 | `GET /api/v1/buckets` | | `{"buckets": [bucket]}` |
 | `POST /api/v1/buckets` | `{"name", "policy"?}` (policy below; default private) | `201` bucket |
 | `GET /api/v1/buckets/{bucket}` | | bucket |
-| `DELETE /api/v1/buckets/{bucket}` | `?force=true` deletes the content first | `204` |
+| `DELETE /api/v1/buckets/{bucket}` | `?force=true` deletes the content first, every version and delete marker included | `204` |
 | `PUT /api/v1/buckets/{bucket}/tags` | `{"tags": {"k":"v"}}` (replaces all; `{}` removes) | bucket |
 | `PUT /api/v1/buckets/{bucket}/quota` | `{"bytes": n}` (0 = unlimited) | bucket |
 | `PUT /api/v1/buckets/{bucket}/policy` | policy (below) | bucket |
+| `PUT /api/v1/buckets/{bucket}/versioning` | `{"status": "Enabled" \| "Suspended"}` | bucket; `400 invalid_versioning` otherwise |
+| `PUT /api/v1/buckets/{bucket}/cors` | `{"rules": [rule]}` (replaces all; `[]` removes) | bucket; `400 invalid_cors` with the reason |
 
 A bucket is
-`{"name","createdAt","objects","size","quotaBytes","policy","tags","versioning"}`.
+`{"name","createdAt","objects","size","quotaBytes","policy","tags","versioning","cors"}`.
+`versioning` is `""` (never versioned), `"Enabled"` or `"Suspended"`; a
+versioned bucket never returns to `""`, as in S3. With versioning, `objects`
+and `size` count every stored version, as the quota does.
+
+A CORS rule is
+`{"id"?, "allowedOrigins": [...], "allowedMethods": [...], "allowedHeaders"?: [...], "exposeHeaders"?: [...], "maxAgeSeconds"?}`,
+the same rules the S3 API reads and writes with `GetBucketCors`/`PutBucketCors`:
+methods among `GET PUT POST DELETE HEAD`, at most one `*` per origin and per
+allowed header, at most 100 rules. The first rule that matches the origin, the
+method and (in a preflight) every requested header wins.
 
 A policy controls anonymous (unsigned) S3 access:
 
@@ -80,12 +92,15 @@ Object keys travel in the `key` query parameter (URL-encoded).
 
 | Method and path | Body / query | Response |
 |---|---|---|
-| `GET /api/v1/buckets/{bucket}/objects` | `prefix`, `delimiter` (default `/`), `after`, `limit` (≤1000), or `search` | `{"objects": [object], "prefixes": [...], "truncated", "nextAfter"}` |
-| `GET /api/v1/buckets/{bucket}/object?key=` | | object with headers, metadata and checksums |
-| `GET /api/v1/buckets/{bucket}/download?key=` | `inline=1` to preview; `Range` supported | the bytes (sandboxed by CSP) |
+| `GET /api/v1/buckets/{bucket}/objects` | `prefix`, `delimiter` (default `/`), `after`, `limit` (≤1000), or `search`; `deleted=true` lists the objects whose latest version is a delete marker | `{"objects": [object], "prefixes": [...], "truncated", "nextAfter"}` |
+| `GET /api/v1/buckets/{bucket}/object?key=` | `versionId` for an older version | object with headers, metadata and checksums; `409 delete_marker` for a marker's version ID |
+| `GET /api/v1/buckets/{bucket}/download?key=` | `inline=1` to preview; `versionId`; `Range` supported | the bytes (sandboxed by CSP) |
+| `GET /api/v1/buckets/{bucket}/versions?key=` | | `{"versions": [{"versionId","isLatest","deleteMarker","size","etag","lastModified"}], "truncated"}`, newest first, at most 1000 |
+| `DELETE /api/v1/buckets/{bucket}/versions?key=&versionId=` | | `{"versionId","deleteMarker"}`; removes that version for good. Removing the marker that hides an object brings it back |
+| `POST /api/v1/buckets/{bucket}/versions/restore` | `{"key", "versionId"}` | object: the version copied over the key as a new version |
 | `PUT /api/v1/buckets/{bucket}/upload?key=` | raw body, `Content-Length` required, up to 5 GiB | `201` object |
 | `POST /api/v1/buckets/{bucket}/folders` | `{"prefix"}` | `201`; creates the empty `prefix/` object |
-| `DELETE /api/v1/buckets/{bucket}/objects` | `{"keys": [...], "prefixes": [...]}` | `{"deleted": n}` |
+| `DELETE /api/v1/buckets/{bucket}/objects` | `{"keys": [...], "prefixes": [...]}` | `{"deleted": n}`; in a versioned bucket each delete adds a delete marker and keeps the versions |
 | `POST /api/v1/buckets/{bucket}/share` | `{"key", "expiresIn": seconds, "download": bool}` | `{"id", "url", "expiresAt"}` |
 | `GET /api/v1/buckets/{bucket}/shares?key=` | | `{"links": [{"id","url","download","createdBy","createdAt","expiresAt"}]}`: the object's live links, longest-lived first |
 | `DELETE /api/v1/shares/{id}` | | `204`; that link stops working at once, the others keep working |
@@ -93,6 +108,9 @@ Object keys travel in the `key` query parameter (URL-encoded).
 | `PUT /api/v1/buckets/{bucket}/uploads/{id}/parts/{n}?key=` | raw body, ≥ 5 MiB except the last | `{"number","etag","size"}` |
 | `POST /api/v1/buckets/{bucket}/uploads/{id}/complete?key=` | `{"parts": [{"number","etag"}]}` | object |
 | `DELETE /api/v1/buckets/{bucket}/uploads/{id}?key=` | | `204` |
+
+Objects carry `versionId` once their bucket has been versioned; objects of a
+never-versioned bucket (the S3 "null" version) leave it out.
 
 Share links are presigned S3 URLs signed with an internal read-only key
 (never the root key). Their base URL is `BIN_PUBLIC_URL`, or else the host

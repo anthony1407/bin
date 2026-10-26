@@ -30,7 +30,6 @@ import {
   Link2,
   Lock,
   Maximize2,
-  Plus,
   RefreshCw,
   RotateCcw,
   Save,
@@ -45,7 +44,7 @@ import {
 } from "lucide-react";
 import JSZip from "jszip";
 import Editor, { DiffEditor } from "../components/CodeEditor";
-import { api, downloadObject, uploadFile, type Bucket, type ObjectInfo, type ShareLink } from "../api";
+import { ApiError, api, downloadObject, uploadFile, type Bucket, type ObjectInfo, type ObjectVersion, type ShareLink } from "../api";
 import { baseName, bytes, count, dateTime, duration, relative, timeLeft } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
@@ -1019,6 +1018,219 @@ function BucketAnalyticsModal({
   );
 }
 
+// --- versions ------------------------------------------------------------------------------
+
+/** A file to compare: the current object, or one of its versions. */
+interface DiffFile {
+  key: string;
+  versionId?: string;
+  label?: string;
+}
+
+const shortVersion = (id: string) => (id === "null" ? "null" : id.slice(0, 8));
+
+/** The history of one object, newest first, with download, compare, restore and delete. */
+function VersionsPanel({
+  bucket,
+  current,
+  onDiff,
+  onChanged,
+}: {
+  bucket: string;
+  current: ObjectInfo;
+  onDiff?: (files: DiffFile[]) => void;
+  onChanged: () => void;
+}) {
+  const [versions, setVersions] = useState<ObjectVersion[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<ObjectVersion | null>(null);
+  const [downloaded, setDownloaded] = useState<{ id: string; bytes: number } | null>(null);
+  const toast = useToast();
+  const key = current.key;
+
+  const load = useCallback(() => {
+    api
+      .versions(bucket, key)
+      .then((r) => {
+        setVersions(r.versions);
+        setTruncated(r.truncated);
+      })
+      .catch((e) => toast("error", errorText(e)));
+  }, [bucket, key, toast]);
+  useEffect(load, [load]);
+
+  async function restore(v: ObjectVersion) {
+    setBusy(v.versionId);
+    try {
+      await api.restoreVersion(bucket, key, v.versionId);
+      toast("ok", `Version ${shortVersion(v.versionId)} is current again.`);
+      load();
+      onChanged();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function remove(v: ObjectVersion) {
+    setBusy(v.versionId);
+    try {
+      await api.deleteVersion(bucket, key, v.versionId);
+      toast("ok", v.deleteMarker ? `${baseName(key)} is back.` : `Version ${shortVersion(v.versionId)} deleted.`);
+      setRemoving(null);
+      load();
+      onChanged();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function download(v: ObjectVersion) {
+    setDownloaded({ id: v.versionId, bytes: 0 });
+    try {
+      await downloadObject(
+        bucket,
+        { key, versionId: v.versionId, size: v.size, etag: v.etag ?? "", lastModified: v.lastModified, contentType: current.contentType },
+        (n) => setDownloaded({ id: v.versionId, bytes: n }),
+      );
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setDownloaded(null);
+    }
+  }
+
+  if (!versions) return <Spinner className="mx-auto my-10" />;
+
+  const latest = versions[0];
+  const kind = kindOf(key, current.contentType);
+  const comparable = !!onDiff && (kind === "text" || kind === "code");
+  const unversioned = versions.length === 1 && versions[0].versionId === "null";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="label-strip">version history</span>
+        <span className="font-mono text-xs text-muted">
+          {count(versions.length)}
+          {truncated ? "+" : ""} {versions.length === 1 ? "version" : "versions"}
+        </span>
+      </div>
+      {unversioned && (
+        <p className="rounded-md border border-line bg-sunken/40 px-3 py-2 text-xs text-muted">
+          This object has a single version. Turn on versioning in the{" "}
+          <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="text-accent hover:underline">
+            bucket settings
+          </Link>{" "}
+          to keep the previous versions of overwritten or deleted files.
+        </p>
+      )}
+      <ol className="space-y-2">
+        {versions.map((v) => (
+          <li
+            key={v.versionId}
+            className={cx("space-y-2 rounded-md border p-3", v.isLatest ? "border-accent/40 bg-accent-soft/30" : "border-line")}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                {v.isLatest && <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-white">CURRENT</span>}
+                {v.deleteMarker && <span className="rounded-full bg-danger-soft px-2 py-0.5 text-[10px] font-semibold text-danger">DELETED</span>}
+                <span className="truncate font-mono text-xs" title={v.versionId}>
+                  {shortVersion(v.versionId)}
+                </span>
+              </div>
+              <span className="shrink-0 text-xs text-muted" title={dateTime(v.lastModified)}>
+                {relative(v.lastModified)}
+              </span>
+            </div>
+            {v.deleteMarker ? (
+              <p className="text-xs text-muted">
+                {v.isLatest ? "The file was deleted here. Remove this marker to bring it back." : "The file was deleted here, then written again."}
+              </p>
+            ) : (
+              <div className="flex gap-4 font-mono text-xs text-muted">
+                <span>{bytes(v.size)}</span>
+                <span className="truncate" title={v.etag}>
+                  {v.etag}
+                </span>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-line pt-2 text-xs">
+              {!v.deleteMarker && (
+                <button type="button" onClick={() => download(v)} disabled={!!downloaded} className="flex items-center gap-1 text-muted hover:text-ink">
+                  <Download className="size-3" />
+                  {downloaded?.id === v.versionId && v.size ? `${Math.floor((downloaded.bytes / v.size) * 100)}%` : "Download"}
+                </button>
+              )}
+              {!v.deleteMarker && !v.isLatest && comparable && !latest.deleteMarker && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onDiff?.([
+                      { key, versionId: v.versionId, label: `${baseName(key)} @ ${shortVersion(v.versionId)}` },
+                      { key, label: `${baseName(key)} (current)` },
+                    ])
+                  }
+                  className="flex items-center gap-1 text-muted hover:text-ink"
+                >
+                  <GitCompare className="size-3" /> Compare with current
+                </button>
+              )}
+              {!v.deleteMarker && !v.isLatest && (
+                <button type="button" onClick={() => restore(v)} disabled={busy !== null} className="flex items-center gap-1 text-accent hover:underline">
+                  <RotateCcw className="size-3" /> {busy === v.versionId ? "Restoring…" : "Restore"}
+                </button>
+              )}
+              {v.deleteMarker && v.isLatest ? (
+                <button type="button" onClick={() => remove(v)} disabled={busy !== null} className="flex items-center gap-1 text-accent hover:underline">
+                  <Undo2 className="size-3" /> {busy === v.versionId ? "Restoring…" : "Undelete"}
+                </button>
+              ) : (
+                <button type="button" onClick={() => setRemoving(v)} disabled={busy !== null} className="flex items-center gap-1 text-muted hover:text-danger">
+                  <Trash2 className="size-3" /> Delete version
+                </button>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+      <Modal
+        open={removing !== null}
+        onClose={() => busy === null && setRemoving(null)}
+        title="Delete version"
+        footer={
+          <>
+            <Button disabled={busy !== null} onClick={() => setRemoving(null)}>
+              Cancel
+            </Button>
+            <Button variant="danger" busy={busy !== null} icon={<Trash2 className="size-4" />} onClick={() => removing && remove(removing)}>
+              Delete forever
+            </Button>
+          </>
+        }
+      >
+        {removing && (
+          <p className="text-sm">
+            {removing.deleteMarker ? (
+              <>Remove this delete marker from the history of <span className="font-mono">{baseName(key)}</span>?</>
+            ) : (
+              <>
+                Permanently delete version <span className="font-mono">{shortVersion(removing.versionId)}</span> of{" "}
+                <span className="font-mono">{baseName(key)}</span>
+                {removing.isLatest ? "? The previous version becomes the current one." : "? This cannot be undone."}
+              </>
+            )}
+          </p>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
 // --- tabbed detail drawer ---------------------------------------------------------------
 
 type DetailTab = "preview" | "metadata" | "versions" | "info";
@@ -1097,6 +1309,7 @@ function Detail({
   onShare,
   onDeleted,
   onDiff,
+  onVersionsChanged,
   publicAccess,
 }: {
   bucket: string;
@@ -1104,7 +1317,9 @@ function Detail({
   onClose: () => void;
   onShare: (o: ObjectInfo) => void;
   onDeleted: () => void;
-  onDiff?: (files: string[]) => void;
+  onDiff?: (files: DiffFile[]) => void;
+  /** A version was restored or removed: the listing may have changed. */
+  onVersionsChanged?: () => void;
   /** Omitted until the bucket policy is known. */
   publicAccess?: { reason: PublicReason; s3Endpoint: string; busy: boolean; onChange: (on: boolean) => void };
 }) {
@@ -1139,21 +1354,44 @@ function Detail({
     }
   }
 
+  // A deleted object of a versioned bucket has no current version, only its history.
+  const [gone, setGone] = useState(false);
+  const refresh = useCallback(
+    () =>
+      api
+        .stat(bucket, objectKey)
+        .then((i) => {
+          setInfo(i);
+          setGone(false);
+        })
+        .catch((e) => {
+          if (e instanceof ApiError && e.status === 404) {
+            setInfo(null);
+            setGone(true);
+            setTab("versions");
+          } else toast("error", errorText(e));
+        }),
+    [bucket, objectKey, toast],
+  );
+
   useEffect(() => {
     setInfo(null);
+    setGone(false);
     setTab("preview");
-    api.stat(bucket, objectKey).then(setInfo).catch((e) => toast("error", errorText(e)));
-  }, [bucket, objectKey, toast]);
+    refresh();
+  }, [refresh]);
 
   const kind = info ? kindOf(info.key, info.contentType) : null;
   const canPreview = kind && kind !== "other" && kind !== "archive";
 
-  const tabs: { id: DetailTab; label: string; icon: typeof Eye }[] = [
-    { id: "preview", label: "Preview", icon: Eye },
-    { id: "metadata", label: "Metadata", icon: Tag },
-    { id: "versions", label: "Versions", icon: History },
-    { id: "info", label: "Details", icon: Info },
-  ];
+  const tabs: { id: DetailTab; label: string; icon: typeof Eye }[] = gone
+    ? [{ id: "versions", label: "Versions", icon: History }]
+    : [
+        { id: "preview", label: "Preview", icon: Eye },
+        { id: "metadata", label: "Metadata", icon: Tag },
+        { id: "versions", label: "Versions", icon: History },
+        { id: "info", label: "Details", icon: Info },
+      ];
 
   return (
     <>
@@ -1172,9 +1410,11 @@ function Detail({
                 <Maximize2 className="size-4" />
               </IconButton>
             )}
-            <IconButton label="Open in new tab" onClick={() => window.open(api.downloadURL(bucket, objectKey, true), "_blank")}>
-              <ExternalLink className="size-4" />
-            </IconButton>
+            {!gone && (
+              <IconButton label="Open in new tab" onClick={() => window.open(api.downloadURL(bucket, objectKey, true), "_blank")}>
+                <ExternalLink className="size-4" />
+              </IconButton>
+            )}
             <IconButton label="Close" onClick={onClose}>
               <X className="size-4" />
             </IconButton>
@@ -1202,7 +1442,17 @@ function Detail({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {!info ? (
+          {gone ? (
+            <VersionsPanel
+              bucket={bucket}
+              current={{ key: objectKey, size: 0, etag: "", lastModified: "" }}
+              onDiff={onDiff}
+              onChanged={() => {
+                refresh();
+                onVersionsChanged?.();
+              }}
+            />
+          ) : !info ? (
             <Spinner className="mx-auto my-10" />
           ) : (
             <>
@@ -1265,97 +1515,16 @@ function Detail({
                 </div>
               )}
 
-              {/* Versions tab */}
               {tab === "versions" && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="label-strip text-[10px]">version history</span>
-                    <span className="text-[11px] font-mono text-muted">2 versions</span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {/* Latest version */}
-                    <div className="rounded-lg border-2 border-accent/40 bg-accent/5 p-3.5 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold text-white">
-                            LATEST
-                          </span>
-                          <span className="font-mono text-xs font-semibold text-ink">v2 (Current)</span>
-                        </div>
-                        <span className="text-[11px] text-muted">{dateTime(info.lastModified)}</span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 text-xs font-mono text-muted">
-                        <div>Size: <span className="text-ink">{bytes(info.size)}</span></div>
-                        <div className="truncate" title={info.etag}>ETag: <span className="text-ink">{info.etag.slice(0, 10)}…</span></div>
-                      </div>
-
-                      <div className="flex items-center gap-2 pt-1 border-t border-accent/20">
-                        <button
-                          type="button"
-                          onClick={() => download(info)}
-                          className="flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
-                        >
-                          <Download className="size-3" /> Download Version
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Previous version */}
-                    <div className="rounded-lg border border-line bg-sunken/40 p-3.5 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-full bg-sunken px-2 py-0.5 text-[10px] font-medium text-muted">
-                            ARCHIVED
-                          </span>
-                          <span className="font-mono text-xs text-muted">v1 (Initial)</span>
-                        </div>
-                        <span className="text-[11px] text-muted">1 day ago</span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 text-xs font-mono text-muted">
-                        <div>Size: <span>{bytes(info.size)}</span></div>
-                        <div className="truncate">ETag: <span>{info.etag.slice(0, 8)}a1b2…</span></div>
-                      </div>
-
-                      <div className="flex items-center gap-3 pt-1 border-t border-line text-xs">
-                        <button
-                          type="button"
-                          onClick={() => download(info)}
-                          className="flex items-center gap-1 text-[11px] text-muted hover:text-ink hover:underline"
-                        >
-                          <Download className="size-3" /> Download
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDiff?.([objectKey, objectKey])}
-                          className="flex items-center gap-1 text-[11px] text-accent hover:underline"
-                        >
-                          <GitCompare className="size-3" /> Diff vs Current
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toast("ok", `Restored version v1 for ${baseName(objectKey)}.`)}
-                          className="flex items-center gap-1 text-[11px] text-muted hover:text-ink hover:underline"
-                        >
-                          <RotateCcw className="size-3" /> Restore
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-2">
-                    <Button
-                      variant="secondary"
-                      icon={<Plus className="size-3.5" />}
-                      onClick={() => toast("ok", `Created new version snapshot for ${baseName(objectKey)}.`)}
-                      className="w-full justify-center text-xs"
-                    >
-                      Create Version Snapshot
-                    </Button>
-                  </div>
-                </div>
+                <VersionsPanel
+                  bucket={bucket}
+                  current={info}
+                  onDiff={onDiff}
+                  onChanged={() => {
+                    refresh();
+                    onVersionsChanged?.();
+                  }}
+                />
               )}
 
               {/* Info tab */}
@@ -1429,7 +1598,8 @@ function Detail({
           }
         >
           <p className="text-sm">
-            Delete <span className="font-mono">{objectKey}</span>? This cannot be undone.
+            Delete <span className="font-mono">{objectKey}</span>?{" "}
+            {info?.versionId ? "Its versions are kept: you can undo this from the Versions tab or Show deleted." : "This cannot be undone."}
           </p>
         </Modal>
       </aside>
@@ -1446,7 +1616,7 @@ function FileDiffModal({
   onClose,
 }: {
   bucket: string;
-  files: string[] | null;
+  files: DiffFile[] | null;
   onClose: () => void;
 }) {
   const [contentA, setContentA] = useState<string | null>(null);
@@ -1456,10 +1626,11 @@ function FileDiffModal({
   useEffect(() => {
     if (!files || files.length < 2) return;
     setLoading(true);
-    Promise.all([
-      fetch(api.downloadURL(bucket, files[0])).then((r) => r.text()).catch(() => ""),
-      fetch(api.downloadURL(bucket, files[1])).then((r) => r.text()).catch(() => ""),
-    ])
+    const text = (f: DiffFile) =>
+      fetch(api.downloadURL(bucket, f.key, false, f.versionId))
+        .then((r) => r.text())
+        .catch(() => "");
+    Promise.all([text(files[0]), text(files[1])])
       .then(([a, b]) => {
         setContentA(a);
         setContentB(b);
@@ -1468,7 +1639,7 @@ function FileDiffModal({
   }, [bucket, files]);
 
   if (!files || files.length < 2) return null;
-  const lang = getMonacoLanguage(files[1], "");
+  const lang = getMonacoLanguage(files[1].key, "");
 
   return (
     <Modal
@@ -1486,12 +1657,12 @@ function FileDiffModal({
         <div className="flex items-center justify-between text-xs font-mono">
           <div className="flex items-center gap-2 rounded bg-sunken px-2.5 py-1 text-muted">
             <span className="font-semibold text-danger">Original:</span>
-            <span className="truncate max-w-xs">{baseName(files[0])}</span>
+            <span className="truncate max-w-xs">{files[0].label ?? baseName(files[0].key)}</span>
           </div>
           <GitCompare className="size-4 text-muted shrink-0" />
           <div className="flex items-center gap-2 rounded bg-sunken px-2.5 py-1 text-muted">
             <span className="font-semibold text-ok">Modified:</span>
-            <span className="truncate max-w-xs">{baseName(files[1])}</span>
+            <span className="truncate max-w-xs">{files[1].label ?? baseName(files[1].key)}</span>
           </div>
         </div>
 
@@ -1538,7 +1709,7 @@ export function ExplorerPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<string | null>(null);
   const [sharing, setSharing] = useState<ObjectInfo | null>(null);
-  const [diffFiles, setDiffFiles] = useState<string[] | null>(null);
+  const [diffFiles, setDiffFiles] = useState<DiffFile[] | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1578,6 +1749,10 @@ export function ExplorerPage() {
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [filterKind, setFilterKind] = useState<Kind | "large" | "today" | null>(null);
   const [showTrash, setShowTrash] = useState(false);
+  // Versioned buckets: objects of this folder whose latest version is a delete marker.
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [deletedObjects, setDeletedObjects] = useState<ObjectInfo[] | null>(null);
+  const [undeleting, setUndeleting] = useState<string | null>(null);
   const [trashObjects, setTrashObjects] = useState<ObjectInfo[]>([]);
   const [restoringTrash, setRestoringTrash] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -1675,6 +1850,33 @@ export function ExplorerPage() {
     const t = setTimeout(() => load(), search ? 250 : 0);
     return () => clearTimeout(t);
   }, [load, search]);
+
+  const loadDeleted = useCallback(() => {
+    setDeletedObjects(null);
+    api
+      .objects(bucket, { prefix, deleted: true, limit: 500 })
+      .then((page) => setDeletedObjects(page.objects))
+      .catch((e) => toast("error", errorText(e)));
+  }, [bucket, prefix, toast]);
+  useEffect(() => {
+    if (showDeleted) loadDeleted();
+  }, [showDeleted, loadDeleted]);
+
+  /** Brings a deleted object back by removing the delete marker that hides it. */
+  async function undelete(o: ObjectInfo) {
+    if (!o.versionId) return;
+    setUndeleting(o.key);
+    try {
+      await api.deleteVersion(bucket, o.key, o.versionId);
+      toast("ok", `${baseName(o.key)} restored.`);
+      setDeletedObjects((cur) => cur?.filter((x) => x.key !== o.key) ?? null);
+      load();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setUndeleting(null);
+    }
+  }
 
   // The share dialog reports an object's live links; its row marker follows.
   const updateShares = useCallback((key: string, links: ShareLink[]) => {
@@ -1925,8 +2127,14 @@ export function ExplorerPage() {
               </span>
               <span>·</span>
               <span>
-                {bytes(meta.size)} - {count(meta.objects)} Objects
+                {bytes(meta.size)} - {count(meta.objects)} {meta.versioning ? "Versions" : "Objects"}
               </span>
+              {meta.versioning && (
+                <>
+                  <span>·</span>
+                  <span>versioning {meta.versioning.toLowerCase()}</span>
+                </>
+              )}
               {meta.quotaBytes > 0 && (
                 <>
                   <span>·</span>
@@ -1950,6 +2158,11 @@ export function ExplorerPage() {
           >
             Trash
           </Button>
+          {meta?.versioning && (
+            <Button icon={<History className="size-4" />} aria-pressed={showDeleted} onClick={() => setShowDeleted((v) => !v)}>
+              Deleted files
+            </Button>
+          )}
           <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="contents">
             <Button icon={<Settings2 className="size-4" />}>Settings</Button>
           </Link>
@@ -2122,6 +2335,53 @@ export function ExplorerPage() {
         </div>
       )}
 
+      {showDeleted && (
+        <div className="mb-4 space-y-3 rounded-card border border-line bg-sunken/30 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <History className="size-4 text-faint" />
+              Deleted files in <span className="font-mono">{prefix || bucket}</span>
+              {deletedObjects && <span className="font-normal text-muted">({count(deletedObjects.length)})</span>}
+            </div>
+            <Button onClick={() => setShowDeleted(false)}>Close</Button>
+          </div>
+          <p className="text-xs text-muted">Their versions are kept. Restore brings back the last version before the delete.</p>
+          {!deletedObjects ? (
+            <Spinner className="mx-auto my-4" />
+          ) : deletedObjects.length === 0 ? (
+            <div className="py-3 text-center text-sm text-muted">No deleted files in this folder.</div>
+          ) : (
+            <div className="max-h-60 divide-y divide-line overflow-y-auto rounded-md border border-line text-xs">
+              {deletedObjects.map((o) => (
+                <div key={o.key} className="flex items-center justify-between gap-2 px-3 py-2 hover:bg-sunken/40">
+                  <button
+                    type="button"
+                    onClick={() => setDetail(o.key)}
+                    className="min-w-0 truncate text-left font-mono hover:underline"
+                    title="Show versions"
+                  >
+                    {o.key.slice(prefix.length)}
+                  </button>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="text-muted" title={dateTime(o.lastModified)}>
+                      deleted {relative(o.lastModified)}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={undeleting !== null}
+                      onClick={() => undelete(o)}
+                      className="flex items-center gap-1 font-medium text-accent hover:underline"
+                    >
+                      <Undo2 className="size-3" /> {undeleting === o.key ? "Restoring…" : "Restore"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Selection bar */}
       {selected.size > 0 && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent/30 bg-accent-soft px-4 py-2 text-sm">
@@ -2130,7 +2390,7 @@ export function ExplorerPage() {
             {selected.size === 2 && (
               <Button
                 icon={<GitCompare className="size-4" />}
-                onClick={() => setDiffFiles(Array.from(selected))}
+                onClick={() => setDiffFiles(Array.from(selected, (key) => ({ key })))}
               >
                 Compare (Diff)
               </Button>
@@ -2486,6 +2746,11 @@ export function ExplorerPage() {
           onDeleted={() => {
             setDetail(null);
             load();
+            if (showDeleted) loadDeleted();
+          }}
+          onVersionsChanged={() => {
+            load();
+            if (showDeleted) loadDeleted();
           }}
         />
       )}

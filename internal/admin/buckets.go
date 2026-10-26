@@ -3,9 +3,11 @@ package admin
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"bin/internal/auth"
+	"bin/internal/cors"
 	"bin/internal/server"
 	"bin/internal/storage"
 )
@@ -18,7 +20,8 @@ type bucketJSON struct {
 	QuotaBytes int64             `json:"quotaBytes"`
 	Policy     auth.Policy       `json:"policy"`
 	Tags       map[string]string `json:"tags"`
-	Versioning string            `json:"versioning"`
+	Versioning string            `json:"versioning"` // "", "Enabled" or "Suspended"
+	CORS       []cors.Rule       `json:"cors"`
 }
 
 func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage) bucketJSON {
@@ -27,9 +30,13 @@ func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage)
 	if err != nil {
 		tags = map[string]string{}
 	}
+	rules, _ := cors.Parse(b.CORS)
+	if rules == nil {
+		rules = []cors.Rule{}
+	}
 	return bucketJSON{
 		Name: b.Name, CreatedAt: b.CreatedAt, Objects: u.Objects, Size: u.Bytes,
-		QuotaBytes: b.QuotaBytes, Policy: policy, Tags: tags, Versioning: b.Versioning,
+		QuotaBytes: b.QuotaBytes, Policy: policy, Tags: tags, Versioning: b.Versioning, CORS: rules,
 	}
 }
 
@@ -98,11 +105,11 @@ func (h *Handler) getBucket(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteBucket removes a bucket; with ?force=true it first deletes every
-// object in it.
+// object in it, older versions and delete markers included.
 func (h *Handler) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("bucket")
 	if r.URL.Query().Get("force") == "true" {
-		n, err := h.opts.Store.DeletePrefix(r.Context(), name, "")
+		n, err := h.opts.Store.PurgePrefix(r.Context(), name, "")
 		if err != nil {
 			h.storageError(w, r, err)
 			return
@@ -176,5 +183,46 @@ func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
 	if in.Mode != "private" {
 		h.opts.Log.Warn("bucket opened to anonymous access from the console", "bucket", name, "mode", in.Mode)
 	}
+	h.getBucket(w, r)
+}
+
+// putVersioning turns versioning on ("Enabled") or pauses it ("Suspended").
+// A versioned bucket can never go back to unversioned, as in S3.
+func (h *Handler) putVersioning(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Status string `json:"status"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	name := r.PathValue("bucket")
+	if err := h.opts.Store.SetBucketVersioning(r.Context(), name, in.Status); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	h.opts.Log.Info("bucket versioning changed from the console", "bucket", name, "status", in.Status)
+	h.getBucket(w, r)
+}
+
+// putCORS replaces the bucket's CORS rules; an empty list removes them.
+func (h *Handler) putCORS(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Rules []cors.Rule `json:"rules"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if len(in.Rules) > 0 {
+		if err := cors.Validate(in.Rules); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_cors", strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
+			return
+		}
+	}
+	name := r.PathValue("bucket")
+	if err := h.opts.Store.SetBucketCORS(r.Context(), name, cors.Encode(in.Rules)); err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	h.opts.Log.Info("bucket CORS rules changed from the console", "bucket", name, "rules", len(in.Rules))
 	h.getBucket(w, r)
 }

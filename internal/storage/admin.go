@@ -215,6 +215,12 @@ func (s *Store) SetBucketPolicy(ctx context.Context, bucket, policy string) erro
 	return s.setBucketColumn(ctx, bucket, "policy", policy)
 }
 
+// SetBucketCORS stores the bucket's CORS rules (JSON, interpreted by package
+// cors); "" removes them.
+func (s *Store) SetBucketCORS(ctx context.Context, bucket, rules string) error {
+	return s.setBucketColumn(ctx, bucket, "cors", rules)
+}
+
 func (s *Store) setBucketColumn(ctx context.Context, bucket, column string, value any) error {
 	res, err := s.write.ExecContext(ctx, `UPDATE buckets SET `+column+` = ? WHERE name = ?`, value, bucket)
 	if err != nil {
@@ -298,8 +304,10 @@ func (s *Store) SearchObjects(ctx context.Context, bucket, prefix, term string, 
 	return out, rows.Err()
 }
 
-// DeletePrefix deletes every object whose key starts with prefix ("" empties
-// the bucket), in batches, and returns how many were deleted.
+// DeletePrefix deletes every object whose key starts with prefix, in batches,
+// and returns how many were deleted. Each delete follows the bucket's
+// versioning, as DeleteObject does: with versioning on, the objects get
+// delete markers and their versions stay (PurgePrefix removes them).
 func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, error) {
 	total := 0
 	for {
@@ -317,8 +325,8 @@ func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, e
 				return err
 			}
 			for _, o := range page.Objects {
-				blobs, err := dropVersion(ctx, tx, bid, o.Key, "null", s.nowNanos())
-				if err != nil && !errors.Is(err, ErrNoSuchKey) {
+				_, blobs, err := s.deleteInTx(ctx, tx, bid, o.Key, "")
+				if err != nil {
 					return err
 				}
 				dropped = append(dropped, blobs...)
@@ -335,13 +343,14 @@ func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, e
 
 // ScrubResult reports an integrity scan.
 type ScrubResult struct {
-	Objects int64
+	Objects int64 // versions read, older versions included
 	Bytes   int64
-	Corrupt []ObjectInfo // Bucket and Key set
+	Corrupt []ObjectInfo // Bucket, Key and VersionID set
 }
 
-// Scrub reads every object in the given buckets (none for all buckets) end
-// to end, verifying each SHA-256. progress, if set, is called after each object.
+// Scrub reads every stored version in the given buckets (none for all
+// buckets) end to end, verifying each SHA-256. progress, if set, is called
+// after each version.
 func (s *Store) Scrub(ctx context.Context, buckets []string, progress func(ScrubResult)) (ScrubResult, error) {
 	var res ScrubResult
 	if len(buckets) == 0 {
@@ -354,18 +363,22 @@ func (s *Store) Scrub(ctx context.Context, buckets []string, progress func(Scrub
 		}
 	}
 	for _, b := range buckets {
-		after := ""
+		bid, err := bucketID(ctx, s.read, b)
+		if err != nil {
+			return res, err
+		}
+		var after int64
 		for {
-			page, err := s.ListObjects(ctx, b, ListOptions{After: after, MaxKeys: 500})
+			page, last, err := s.storedVersions(ctx, bid, after, 500)
 			if err != nil {
 				return res, err
 			}
-			for _, o := range page.Objects {
+			for _, o := range page {
 				if err := ctx.Err(); err != nil {
 					return res, err
 				}
-				_, data, err := s.OpenObject(ctx, b, o.Key)
-				if errors.Is(err, ErrNoSuchKey) {
+				_, data, err := s.OpenVersion(ctx, b, o.Key, o.VersionID)
+				if errors.Is(err, ErrNoSuchKey) || errors.Is(err, ErrNoSuchVersion) {
 					continue // deleted meanwhile
 				}
 				if err != nil {
@@ -376,17 +389,38 @@ func (s *Store) Scrub(ctx context.Context, buckets []string, progress func(Scrub
 				res.Objects++
 				res.Bytes += n
 				if err != nil {
-					res.Corrupt = append(res.Corrupt, ObjectInfo{Bucket: b, Key: o.Key})
+					res.Corrupt = append(res.Corrupt, ObjectInfo{Bucket: b, Key: o.Key, VersionID: o.VersionID})
 				}
 				if progress != nil {
 					progress(res)
 				}
 			}
-			if !page.IsTruncated {
+			if len(page) < 500 {
 				break
 			}
-			after = page.NextMarker
+			after = last
 		}
 	}
 	return res, nil
+}
+
+// storedVersions returns up to limit versions holding data (no delete
+// markers) with a row ID above after, and the last row ID returned.
+func (s *Store) storedVersions(ctx context.Context, bucketID, after int64, limit int) ([]ObjectInfo, int64, error) {
+	rows, err := s.read.QueryContext(ctx, `SELECT id, key, version_id FROM objects
+		WHERE bucket_id = ? AND delete_marker = 0 AND id > ? ORDER BY id LIMIT ?`, bucketID, after, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []ObjectInfo
+	last := after
+	for rows.Next() {
+		var o ObjectInfo
+		if err := rows.Scan(&last, &o.Key, &o.VersionID); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, o)
+	}
+	return out, last, rows.Err()
 }

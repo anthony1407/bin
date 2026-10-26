@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { AlertTriangle, Clock, Code2, Globe, Info, Lock, Plus, Save, Shield, SlidersHorizontal, Trash2, X } from "lucide-react";
-import { api, type Access, type Bucket, type Policy, type Rule } from "../api";
+import { api, type Access, type Bucket, type CORSRule, type Policy, type Rule } from "../api";
 import { bytes, count, dateTime } from "../lib/format";
 import { Badge, Button, Card, ComingSoon, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
@@ -279,7 +279,8 @@ function DeleteBucket({ bucket }: { bucket: Bucket }) {
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
-  const empty = bucket.objects === 0;
+  // A versioned bucket can hold delete markers, which are not counted as objects.
+  const empty = bucket.objects === 0 && bucket.versioning === "";
 
   async function remove() {
     setBusy(true);
@@ -301,7 +302,7 @@ function DeleteBucket({ bucket }: { bucket: Bucket }) {
             "The bucket is empty."
           ) : (
             <>
-              Deletes the bucket and <strong>all {count(bucket.objects)} objects</strong> ({bytes(bucket.size)}) in it.
+              Deletes the bucket and <strong>all {count(bucket.objects)} {bucket.versioning ? "object versions" : "objects"}</strong> ({bytes(bucket.size)}) in it.
             </>
           )}{" "}
           This cannot be undone.
@@ -332,7 +333,9 @@ function DeleteBucket({ bucket }: { bucket: Bucket }) {
       >
         <div className="space-y-4">
           <p className="text-sm">
-            {empty ? "This permanently deletes the bucket." : `This permanently deletes ${count(bucket.objects)} objects and the bucket itself.`}
+            {empty
+              ? "This permanently deletes the bucket."
+              : `This permanently deletes ${count(bucket.objects)} ${bucket.versioning ? "object versions, every delete marker" : "objects"} and the bucket itself.`}
           </p>
           <Field label="Type the bucket name to confirm">
             <Input mono autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={bucket.name} />
@@ -401,24 +404,18 @@ export function BucketSettingsPage() {
         <QuotaEditor bucket={bucket} onSaved={setBucket} />
       </Section>
 
-      {/* Versioning Info */}
       <Section
         title="Versioning"
-        description="When enabled, multiple versions of the same object are preserved. Versioning can be enabled but not fully disabled once turned on."
+        description="Keeps every version of each object: overwrites and deletes can be undone from the explorer. Once turned on, versioning can be suspended but not turned off."
       >
-        <Preview note="Versioning is planned. The S3 API reports this bucket as unversioned; turning it on here has no effect yet.">
-          <VersioningPanel bucket={bucket} />
-        </Preview>
+        <VersioningPanel bucket={bucket} onSaved={setBucket} />
       </Section>
 
-      {/* CORS Rules */}
       <Section
-        title="CORS Configuration"
-        description={<>Cross-Origin Resource Sharing rules control which browser-based applications can access objects directly. Configure CORS to allow your web app to fetch objects from <span className="font-mono text-xs">{bucket.name}</span>.</>}
+        title="CORS"
+        description={<>Which websites may call the S3 API for <span className="font-mono text-xs">{bucket.name}</span> from a browser, for example to upload with a presigned URL. Requests from other apps and tools are not affected.</>}
       >
-        <Preview note="CORS rules are planned; bin does not send CORS headers yet, so these rules are not applied.">
-          <CORSEditor bucket={bucket} />
-        </Preview>
+        <CORSEditor key={JSON.stringify(bucket.cors)} bucket={bucket} onSaved={setBucket} />
       </Section>
 
       {/* Lifecycle Rules */}
@@ -441,7 +438,7 @@ export function BucketSettingsPage() {
   );
 }
 
-// --- versioning panel ----------------------------------------------------------------
+// --- previews ------------------------------------------------------------------------
 
 /** A section that is not connected to the server yet: shown, but not usable. */
 function Preview({ note, children }: { note: string; children: ReactNode }) {
@@ -455,150 +452,225 @@ function Preview({ note, children }: { note: string; children: ReactNode }) {
   );
 }
 
-function VersioningPanel({ bucket }: { bucket: Bucket }) {
-  const status = bucket.versioning || "Disabled";
-  const isEnabled = status === "Enabled";
-  const isSuspended = status === "Suspended";
+// --- versioning ----------------------------------------------------------------------
+
+function VersioningPanel({ bucket, onSaved }: { bucket: Bucket; onSaved: (b: Bucket) => void }) {
+  const [confirm, setConfirm] = useState<"Enabled" | "Suspended" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const status = bucket.versioning;
+
+  async function save(next: "Enabled" | "Suspended") {
+    setBusy(true);
+    try {
+      onSaved(await api.setVersioning(bucket.name, next));
+      toast("ok", next === "Enabled" ? "Versioning enabled." : "Versioning suspended.");
+      setConfirm(null);
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const state = {
+    "": { icon: Info, tone: "bg-sunken text-faint", title: "Off", body: "Overwriting or deleting an object replaces it for good." },
+    Enabled: { icon: Shield, tone: "bg-ok-soft text-ok", title: "Enabled", body: "Every overwrite and delete keeps the previous version. Restore them from the Versions tab of a file." },
+    Suspended: { icon: AlertTriangle, tone: "bg-warn-soft text-warn", title: "Suspended", body: "New writes replace each other again; versions kept until now stay and can still be restored." },
+  }[status];
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <div className={cx(
-          "flex size-10 items-center justify-center rounded-full",
-          isEnabled ? "bg-ok/10 text-ok" : isSuspended ? "bg-warn/10 text-warn" : "bg-sunken text-faint",
-        )}>
-          {isEnabled ? <Shield className="size-5" /> : isSuspended ? <AlertTriangle className="size-5" /> : <Info className="size-5" />}
+        <div className={cx("flex size-10 shrink-0 items-center justify-center rounded-full", state.tone)}>
+          <state.icon className="size-5" />
         </div>
         <div>
-          <div className="text-sm font-semibold text-ink">{status}</div>
-          <div className="text-xs text-muted">
-            {isEnabled && "Multiple versions of objects are being preserved."}
-            {isSuspended && "New versions are not created, but existing versions are retained."}
-            {!isEnabled && !isSuspended && "Only one version of each object is kept."}
-          </div>
+          <div className="text-sm font-semibold">{state.title}</div>
+          <div className="text-xs text-muted">{state.body}</div>
         </div>
       </div>
-
-      {isEnabled && (
-        <div className="rounded-md border border-ok/20 bg-ok/5 px-4 py-3 text-xs text-muted">
-          <p>Versioned objects can be listed and restored using the S3 API or any compatible client.</p>
-        </div>
-      )}
+      <div className="flex flex-wrap gap-2">
+        {status !== "Enabled" && (
+          <Button variant="primary" icon={<Shield className="size-4" />} onClick={() => setConfirm("Enabled")}>
+            {status === "Suspended" ? "Resume versioning" : "Enable versioning"}
+          </Button>
+        )}
+        {status === "Enabled" && <Button onClick={() => setConfirm("Suspended")}>Suspend versioning</Button>}
+      </div>
+      <Modal
+        open={confirm !== null}
+        onClose={() => !busy && setConfirm(null)}
+        title={confirm === "Enabled" ? "Enable versioning" : "Suspend versioning"}
+        footer={
+          <>
+            <Button disabled={busy} onClick={() => setConfirm(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" busy={busy} onClick={() => confirm && save(confirm)}>
+              {confirm === "Enabled" ? "Enable" : "Suspend"}
+            </Button>
+          </>
+        }
+      >
+        {confirm === "Enabled" ? (
+          <div className="space-y-2 text-sm">
+            <p>From now on, every overwrite and delete in <span className="font-mono">{bucket.name}</span> keeps the previous version.</p>
+            <p className="text-muted">
+              Older versions count toward the bucket's size and quota until you delete them. Versioning can be suspended later, but a
+              versioned bucket never becomes unversioned again.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2 text-sm">
+            <p>New writes will replace each other again, as in an unversioned bucket.</p>
+            <p className="text-muted">The versions kept so far are not deleted; you can still restore or remove them one by one.</p>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
 
-// --- CORS editor (client-side) -------------------------------------------------------
-
-interface CORSRule {
-  id: number;
-  origin: string;
-  methods: string[];
-  headers: string;
-  maxAge: number;
-}
+// --- CORS --------------------------------------------------------------------------------
 
 const HTTP_METHODS = ["GET", "PUT", "POST", "DELETE", "HEAD"];
-let corsId = 0;
 
-function CORSEditor({ bucket }: { bucket: Bucket }) {
-  const [rules, setRules] = useState<CORSRule[]>([]);
-  const [showSnippet, setShowSnippet] = useState(false);
+/** A rule as edited: lists are typed as comma- or line-separated text. */
+interface CORSDraft {
+  key: number;
+  origins: string;
+  methods: string[];
+  headers: string;
+  expose: string;
+  maxAge: string;
+}
+
+let corsDraftKey = 0;
+
+const splitList = (s: string) =>
+  s
+    .split(/[\n,]/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+function toDraft(r: CORSRule): CORSDraft {
+  return {
+    key: ++corsDraftKey,
+    origins: r.allowedOrigins.join(", "),
+    methods: r.allowedMethods,
+    headers: (r.allowedHeaders ?? []).join(", "),
+    expose: (r.exposeHeaders ?? []).join(", "),
+    maxAge: r.maxAgeSeconds === undefined ? "" : String(r.maxAgeSeconds),
+  };
+}
+
+function fromDraft(d: CORSDraft): CORSRule {
+  const rule: CORSRule = { allowedOrigins: splitList(d.origins), allowedMethods: d.methods };
+  const headers = splitList(d.headers);
+  const expose = splitList(d.expose);
+  if (headers.length) rule.allowedHeaders = headers;
+  if (expose.length) rule.exposeHeaders = expose;
+  if (d.maxAge.trim() !== "") rule.maxAgeSeconds = Number(d.maxAge);
+  return rule;
+}
+
+/** A typical rule for a web app that uploads with presigned URLs and reads ETags. */
+const newDraft = (): CORSDraft => ({
+  key: ++corsDraftKey,
+  origins: "https://app.example.com",
+  methods: ["GET", "PUT", "HEAD"],
+  headers: "*",
+  expose: "ETag",
+  maxAge: "3600",
+});
+
+function CORSEditor({ bucket, onSaved }: { bucket: Bucket; onSaved: (b: Bucket) => void }) {
+  const [drafts, setDrafts] = useState<CORSDraft[]>(() => bucket.cors.map(toDraft));
+  const [busy, setBusy] = useState(false);
+  const [showXML, setShowXML] = useState(false);
   const toast = useToast();
+  const dirty = JSON.stringify(drafts.map(fromDraft)) !== JSON.stringify(bucket.cors);
 
-  function addRule() {
-    setRules((rs) => [...rs, { id: ++corsId, origin: "*", methods: ["GET"], headers: "*", maxAge: 3600 }]);
+  const update = (key: number, patch: Partial<CORSDraft>) => setDrafts((ds) => ds.map((d) => (d.key === key ? { ...d, ...patch } : d)));
+  const toggleMethod = (d: CORSDraft, m: string) =>
+    update(d.key, { methods: d.methods.includes(m) ? d.methods.filter((x) => x !== m) : HTTP_METHODS.filter((x) => x === m || d.methods.includes(x)) });
+
+  function problem(d: CORSDraft): string | null {
+    if (splitList(d.origins).length === 0) return "Add at least one origin.";
+    if (splitList(d.origins).some((o) => o.split("*").length > 2)) return "An origin can contain at most one *.";
+    if (d.methods.length === 0) return "Choose at least one method.";
+    if (d.maxAge.trim() !== "" && !/^\d+$/.test(d.maxAge.trim())) return "Max age is a whole number of seconds.";
+    return null;
+  }
+  const invalid = drafts.some((d) => problem(d) !== null);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const b = await api.setCORS(bucket.name, drafts.map(fromDraft));
+      onSaved(b);
+      toast("ok", b.cors.length ? "CORS rules saved." : "CORS rules removed.");
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function updateRule(id: number, patch: Partial<CORSRule>) {
-    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  }
-
-  function removeRule(id: number) {
-    setRules((rs) => rs.filter((r) => r.id !== id));
-  }
-
-  function toggleMethod(id: number, method: string) {
-    setRules((rs) => rs.map((r) => {
-      if (r.id !== id) return r;
-      const methods = r.methods.includes(method)
-        ? r.methods.filter((m) => m !== method)
-        : [...r.methods, method];
-      return { ...r, methods };
-    }));
-  }
-
-  function generateXML() {
-    const rulesXml = rules.map((r) => {
-      const methods = r.methods.map((m) => `    <AllowedMethod>${m}</AllowedMethod>`).join("\n");
-      return `  <CORSRule>
-    <AllowedOrigin>${r.origin}</AllowedOrigin>
-${methods}
-    <AllowedHeader>${r.headers}</AllowedHeader>
-    <MaxAgeSeconds>${r.maxAge}</MaxAgeSeconds>
-  </CORSRule>`;
-    }).join("\n");
-    return `<CORSConfiguration>\n${rulesXml}\n</CORSConfiguration>`;
-  }
-
-  function copyXML() {
-    navigator.clipboard.writeText(generateXML()).then(() => toast("ok", "CORS XML copied."));
-  }
+  const xml = () =>
+    `<CORSConfiguration>\n${drafts
+      .map(fromDraft)
+      .map((r) =>
+        [
+          "  <CORSRule>",
+          ...r.allowedOrigins.map((o) => `    <AllowedOrigin>${o}</AllowedOrigin>`),
+          ...r.allowedMethods.map((m) => `    <AllowedMethod>${m}</AllowedMethod>`),
+          ...(r.allowedHeaders ?? []).map((h) => `    <AllowedHeader>${h}</AllowedHeader>`),
+          ...(r.exposeHeaders ?? []).map((h) => `    <ExposeHeader>${h}</ExposeHeader>`),
+          ...(r.maxAgeSeconds !== undefined ? [`    <MaxAgeSeconds>${r.maxAgeSeconds}</MaxAgeSeconds>`] : []),
+          "  </CORSRule>",
+        ].join("\n"),
+      )
+      .join("\n")}\n</CORSConfiguration>`;
 
   return (
     <div className="space-y-4">
-      {rules.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-line py-8 text-muted">
+      {drafts.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-line px-4 py-8 text-center">
           <Code2 className="size-8 text-faint" />
-          <p className="text-sm">No CORS rules configured</p>
-          <p className="text-xs text-faint max-w-sm text-center">
-            Add rules to allow browser-based applications to make requests directly to objects in this bucket.
-          </p>
-          <Button icon={<Plus className="size-4" />} onClick={addRule}>
-            Add CORS Rule
+          <p className="text-sm">No CORS rules: browsers on other sites cannot call this bucket.</p>
+          <Button icon={<Plus className="size-4" />} onClick={() => setDrafts([newDraft()])}>
+            Add rule
           </Button>
         </div>
       ) : (
-        <>
-          <div className="space-y-3">
-            {rules.map((rule, idx) => (
-              <div key={rule.id} className="rounded-md border border-line bg-sunken/30 p-4 space-y-3">
+        <div className="space-y-3">
+          {drafts.map((d, i) => {
+            const err = problem(d);
+            return (
+              <div key={d.key} className="space-y-3 rounded-md border border-line p-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-ink">Rule {idx + 1}</span>
-                  <IconButton label="Remove rule" onClick={() => removeRule(rule.id)}>
+                  <span className="label-strip">rule {i + 1}{i === 0 && drafts.length > 1 ? " · checked first" : ""}</span>
+                  <IconButton label={`Remove rule ${i + 1}`} onClick={() => setDrafts((ds) => ds.filter((x) => x.key !== d.key))}>
                     <X className="size-4" />
                   </IconButton>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Allowed Origin">
-                    <Input
-                      mono
-                      value={rule.origin}
-                      onChange={(e) => updateRule(rule.id, { origin: e.target.value })}
-                      placeholder="https://example.com or *"
-                    />
-                  </Field>
-                  <Field label="Allowed Headers">
-                    <Input
-                      mono
-                      value={rule.headers}
-                      onChange={(e) => updateRule(rule.id, { headers: e.target.value })}
-                      placeholder="* or Content-Type, Authorization"
-                    />
-                  </Field>
-                </div>
+                <Field label="Allowed origins" hint="Comma-separated. One * per origin: https://*.example.com, or * for any site.">
+                  <Input mono value={d.origins} onChange={(e) => update(d.key, { origins: e.target.value })} placeholder="https://app.example.com" />
+                </Field>
                 <div>
-                  <div className="label-strip mb-1.5 text-[10px]">Allowed Methods</div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="label-strip mb-1.5">allowed methods</div>
+                  <div className="flex flex-wrap gap-2" role="group" aria-label="Allowed methods">
                     {HTTP_METHODS.map((m) => (
                       <button
                         key={m}
-                        onClick={() => toggleMethod(rule.id, m)}
+                        type="button"
+                        aria-pressed={d.methods.includes(m)}
+                        onClick={() => toggleMethod(d, m)}
                         className={cx(
                           "h-7 rounded-md border px-2.5 font-mono text-xs transition-colors",
-                          rule.methods.includes(m)
-                            ? "border-accent bg-accent-soft text-accent-ink"
-                            : "border-line-strong text-muted hover:bg-sunken",
+                          d.methods.includes(m) ? "border-accent bg-accent-soft text-accent-ink" : "border-line-strong text-muted hover:bg-sunken",
                         )}
                       >
                         {m}
@@ -606,46 +678,45 @@ ${methods}
                     ))}
                   </div>
                 </div>
-                <Field label="Max Age (seconds)">
-                  <Input
-                    mono
-                    value={String(rule.maxAge)}
-                    onChange={(e) => updateRule(rule.id, { maxAge: Number(e.target.value) || 0 })}
-                    className="w-28"
-                    inputMode="numeric"
-                  />
-                </Field>
+                <div className="grid gap-3 sm:grid-cols-[1fr_1fr_8rem]">
+                  <Field label="Allowed headers" hint="Request headers the page may send; * allows any.">
+                    <Input mono value={d.headers} onChange={(e) => update(d.key, { headers: e.target.value })} placeholder="*" />
+                  </Field>
+                  <Field label="Exposed headers" hint="Response headers the page may read.">
+                    <Input mono value={d.expose} onChange={(e) => update(d.key, { expose: e.target.value })} placeholder="ETag" />
+                  </Field>
+                  <Field label="Max age" hint="Seconds.">
+                    <Input mono value={d.maxAge} onChange={(e) => update(d.key, { maxAge: e.target.value })} inputMode="numeric" placeholder="—" />
+                  </Field>
+                </div>
+                {err && <p className="text-xs text-danger">{err}</p>}
               </div>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <Button icon={<Plus className="size-4" />} onClick={addRule} variant="ghost">
-              Add Rule
+            );
+          })}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-2">
+          {drafts.length > 0 && (
+            <Button variant="ghost" icon={<Plus className="size-4" />} onClick={() => setDrafts((ds) => [...ds, newDraft()])}>
+              Add rule
             </Button>
-            <Button icon={<Code2 className="size-4" />} onClick={() => setShowSnippet((v) => !v)}>
-              {showSnippet ? "Hide" : "Show"} S3 XML
-            </Button>
-          </div>
-          {showSnippet && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="label-strip text-[10px]">S3 CORS XML</span>
-                <button
-                  onClick={copyXML}
-                  className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-sunken hover:text-ink transition-colors"
-                >
-                  Copy
-                </button>
-              </div>
-              <pre className="max-h-60 overflow-auto rounded-md border border-line bg-surface p-3 font-mono text-xs text-ink">
-                {generateXML()}
-              </pre>
-              <p className="text-[11px] text-muted">
-                Apply with: <code className="font-mono bg-sunken px-1 rounded">aws s3api put-bucket-cors --bucket {bucket.name} --cors-configuration file://cors.xml</code>
-              </p>
-            </div>
           )}
-        </>
+          {drafts.length > 0 && (
+            <Button variant="ghost" icon={<Code2 className="size-4" />} onClick={() => setShowXML((v) => !v)}>
+              {showXML ? "Hide" : "Show"} S3 XML
+            </Button>
+          )}
+        </div>
+        <Button variant="primary" busy={busy} disabled={!dirty || invalid} icon={<Save className="size-4" />} onClick={save}>
+          {drafts.length === 0 && bucket.cors.length > 0 ? "Remove CORS" : "Save CORS"}
+        </Button>
+      </div>
+      {showXML && drafts.length > 0 && (
+        <div className="space-y-1.5">
+          <pre className="max-h-60 overflow-auto rounded-md border border-line bg-sunken/40 p-3 font-mono text-xs">{xml()}</pre>
+          <p className="text-xs text-muted">The same rules in S3's XML format, as S3 clients read them with GetBucketCors.</p>
+        </div>
       )}
     </div>
   );

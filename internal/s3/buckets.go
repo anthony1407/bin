@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"bin/internal/s3/s3err"
+	"bin/internal/storage"
 )
 
 type ownerXML struct {
@@ -101,8 +102,9 @@ func (h *Handler) getBucketLocation(w http.ResponseWriter, r *http.Request, req 
 }
 
 type versioningConfiguration struct {
-	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ VersioningConfiguration"`
-	Status  string   `xml:"Status,omitempty"`
+	XMLName   xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ VersioningConfiguration"`
+	Status    string   `xml:"Status,omitempty"`
+	MfaDelete string   `xml:"MfaDelete,omitempty"`
 }
 
 func (h *Handler) getBucketVersioning(w http.ResponseWriter, r *http.Request, req Request) error {
@@ -111,6 +113,38 @@ func (h *Handler) getBucketVersioning(w http.ResponseWriter, r *http.Request, re
 		return storageError(err)
 	}
 	return writeXML(w, http.StatusOK, versioningConfiguration{Status: b.Versioning})
+}
+
+func (h *Handler) putBucketVersioning(w http.ResponseWriter, r *http.Request, req Request) error {
+	var in versioningConfiguration
+	empty, err := readXMLBody(r, &in)
+	if err != nil {
+		return err
+	}
+	if empty {
+		return s3err.ErrMalformedXML
+	}
+	if in.MfaDelete == "Enabled" {
+		return s3err.ErrNotImplemented.WithMessage("MFA delete is not supported.")
+	}
+	if in.MfaDelete != "" && in.MfaDelete != "Disabled" {
+		return s3err.ErrMalformedXML
+	}
+	switch in.Status {
+	case "":
+		// No status: nothing changes, as in S3.
+		if _, err := h.opts.Store.GetBucket(r.Context(), req.Bucket); err != nil {
+			return storageError(err)
+		}
+	case storage.VersioningEnabled, storage.VersioningSuspended:
+		if err := h.opts.Store.SetBucketVersioning(r.Context(), req.Bucket, in.Status); err != nil {
+			return storageError(err)
+		}
+	default:
+		return s3err.ErrMalformedXML
+	}
+	w.WriteHeader(http.StatusOK)
+	return nil
 }
 
 type tagXML struct {

@@ -63,9 +63,13 @@ func newHandler(opts Options) *Handler {
 		OpDeleteBucket:        h.deleteBucket,
 		OpGetBucketLocation:   h.getBucketLocation,
 		OpGetBucketVersioning: h.getBucketVersioning,
+		OpPutBucketVersioning: h.putBucketVersioning,
 		OpGetBucketTagging:    h.getBucketTagging,
 		OpPutBucketTagging:    h.putBucketTagging,
 		OpDeleteBucketTagging: h.deleteBucketTagging,
+		OpGetBucketCors:       h.getBucketCors,
+		OpPutBucketCors:       h.putBucketCors,
+		OpDeleteBucketCors:    h.deleteBucketCors,
 		OpPutObject:           h.putObject,
 		OpGetObject:           h.getObject,
 		OpHeadObject:          h.headObject,
@@ -73,6 +77,7 @@ func newHandler(opts Options) *Handler {
 		OpCopyObject:          h.copyObject,
 		OpListObjectsV2:       h.listObjectsV2,
 		OpListObjects:         h.listObjectsV1,
+		OpListObjectVersions:  h.listObjectVersions,
 
 		OpCreateMultipartUpload:   h.createMultipartUpload,
 		OpUploadPart:              h.uploadPart,
@@ -121,9 +126,17 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Browsers send CORS preflights without credentials: they are answered
+	// from the bucket's CORS rules alone, before authentication.
+	bucket, key := parseTarget(r, h.opts.Domain)
+	if r.Method == http.MethodOptions {
+		h.preflight(w, r, Request{Bucket: bucket, Key: key})
+		return
+	}
+	h.setCORSHeaders(w, r, bucket)
+
 	// Authenticate, route, then authorize. Anonymous callers whose request is
 	// not allowed by the bucket policy only ever see AccessDenied.
-	bucket, key := parseTarget(r, h.opts.Domain)
 	req := Request{Bucket: bucket, Key: key}
 	sw := &statusRecorder{ResponseWriter: w}
 	w = sw

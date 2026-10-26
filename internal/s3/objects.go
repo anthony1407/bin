@@ -189,9 +189,39 @@ func (h *Handler) putObject(w http.ResponseWriter, r *http.Request, req Request)
 		return storageError(err)
 	}
 	w.Header().Set("ETag", quoteETag(info.ETag))
+	setVersionHeader(w, info.VersionID, false)
 	setChecksumHeaders(w, info)
 	w.WriteHeader(http.StatusOK)
 	return nil
+}
+
+// setVersionHeader reports the version a request read or wrote. Objects of
+// buckets that were never versioned are all "null", which S3 leaves out
+// unless the client asked for a version.
+func setVersionHeader(w http.ResponseWriter, versionID string, requested bool) {
+	if versionID != "" && (versionID != storage.NullVersion || requested) {
+		w.Header().Set("X-Amz-Version-Id", versionID)
+	}
+}
+
+// requestedVersion reads the versionId query parameter ("" if absent).
+func requestedVersion(r *http.Request) (string, error) {
+	v := r.URL.Query().Get("versionId")
+	if r.URL.Query().Has("versionId") && !storage.ValidVersionID(v) {
+		return "", s3err.ErrInvalidArgument.WithMessage("Invalid version id specified")
+	}
+	return v, nil
+}
+
+// deleteMarkerError answers a read that found a delete marker: 404 when it
+// is the latest version of the key, 405 when the client named it.
+func deleteMarkerError(w http.ResponseWriter, marker storage.ObjectInfo, requested bool) error {
+	w.Header().Set("X-Amz-Delete-Marker", "true")
+	setVersionHeader(w, marker.VersionID, true)
+	if requested {
+		return s3err.ErrMethodNotAllowed
+	}
+	return s3err.ErrNoSuchKey
 }
 
 func setChecksumHeaders(w http.ResponseWriter, info storage.ObjectInfo) {
@@ -204,7 +234,14 @@ func setChecksumHeaders(w http.ResponseWriter, info storage.ObjectInfo) {
 }
 
 func (h *Handler) headObject(w http.ResponseWriter, r *http.Request, req Request) error {
-	info, err := h.opts.Store.StatObject(r.Context(), req.Bucket, req.Key)
+	versionID, err := requestedVersion(r)
+	if err != nil {
+		return err
+	}
+	info, err := h.opts.Store.StatVersion(r.Context(), req.Bucket, req.Key, versionID)
+	if errors.Is(err, storage.ErrDeleteMarker) {
+		return deleteMarkerError(w, info, versionID != "")
+	}
 	if err != nil {
 		return storageError(err)
 	}
@@ -212,7 +249,14 @@ func (h *Handler) headObject(w http.ResponseWriter, r *http.Request, req Request
 }
 
 func (h *Handler) getObject(w http.ResponseWriter, r *http.Request, req Request) error {
-	info, data, err := h.opts.Store.OpenObject(r.Context(), req.Bucket, req.Key)
+	versionID, err := requestedVersion(r)
+	if err != nil {
+		return err
+	}
+	info, data, err := h.opts.Store.OpenVersion(r.Context(), req.Bucket, req.Key, versionID)
+	if errors.Is(err, storage.ErrDeleteMarker) {
+		return deleteMarkerError(w, info, versionID != "")
+	}
 	if err != nil {
 		return storageError(err)
 	}
@@ -263,6 +307,7 @@ func (h *Handler) respondObject(w http.ResponseWriter, r *http.Request, info sto
 	hdr.Set("Content-Type", info.ContentType)
 	hdr.Set("ETag", quoteETag(info.ETag))
 	hdr.Set("Last-Modified", info.ModTime.Format(http.TimeFormat))
+	setVersionHeader(w, info.VersionID, r.URL.Query().Has("versionId"))
 	for k, v := range info.Headers {
 		hdr.Set(k, v)
 	}
@@ -352,12 +397,25 @@ func etagListMatches(list, etag string) bool {
 }
 
 func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request, req Request) error {
-	if err := h.opts.Store.DeleteObject(r.Context(), req.Bucket, req.Key); err != nil {
+	versionID, err := requestedVersion(r)
+	if err != nil {
+		return err
+	}
+	res, err := h.opts.Store.DeleteVersion(r.Context(), req.Bucket, req.Key, versionID)
+	if err != nil {
 		return storageError(err)
+	}
+	setVersionHeader(w, res.VersionID, versionID != "" || res.DeleteMarker)
+	if res.DeleteMarker {
+		w.Header().Set("X-Amz-Delete-Marker", "true")
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
+
+// errCopyFromMarker refuses a copy whose source names a delete marker.
+var errCopyFromMarker = s3err.ErrInvalidRequest.WithMessage(
+	"The source of a copy request may not specifically refer to a delete marker by version id.")
 
 type copyObjectResult struct {
 	XMLName           xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ CopyObjectResult"`
@@ -372,27 +430,27 @@ type copyObjectResult struct {
 
 // parseCopySource reads x-amz-copy-source: "bucket/key" or "/bucket/key",
 // URL-encoded, optionally with "?versionId=".
-func parseCopySource(v string) (bucket, key string, err error) {
+func parseCopySource(v string) (bucket, key, versionID string, err error) {
 	src, query, _ := strings.Cut(v, "?")
 	if query != "" {
 		q, _ := url.ParseQuery(query)
-		if vid := q.Get("versionId"); vid != "" && vid != "null" {
-			return "", "", s3err.ErrNotImplemented.WithMessage("Copying a specific object version is not supported yet.")
+		if versionID = q.Get("versionId"); q.Has("versionId") && !storage.ValidVersionID(versionID) {
+			return "", "", "", s3err.ErrInvalidArgument.WithMessage("Invalid version id specified")
 		}
 	}
 	decoded, err := url.PathUnescape(src)
 	if err != nil {
-		return "", "", s3err.ErrInvalidArgument.WithMessage("Copy Source must mention the source bucket and key: sourcebucket/sourcekey")
+		return "", "", "", s3err.ErrInvalidArgument.WithMessage("Copy Source must mention the source bucket and key: sourcebucket/sourcekey")
 	}
 	bucket, key, _ = strings.Cut(strings.TrimPrefix(decoded, "/"), "/")
 	if bucket == "" || key == "" {
-		return "", "", s3err.ErrInvalidArgument.WithMessage("Copy Source must mention the source bucket and key: sourcebucket/sourcekey")
+		return "", "", "", s3err.ErrInvalidArgument.WithMessage("Copy Source must mention the source bucket and key: sourcebucket/sourcekey")
 	}
-	return bucket, key, nil
+	return bucket, key, versionID, nil
 }
 
 func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, req Request) error {
-	srcBucket, srcKey, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source"))
+	srcBucket, srcKey, srcVersion, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source"))
 	if err != nil {
 		return err
 	}
@@ -403,14 +461,17 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, req Request
 		return s3err.ErrInvalidArgument.WithMessage("Unknown metadata directive.")
 	}
 	replace := directive == "REPLACE"
-	if srcBucket == req.Bucket && srcKey == req.Key && !replace {
+	// Copying an older version over its own key is how a version is restored.
+	if srcBucket == req.Bucket && srcKey == req.Key && srcVersion == "" && !replace {
 		return s3err.ErrInvalidRequest.WithMessage("This copy request is illegal because it is trying to copy an " +
 			"object to itself without changing the object's metadata, storage class, website redirect location or encryption attributes.")
 	}
-	opts := storage.CopyOptions{ReplaceMetadata: replace, Check: func(src storage.ObjectInfo) error {
+	var copiedVersion string
+	opts := storage.CopyOptions{SourceVersionID: srcVersion, ReplaceMetadata: replace, Check: func(src storage.ObjectInfo) error {
 		if src.Size > maxPutSize {
 			return s3err.ErrInvalidRequest.WithMessage("The specified copy source is larger than the maximum allowable size for a copy source: 5368709120")
 		}
+		copiedVersion = src.VersionID
 		return copySourceConditions(r, src)
 	}}
 	if replace {
@@ -432,8 +493,15 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, req Request
 			h.opts.Log.Error("corrupt copy source: SHA-256 mismatch", "id", server.RequestID(r.Context()),
 				"bucket", srcBucket, "key", srcKey)
 		}
+		if errors.Is(err, storage.ErrDeleteMarker) {
+			return errCopyFromMarker
+		}
 		return storageError(err)
 	}
+	if copiedVersion != "" && (copiedVersion != storage.NullVersion || srcVersion != "") {
+		w.Header().Set("X-Amz-Copy-Source-Version-Id", copiedVersion)
+	}
+	setVersionHeader(w, info.VersionID, false)
 	res := copyObjectResult{ETag: quoteETag(info.ETag), LastModified: timeXML(info.ModTime)}
 	for a, v := range info.Checksums {
 		switch a {

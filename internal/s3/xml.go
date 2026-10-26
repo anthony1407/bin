@@ -141,6 +141,12 @@ func storageError(err error) error {
 		return s3err.ErrInvalidBucketName
 	case errors.Is(err, storage.ErrNoTags):
 		return s3err.ErrNoSuchTagSet
+	case errors.Is(err, storage.ErrNoSuchVersion):
+		return s3err.ErrNoSuchVersion
+	case errors.Is(err, storage.ErrInvalidVersion):
+		return s3err.ErrInvalidArgument.WithMessage("Invalid version id specified")
+	case errors.Is(err, storage.ErrDeleteMarker):
+		return s3err.ErrMethodNotAllowed.WithMessage("The specified method is not allowed against this resource.")
 	}
 	return err
 }

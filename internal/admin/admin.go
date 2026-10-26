@@ -103,6 +103,11 @@ func NewHandler(opts Options) http.Handler {
 	private("PUT /api/v1/buckets/{bucket}/tags", h.putTags)
 	private("PUT /api/v1/buckets/{bucket}/quota", h.putQuota)
 	private("PUT /api/v1/buckets/{bucket}/policy", h.putPolicy)
+	private("PUT /api/v1/buckets/{bucket}/versioning", h.putVersioning)
+	private("PUT /api/v1/buckets/{bucket}/cors", h.putCORS)
+	private("GET /api/v1/buckets/{bucket}/versions", h.listVersions)
+	private("DELETE /api/v1/buckets/{bucket}/versions", h.deleteVersion)
+	private("POST /api/v1/buckets/{bucket}/versions/restore", h.restoreVersion)
 
 	private("GET /api/v1/buckets/{bucket}/objects", h.listObjects)
 	private("DELETE /api/v1/buckets/{bucket}/objects", h.deleteObjects)
@@ -255,6 +260,10 @@ func (h *Handler) storageError(w http.ResponseWriter, r *http.Request, err error
 		{storage.ErrInvalidBucketName, 400, "invalid_bucket_name", "Bucket names use 3-63 lowercase letters, digits, dots and hyphens, and start and end with a letter or digit."},
 		{storage.ErrBucketNotEmpty, 409, "bucket_not_empty", "The bucket is not empty."},
 		{storage.ErrNoSuchKey, 404, "no_such_key", "The object does not exist."},
+		{storage.ErrNoSuchVersion, 404, "no_such_version", "The version does not exist."},
+		{storage.ErrInvalidVersion, 400, "invalid_version", "The version ID is not valid."},
+		{storage.ErrDeleteMarker, 409, "delete_marker", "That version is a delete marker: it has no content."},
+		{storage.ErrInvalidVersioning, 400, "invalid_versioning", "Versioning can be Enabled or Suspended."},
 		{storage.ErrKeyTooLong, 400, "key_too_long", "Object keys are limited to 1024 bytes."},
 		{storage.ErrInvalidKey, 400, "invalid_key", "Object keys must be valid UTF-8."},
 		{storage.ErrQuotaExceeded, 400, "quota_exceeded", "The bucket quota would be exceeded."},

@@ -151,8 +151,9 @@ func (h *Handler) revokeShareLinks(w http.ResponseWriter, r *http.Request) {
 // --- integrity scan ---------------------------------------------------------------------
 
 type corruptJSON struct {
-	Bucket string `json:"bucket"`
-	Key    string `json:"key"`
+	Bucket    string `json:"bucket"`
+	Key       string `json:"key"`
+	VersionID string `json:"versionId,omitempty"` // left out for unversioned objects
 }
 
 type scrubStatus struct {
@@ -228,8 +229,12 @@ func (h *Handler) startScrub(w http.ResponseWriter, r *http.Request) {
 		defer h.scrubMu.Unlock()
 		h.scrub.FinishedAt, h.scrub.Objects, h.scrub.Bytes = &done, res.Objects, res.Bytes
 		for _, c := range res.Corrupt {
-			h.scrub.Corrupt = append(h.scrub.Corrupt, corruptJSON{Bucket: c.Bucket, Key: c.Key})
-			h.opts.Log.Error("integrity scan: corrupt object", "bucket", c.Bucket, "key", c.Key)
+			cj := corruptJSON{Bucket: c.Bucket, Key: c.Key}
+			if c.VersionID != storage.NullVersion {
+				cj.VersionID = c.VersionID
+			}
+			h.scrub.Corrupt = append(h.scrub.Corrupt, cj)
+			h.opts.Log.Error("integrity scan: corrupt object", "bucket", c.Bucket, "key", c.Key, "version", c.VersionID)
 		}
 		if err != nil {
 			h.scrub.State, h.scrub.Error = "failed", err.Error()

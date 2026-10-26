@@ -15,6 +15,7 @@ import (
 // change data. Reads are not recorded, but any refused request (403) is.
 var auditedOps = map[Op]bool{
 	OpCreateBucket: true, OpDeleteBucket: true, OpPutBucketTagging: true, OpDeleteBucketTagging: true,
+	OpPutBucketVersioning: true, OpPutBucketCors: true, OpDeleteBucketCors: true,
 	OpPutObject: true, OpCopyObject: true, OpCompleteMultipartUpload: true, OpAbortMultipartUpload: true,
 	OpDeleteObject: true, OpDeleteObjects: true,
 }
@@ -65,6 +66,9 @@ func (h *Handler) record(r *http.Request, req Request, actor string, status int,
 	}
 	if req.Op == OpCopyObject {
 		e.Resource += " (from " + r.Header.Get("X-Amz-Copy-Source") + ")"
+	}
+	if v := r.URL.Query().Get("versionId"); v != "" && req.Op == OpDeleteObject {
+		e.Resource += " (version " + v + ")"
 	}
 	var apiErr *s3err.Error
 	if errors.As(err, &apiErr) {

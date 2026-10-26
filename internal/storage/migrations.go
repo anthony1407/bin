@@ -266,6 +266,11 @@ var migrations = []string{
 		remote_etag TEXT NOT NULL,
 		PRIMARY KEY (rule_id, key)
 	) WITHOUT ROWID;`,
+
+	// 11: CORS rules per bucket (JSON, interpreted by package cors). Version
+	// listings scan a bucket's rows in key order, newest version first.
+	`ALTER TABLE buckets ADD COLUMN cors TEXT NOT NULL DEFAULT '';  -- '' = no CORS configuration
+	CREATE INDEX objects_versions ON objects (bucket_id, key, id);`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

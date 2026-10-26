@@ -11,11 +11,14 @@ type ListOptions struct {
 	Delimiter string // group keys sharing Prefix + ... + Delimiter into common prefixes
 	After     string // only entries (keys or common prefixes) greater than After
 	MaxKeys   int    // keys plus common prefixes per page
+	// Deleted lists the keys whose latest version is a delete marker instead
+	// of the current objects.
+	Deleted bool
 }
 
 // ListResult is one page of a listing, in key order.
 type ListResult struct {
-	Objects        []ObjectInfo // Key, Size, ETag and ModTime are set
+	Objects        []ObjectInfo // Key, VersionID, Size, ETag and ModTime are set
 	CommonPrefixes []string
 	IsTruncated    bool
 	// NextMarker is the last entry returned (key or common prefix); pass it
@@ -56,9 +59,9 @@ func (s *Store) ListObjects(ctx context.Context, bucket string, opts ListOptions
 		if inclusive {
 			op = ">="
 		}
-		rows, err := s.read.QueryContext(ctx, `SELECT key, size, etag, modified_at FROM objects
-			WHERE bucket_id = ? AND is_latest = 1 AND delete_marker = 0 AND key `+op+` ?
-			ORDER BY key LIMIT ?`, bid, pos, listBatch)
+		rows, err := s.read.QueryContext(ctx, `SELECT key, version_id, size, etag, modified_at FROM objects
+			WHERE bucket_id = ? AND is_latest = 1 AND delete_marker = ? AND key `+op+` ?
+			ORDER BY key LIMIT ?`, bid, opts.Deleted, pos, listBatch)
 		if err != nil {
 			return ListResult{}, err
 		}
@@ -67,7 +70,7 @@ func (s *Store) ListObjects(ctx context.Context, bucket string, opts ListOptions
 		for rows.Next() {
 			var o ObjectInfo
 			var modified int64
-			if err := rows.Scan(&o.Key, &o.Size, &o.ETag, &modified); err != nil {
+			if err := rows.Scan(&o.Key, &o.VersionID, &o.Size, &o.ETag, &modified); err != nil {
 				rows.Close()
 				return ListResult{}, err
 			}

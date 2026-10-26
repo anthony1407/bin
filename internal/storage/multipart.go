@@ -201,7 +201,8 @@ func (s *Store) PutPart(ctx context.Context, bucket, key, uploadID string, n int
 
 // CopyPartOptions configures CopyPart.
 type CopyPartOptions struct {
-	Check func(src ObjectInfo) error // e.g. x-amz-copy-source-if-* conditions
+	SourceVersionID string                     // copy that version instead of the latest
+	Check           func(src ObjectInfo) error // e.g. x-amz-copy-source-if-* conditions
 	// Range selects bytes of the source; Length < 0 copies the whole object,
 	// which is then verified against its SHA-256.
 	Offset, Length int64
@@ -209,7 +210,7 @@ type CopyPartOptions struct {
 
 // CopyPart stores part n of an upload from (a range of) an existing object.
 func (s *Store) CopyPart(ctx context.Context, srcBucket, srcKey, bucket, key, uploadID string, n int, opts CopyPartOptions) (PartInfo, error) {
-	src, data, err := s.OpenObject(ctx, srcBucket, srcKey)
+	src, data, err := s.openSource(ctx, srcBucket, srcKey, opts.SourceVersionID)
 	if err != nil {
 		return PartInfo{}, err
 	}
@@ -457,10 +458,11 @@ func (s *Store) CompleteUpload(ctx context.Context, bucket, key, uploadID string
 		if err != nil {
 			return err
 		}
-		replaced, err := s.replaceLatest(ctx, tx, bid, key, opts.IfMatch, opts.IfNoneMatch)
+		versionID, replaced, err := s.beginWrite(ctx, tx, bid, key, opts.IfMatch, opts.IfNoneMatch)
 		if err != nil {
 			return err
 		}
+		info.VersionID = versionID
 		if err := checkQuota(ctx, tx, bid, info.Size); err != nil {
 			return err
 		}
@@ -483,7 +485,7 @@ func (s *Store) CompleteUpload(ctx context.Context, bucket, key, uploadID string
 		if _, err := tx.ExecContext(ctx, `DELETE FROM uploads WHERE id = ?`, uploadID); err != nil {
 			return err
 		}
-		_, err = insertObject(ctx, tx, bid, info)
+		_, err = insertLatest(ctx, tx, bid, info)
 		return err
 	})
 	if err != nil {
@@ -520,7 +522,7 @@ func assemble(u uploadRow, stored map[int]partData, opts CompleteOptions) (Objec
 	info := ObjectInfo{
 		Bucket:      u.Bucket,
 		Key:         u.Key,
-		VersionID:   "null",
+		IsLatest:    true,
 		ContentType: u.contentType,
 		Headers:     nonNil(u.headers),
 		UserMeta:    nonNil(u.meta),

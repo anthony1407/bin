@@ -23,14 +23,26 @@ type ObjectData struct {
 	closed bool
 }
 
-// OpenObject returns the metadata of bucket/key and access to its data.
+// OpenObject returns the metadata of the current version of bucket/key and
+// access to its data.
 func (s *Store) OpenObject(ctx context.Context, bucket, key string) (ObjectInfo, *ObjectData, error) {
+	info, data, err := s.OpenVersion(ctx, bucket, key, "")
+	if errors.Is(err, ErrDeleteMarker) {
+		return ObjectInfo{}, nil, ErrNoSuchKey
+	}
+	return info, data, err
+}
+
+// OpenVersion returns the metadata of one version of bucket/key (the latest
+// when versionID is "") and access to its data. A delete marker is returned
+// with ErrDeleteMarker and no data.
+func (s *Store) OpenVersion(ctx context.Context, bucket, key, versionID string) (ObjectInfo, *ObjectData, error) {
 	// A concurrent overwrite can delete the blobs between reading the
 	// metadata and reserving them; then a fresh lookup finds the new ones.
 	for attempt := 0; ; attempt++ {
-		info, err := s.StatObject(ctx, bucket, key)
+		info, err := s.StatVersion(ctx, bucket, key, versionID)
 		if err != nil {
-			return ObjectInfo{}, nil, err
+			return info, nil, err
 		}
 		parts := info.dataParts()
 		blobs := make([]string, len(parts))

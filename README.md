@@ -21,6 +21,14 @@ serves two ports:
 - **S3 API**: buckets, objects, `ListObjects` V1/V2, `CopyObject`,
   `DeleteObjects`, multipart uploads, range reads, presigned URLs, and
   checksums (CRC32, CRC32C, CRC64NVME, SHA-1, SHA-256).
+- **Versioning**: per bucket, enabled or suspended as in S3. Overwrites and
+  deletes keep the previous versions (deletes leave a delete marker);
+  `ListObjectVersions`, reads, copies and deletes by `versionId`. In the
+  console, each file's **Versions** tab downloads, compares, restores or
+  removes versions, and **Deleted files** brings deleted ones back.
+- **CORS**: per-bucket rules (`PutBucketCors`, or the bucket settings in the
+  console) so web apps can call the S3 API from the browser, for example to
+  upload with presigned URLs. Preflights are answered without credentials.
 - **Authentication**: AWS Signature V4 in headers, query strings and
   `aws-chunked` streaming uploads (signed and unsigned trailers). Path-style
   requests by default; virtual-host style when `BIN_DOMAIN` is set.
@@ -288,9 +296,8 @@ make check        # all of the above
 bin targets single-node deployments: one process, one disk, no clustering or
 erasure coding. Not supported yet:
 
-- **Versioning, lifecycle rules, CORS, object lock, event webhooks**: planned.
-  The storage schema is already ready for versions; `GetBucketVersioning`
-  answers, but versioning cannot be turned on yet.
+- **Lifecycle rules, object lock, MFA delete, event webhooks**: planned.
+  Older versions stay until deleted one by one (or with the bucket).
 - **KMS encryption, IAM policies**: out of scope.
 - **Replication** runs on a schedule (every minute at most), not on each
   write, and in one direction per rule; two rules pushing and pulling the
@@ -298,8 +305,8 @@ erasure coding. Not supported yet:
 
 Some console screens are previews of planned features and are not connected
 to the server yet: **Policies**, native TLS certificates in **Settings**, and
-the versioning, CORS and lifecycle sections of bucket settings. They are
-marked "coming soon" and change nothing on the server.
+the lifecycle section of bucket settings. They are marked "coming soon" and
+change nothing on the server.
 
 ## Documentation
 

@@ -2,6 +2,7 @@ package s3
 
 import (
 	"encoding/xml"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -141,11 +142,11 @@ func (h *Handler) uploadPartCopy(w http.ResponseWriter, r *http.Request, req Req
 	if err != nil {
 		return err
 	}
-	srcBucket, srcKey, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source"))
+	srcBucket, srcKey, srcVersion, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source"))
 	if err != nil {
 		return err
 	}
-	opts := storage.CopyPartOptions{Length: -1}
+	opts := storage.CopyPartOptions{SourceVersionID: srcVersion, Length: -1}
 	if v := r.Header.Get("X-Amz-Copy-Source-Range"); v != "" {
 		first, last, ok := strings.Cut(strings.TrimPrefix(v, "bytes="), "-")
 		a, errA := strconv.ParseInt(first, 10, 64)
@@ -167,8 +168,14 @@ func (h *Handler) uploadPartCopy(w http.ResponseWriter, r *http.Request, req Req
 	}
 	part, err := h.opts.Store.CopyPart(r.Context(), srcBucket, srcKey, req.Bucket, req.Key,
 		r.URL.Query().Get("uploadId"), n, opts)
+	if errors.Is(err, storage.ErrDeleteMarker) {
+		return errCopyFromMarker
+	}
 	if err != nil {
 		return storageError(err)
+	}
+	if srcVersion != "" {
+		w.Header().Set("X-Amz-Copy-Source-Version-Id", srcVersion)
 	}
 	return writeXML(w, http.StatusOK, copyPartResult{
 		ETag: quoteETag(part.ETag), LastModified: timeXML(part.ModTime), checksumFieldsXML: checksumFields(part.Checksums),
@@ -227,6 +234,7 @@ func (h *Handler) completeMultipartUpload(w http.ResponseWriter, r *http.Request
 		return storageError(err)
 	}
 	setChecksumHeaders(w, info)
+	setVersionHeader(w, info.VersionID, false)
 	return writeXML(w, http.StatusOK, completeMultipartUploadResult{
 		Location:          objectLocation(r, req),
 		Bucket:            req.Bucket,
@@ -395,8 +403,10 @@ type deleteRequest struct {
 }
 
 type deletedXML struct {
-	Key       string `xml:"Key"`
-	VersionID string `xml:"VersionId,omitempty"`
+	Key                   string `xml:"Key"`
+	VersionID             string `xml:"VersionId,omitempty"`
+	DeleteMarker          bool   `xml:"DeleteMarker,omitempty"`
+	DeleteMarkerVersionID string `xml:"DeleteMarkerVersionId,omitempty"`
 }
 
 type deleteErrorXML struct {
@@ -412,8 +422,9 @@ type deleteResult struct {
 	Errors  []deleteErrorXML `xml:"Error"`
 }
 
-// deleteObjects deletes up to 1000 keys in one request, reporting each
-// outcome. A key that does not exist counts as deleted, as with DeleteObject.
+// deleteObjects deletes up to 1000 keys or versions in one request, reporting
+// each outcome. A key that does not exist counts as deleted, as with
+// DeleteObject.
 func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request, req Request) error {
 	var in deleteRequest
 	empty, err := readXMLBody(r, &in)
@@ -428,12 +439,8 @@ func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request, req Requ
 	}
 	var res deleteResult
 	for _, o := range in.Objects {
-		if o.VersionID != "" && o.VersionID != "null" {
-			res.Errors = append(res.Errors, deleteErrorXML{Key: o.Key, VersionID: o.VersionID,
-				Code: "NotImplemented", Message: "Deleting specific object versions is not supported yet."})
-			continue
-		}
-		if err := h.opts.Store.DeleteObject(r.Context(), req.Bucket, o.Key); err != nil {
+		done, err := h.opts.Store.DeleteVersion(r.Context(), req.Bucket, o.Key, o.VersionID)
+		if err != nil {
 			apiErr, ok := storageError(err).(*s3err.Error)
 			if !ok {
 				h.opts.Log.Error("delete object failed", "bucket", req.Bucket, "key", o.Key, "err", err)
@@ -442,9 +449,14 @@ func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request, req Requ
 			res.Errors = append(res.Errors, deleteErrorXML{Key: o.Key, VersionID: o.VersionID, Code: apiErr.Code, Message: apiErr.Message})
 			continue
 		}
-		if !in.Quiet {
-			res.Deleted = append(res.Deleted, deletedXML{Key: o.Key, VersionID: o.VersionID})
+		if in.Quiet {
+			continue
 		}
+		d := deletedXML{Key: o.Key, VersionID: o.VersionID, DeleteMarker: done.DeleteMarker}
+		if done.DeleteMarker {
+			d.DeleteMarkerVersionID = done.VersionID
+		}
+		res.Deleted = append(res.Deleted, d)
 	}
 	return writeXML(w, http.StatusOK, res)
 }

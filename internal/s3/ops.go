@@ -18,11 +18,16 @@ const (
 	OpHeadBucket              Op = "HeadBucket"
 	OpGetBucketLocation       Op = "GetBucketLocation"
 	OpGetBucketVersioning     Op = "GetBucketVersioning"
+	OpPutBucketVersioning     Op = "PutBucketVersioning"
 	OpGetBucketTagging        Op = "GetBucketTagging"
 	OpPutBucketTagging        Op = "PutBucketTagging"
 	OpDeleteBucketTagging     Op = "DeleteBucketTagging"
+	OpGetBucketCors           Op = "GetBucketCors"
+	OpPutBucketCors           Op = "PutBucketCors"
+	OpDeleteBucketCors        Op = "DeleteBucketCors"
 	OpListObjects             Op = "ListObjects"
 	OpListObjectsV2           Op = "ListObjectsV2"
+	OpListObjectVersions      Op = "ListObjectVersions"
 	OpListMultipartUploads    Op = "ListMultipartUploads"
 	OpDeleteObjects           Op = "DeleteObjects"
 	OpPutObject               Op = "PutObject"
@@ -49,11 +54,11 @@ type Request struct {
 // carry one get NotImplemented instead of being mistaken for a plain
 // GetObject/PutObject (e.g. "PUT /b?policy" must not create a bucket).
 var unsupported = []string{
-	"accelerate", "acl", "analytics", "attributes", "cors", "encryption",
+	"accelerate", "acl", "analytics", "attributes", "encryption",
 	"intelligent-tiering", "inventory", "legal-hold", "lifecycle", "logging",
 	"metrics", "notification", "object-lock", "ownershipControls", "policy",
 	"policyStatus", "publicAccessBlock", "replication", "requestPayment",
-	"restore", "retention", "select", "torrent", "versions", "website",
+	"restore", "retention", "select", "torrent", "website",
 }
 
 // parseTarget extracts bucket and key from a request. With a configured domain,
@@ -87,14 +92,12 @@ func Resolve(r *http.Request, domain string) (Request, error) {
 			return req, s3err.ErrNotImplemented
 		}
 	}
-	// Versioning is read-only: rclone reads it before purging a bucket, but
-	// bin never enables it.
-	if q.Has("versioning") && (key != "" || r.Method != http.MethodGet) {
-		return req, s3err.ErrNotImplemented
-	}
-	// Bucket tags are supported; object tags are not (yet).
-	if q.Has("tagging") && key != "" {
-		return req, s3err.ErrNotImplemented
+	// Versioning, CORS and version listings are bucket sub-resources, and
+	// bucket tags are supported but object tags are not (yet).
+	for _, sub := range []string{"versioning", "cors", "versions", "tagging"} {
+		if q.Has(sub) && key != "" {
+			return req, s3err.ErrNotImplemented
+		}
 	}
 
 	switch {
@@ -124,6 +127,10 @@ func bucketOp(method string, q url.Values) Op {
 			return OpGetBucketVersioning
 		case q.Has("tagging"):
 			return OpGetBucketTagging
+		case q.Has("cors"):
+			return OpGetBucketCors
+		case q.Has("versions"):
+			return OpListObjectVersions
 		case q.Has("uploads"):
 			return OpListMultipartUploads
 		case q.Get("list-type") == "2":
@@ -132,13 +139,25 @@ func bucketOp(method string, q url.Values) Op {
 			return OpListObjects
 		}
 	case http.MethodPut:
-		if q.Has("tagging") {
+		switch {
+		case q.Has("versioning"):
+			return OpPutBucketVersioning
+		case q.Has("tagging"):
 			return OpPutBucketTagging
+		case q.Has("cors"):
+			return OpPutBucketCors
+		case q.Has("versions"):
+			return ""
 		}
 		return OpCreateBucket
 	case http.MethodDelete:
-		if q.Has("tagging") {
+		switch {
+		case q.Has("tagging"):
 			return OpDeleteBucketTagging
+		case q.Has("cors"):
+			return OpDeleteBucketCors
+		case q.Has("versioning"), q.Has("versions"):
+			return ""
 		}
 		return OpDeleteBucket
 	case http.MethodHead:

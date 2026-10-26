@@ -45,9 +45,11 @@ func newErr(code string, status int, msg string) *Error {
 
 var (
 	ErrAccessDenied                 = newErr("AccessDenied", 403, "Access Denied.")
+	ErrAccessForbidden              = newErr("AccessForbidden", 403, "CORSResponse: This CORS request is not allowed. This is usually because the evalution of Origin, request method / Access-Control-Request-Method or Access-Control-Request-Headers are not whitelisted by the resource's CORS spec.")
 	ErrAuthorizationHeaderMalformed = newErr("AuthorizationHeaderMalformed", 400, "The authorization header is malformed.")
 	ErrAuthorizationQueryMalformed  = newErr("AuthorizationQueryParametersError", 400, "Error parsing the X-Amz-Credential parameter.")
 	ErrBadDigest                    = newErr("BadDigest", 400, "The Content-MD5 you specified did not match what we received.")
+	ErrBadRequest                   = newErr("BadRequest", 400, "Insufficient information. Origin request header needed.")
 	ErrBucketAlreadyExists          = newErr("BucketAlreadyExists", 409, "The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again.")
 	ErrBucketAlreadyOwnedByYou      = newErr("BucketAlreadyOwnedByYou", 409, "Your previous request to create the named bucket succeeded and you already own it.")
 	ErrBucketNotEmpty               = newErr("BucketNotEmpty", 409, "The bucket you tried to delete is not empty")
@@ -72,9 +74,11 @@ var (
 	ErrMethodNotAllowed             = newErr("MethodNotAllowed", 405, "The specified method is not allowed against this resource.")
 	ErrMissingContentLength         = newErr("MissingContentLength", 411, "You must provide the Content-Length HTTP header.")
 	ErrNoSuchBucket                 = newErr("NoSuchBucket", 404, "The specified bucket does not exist")
+	ErrNoSuchCORSConfiguration      = newErr("NoSuchCORSConfiguration", 404, "The CORS configuration does not exist")
 	ErrNoSuchKey                    = newErr("NoSuchKey", 404, "The specified key does not exist.")
 	ErrNoSuchTagSet                 = newErr("NoSuchTagSet", 404, "The TagSet does not exist")
 	ErrNoSuchUpload                 = newErr("NoSuchUpload", 404, "The specified multipart upload does not exist. The upload ID may be invalid, or the upload may have been aborted or completed.")
+	ErrNoSuchVersion                = newErr("NoSuchVersion", 404, "The specified version does not exist.")
 	ErrNotImplemented               = newErr("NotImplemented", 501, "A header you provided implies functionality that is not implemented.")
 	ErrQuotaExceeded                = newErr("QuotaExceeded", 400, "The bucket quota would be exceeded by this request.")
 	ErrPreconditionFailed           = newErr("PreconditionFailed", 412, "At least one of the pre-conditions you specified did not hold")

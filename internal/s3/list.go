@@ -162,6 +162,90 @@ func (h *Handler) listObjectsV1(w http.ResponseWriter, r *http.Request, req Requ
 	return writeXML(w, http.StatusOK, out)
 }
 
+// versionEntryXML is a <Version> or a <DeleteMarker>: they share one slice so
+// that they keep the listing's order (key, then newest first).
+type versionEntryXML struct {
+	XMLName      xml.Name
+	Key          string    `xml:"Key"`
+	VersionID    string    `xml:"VersionId"`
+	IsLatest     bool      `xml:"IsLatest"`
+	LastModified string    `xml:"LastModified"`
+	ETag         string    `xml:"ETag,omitempty"`
+	Size         *int64    `xml:"Size,omitempty"`
+	Owner        *ownerXML `xml:"Owner,omitempty"`
+	StorageClass string    `xml:"StorageClass,omitempty"`
+}
+
+type listVersionsResult struct {
+	XMLName             xml.Name          `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListVersionsResult"`
+	Name                string            `xml:"Name"`
+	Prefix              string            `xml:"Prefix"`
+	KeyMarker           string            `xml:"KeyMarker"`
+	VersionIDMarker     string            `xml:"VersionIdMarker"`
+	NextKeyMarker       string            `xml:"NextKeyMarker,omitempty"`
+	NextVersionIDMarker string            `xml:"NextVersionIdMarker,omitempty"`
+	MaxKeys             int               `xml:"MaxKeys"`
+	Delimiter           string            `xml:"Delimiter,omitempty"`
+	EncodingType        string            `xml:"EncodingType,omitempty"`
+	IsTruncated         bool              `xml:"IsTruncated"`
+	Entries             []versionEntryXML `xml:",any"`
+	CommonPrefixes      []commonPrefixXML `xml:"CommonPrefixes"`
+}
+
+func (h *Handler) listObjectVersions(w http.ResponseWriter, r *http.Request, req Request) error {
+	prefix, delimiter, maxKeys, encode, err := listParams(r)
+	if err != nil {
+		return err
+	}
+	q := r.URL.Query()
+	keyMarker, versionMarker := q.Get("key-marker"), q.Get("version-id-marker")
+	if versionMarker != "" {
+		if keyMarker == "" {
+			return s3err.ErrInvalidArgument.WithMessage("A version-id marker cannot be specified without a key marker.")
+		}
+		if !storage.ValidVersionID(versionMarker) {
+			return s3err.ErrInvalidArgument.WithMessage("Invalid version id specified")
+		}
+	}
+	res, err := h.opts.Store.ListVersions(r.Context(), req.Bucket, storage.ListVersionsOptions{
+		Prefix: prefix, Delimiter: delimiter, KeyMarker: keyMarker, VersionIDMarker: versionMarker, MaxKeys: maxKeys,
+	})
+	if err != nil {
+		return storageError(err)
+	}
+	owner := ownerXML(h.opts.Owner)
+	out := listVersionsResult{
+		Name:            req.Bucket,
+		Prefix:          encode(prefix),
+		KeyMarker:       encode(keyMarker),
+		VersionIDMarker: versionMarker,
+		MaxKeys:         maxKeys,
+		Delimiter:       encode(delimiter),
+		IsTruncated:     res.IsTruncated,
+		CommonPrefixes:  prefixesXML(res.CommonPrefixes, encode),
+	}
+	if q.Get("encoding-type") != "" {
+		out.EncodingType = "url"
+	}
+	if res.IsTruncated {
+		out.NextKeyMarker, out.NextVersionIDMarker = encode(res.NextKeyMarker), res.NextVersionIDMarker
+	}
+	for _, v := range res.Versions {
+		e := versionEntryXML{
+			XMLName: xml.Name{Local: "Version"}, Key: encode(v.Key), VersionID: v.VersionID, IsLatest: v.IsLatest,
+			LastModified: timeXML(v.ModTime), Owner: &owner,
+		}
+		if v.DeleteMarker {
+			e.XMLName.Local = "DeleteMarker"
+		} else {
+			size := v.Size
+			e.ETag, e.Size, e.StorageClass = quoteETag(v.ETag), &size, "STANDARD"
+		}
+		out.Entries = append(out.Entries, e)
+	}
+	return writeXML(w, http.StatusOK, out)
+}
+
 func contentsXML(objects []storage.ObjectInfo, encode func(string) string, owner *ownerXML) []objectXML {
 	out := make([]objectXML, 0, len(objects))
 	for _, o := range objects {

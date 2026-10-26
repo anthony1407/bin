@@ -15,12 +15,17 @@ var opActions = map[Op]auth.Action{
 	OpDeleteBucket:            auth.ManageBucket,
 	OpPutBucketTagging:        auth.ManageBucket,
 	OpDeleteBucketTagging:     auth.ManageBucket,
+	OpPutBucketVersioning:     auth.ManageBucket,
+	OpPutBucketCors:           auth.ManageBucket,
+	OpDeleteBucketCors:        auth.ManageBucket,
 	OpHeadBucket:              auth.BucketInfo,
 	OpGetBucketLocation:       auth.BucketInfo,
 	OpGetBucketVersioning:     auth.BucketInfo,
 	OpGetBucketTagging:        auth.BucketInfo,
+	OpGetBucketCors:           auth.BucketInfo,
 	OpListObjects:             auth.ListBucket,
 	OpListObjectsV2:           auth.ListBucket,
+	OpListObjectVersions:      auth.ListBucket,
 	OpListMultipartUploads:    auth.ListBucket,
 	OpGetObject:               auth.ReadObject,
 	OpHeadObject:              auth.ReadObject,
@@ -37,11 +42,12 @@ var opActions = map[Op]auth.Action{
 }
 
 // anonymousNever lists operations no bucket policy opens to anonymous users:
-// copies need read access to a second resource, and bulk deletes and bucket
-// listings are not covered by per-prefix rules.
+// copies need read access to a second resource, bulk deletes and bucket
+// listings are not covered by per-prefix rules, and older versions stay
+// private even in a public bucket.
 var anonymousNever = map[Op]bool{
 	OpListBuckets: true, OpCopyObject: true, OpUploadPartCopy: true, OpDeleteObjects: true,
-	OpListMultipartUploads: true,
+	OpListMultipartUploads: true, OpListObjectVersions: true,
 }
 
 type grantsKey struct{}
@@ -64,7 +70,7 @@ func (h *Handler) authorize(r *http.Request, req Request, accessKey string) (con
 	}
 
 	if accessKey == "" {
-		if anonymousNever[req.Op] || h.opts.Store == nil {
+		if anonymousNever[req.Op] || r.URL.Query().Has("versionId") || h.opts.Store == nil {
 			return ctx, s3err.ErrAccessDenied
 		}
 		b, err := h.opts.Store.GetBucket(ctx, req.Bucket)
@@ -96,7 +102,7 @@ func (h *Handler) authorize(r *http.Request, req Request, accessKey string) (con
 		return ctx, s3err.ErrAccessDenied
 	}
 	if req.Op == OpCopyObject || req.Op == OpUploadPartCopy {
-		if src, _, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source")); err == nil && !grants.Allows(auth.ReadObject, src) {
+		if src, _, _, err := parseCopySource(r.Header.Get("X-Amz-Copy-Source")); err == nil && !grants.Allows(auth.ReadObject, src) {
 			return ctx, s3err.ErrAccessDenied
 		}
 	}

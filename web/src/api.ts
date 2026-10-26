@@ -59,19 +59,34 @@ export interface Policy {
   rules?: Rule[];
 }
 
+export interface CORSRule {
+  id?: string;
+  allowedOrigins: string[];
+  allowedMethods: string[];
+  allowedHeaders?: string[];
+  exposeHeaders?: string[];
+  /** How long browsers may cache a preflight; missing sends no Max-Age. */
+  maxAgeSeconds?: number;
+}
+
 export interface Bucket {
   name: string;
   createdAt: string;
+  /** Stored versions, older ones included, when versioning is on. */
   objects: number;
   size: number;
   quotaBytes: number;
   policy: Policy;
   tags: Record<string, string>;
-  versioning: string;
+  /** "" (never versioned), "Enabled" or "Suspended". */
+  versioning: "" | "Enabled" | "Suspended";
+  cors: CORSRule[];
 }
 
 export interface ObjectInfo {
   key: string;
+  /** Missing for objects of buckets that were never versioned; names the delete marker in a listing of deleted objects. */
+  versionId?: string;
   size: number;
   etag: string;
   lastModified: string;
@@ -83,6 +98,15 @@ export interface ObjectInfo {
   /** Active share links, and until when the last one works. */
   shares?: number;
   shareExpiresAt?: string;
+}
+
+export interface ObjectVersion {
+  versionId: string;
+  isLatest: boolean;
+  deleteMarker: boolean;
+  size: number;
+  etag?: string;
+  lastModified: string;
 }
 
 export interface ShareLink {
@@ -185,7 +209,7 @@ export interface ScrubStatus {
   finishedAt?: string;
   objects: number;
   bytes: number;
-  corrupt: { bucket: string; key: string }[];
+  corrupt: { bucket: string; key: string; versionId?: string }[];
   error?: string;
 }
 
@@ -237,16 +261,30 @@ export const api = {
   setTags: (name: string, tags: Record<string, string>) => request<Bucket>("PUT", `/buckets/${enc(name)}/tags`, { tags }),
   setQuota: (name: string, bytes: number) => request<Bucket>("PUT", `/buckets/${enc(name)}/quota`, { bytes }),
   setPolicy: (name: string, policy: Policy) => request<Bucket>("PUT", `/buckets/${enc(name)}/policy`, policy),
+  setVersioning: (name: string, status: "Enabled" | "Suspended") =>
+    request<Bucket>("PUT", `/buckets/${enc(name)}/versioning`, { status }),
+  /** Replaces the CORS rules; an empty list removes them. */
+  setCORS: (name: string, rules: CORSRule[]) => request<Bucket>("PUT", `/buckets/${enc(name)}/cors`, { rules }),
 
-  objects: (bucket: string, opts: { prefix?: string; after?: string; search?: string; limit?: number }) => {
+  objects: (bucket: string, opts: { prefix?: string; after?: string; search?: string; limit?: number; deleted?: boolean }) => {
     const q = new URLSearchParams();
     if (opts.prefix) q.set("prefix", opts.prefix);
     if (opts.after) q.set("after", opts.after);
     if (opts.search) q.set("search", opts.search);
     if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.deleted) q.set("deleted", "true");
     return request<ObjectPage>("GET", `/buckets/${enc(bucket)}/objects?${q}`);
   },
-  stat: (bucket: string, key: string) => request<ObjectInfo>("GET", `/buckets/${enc(bucket)}/object?key=${enc(key)}`),
+  stat: (bucket: string, key: string, versionId?: string) =>
+    request<ObjectInfo>("GET", `/buckets/${enc(bucket)}/object?key=${enc(key)}${versionId ? `&versionId=${enc(versionId)}` : ""}`),
+  versions: (bucket: string, key: string) =>
+    request<{ versions: ObjectVersion[]; truncated: boolean }>("GET", `/buckets/${enc(bucket)}/versions?key=${enc(key)}`),
+  /** Removes one version for good; removing a delete marker brings the object back. */
+  deleteVersion: (bucket: string, key: string, versionId: string) =>
+    request<{ versionId: string; deleteMarker: boolean }>("DELETE", `/buckets/${enc(bucket)}/versions?key=${enc(key)}&versionId=${enc(versionId)}`),
+  /** Makes an older version current again, as a new version. */
+  restoreVersion: (bucket: string, key: string, versionId: string) =>
+    request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/versions/restore`, { key, versionId }),
   deleteObjects: (bucket: string, keys: string[], prefixes: string[]) =>
     request<{ deleted: number }>("DELETE", `/buckets/${enc(bucket)}/objects`, { keys, prefixes }),
   createFolder: (bucket: string, prefix: string) => request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/folders`, { prefix }),
@@ -255,8 +293,8 @@ export const api = {
   shareLinks: (bucket: string, key: string) =>
     request<{ links: ShareLink[] }>("GET", `/buckets/${enc(bucket)}/shares?key=${enc(key)}`).then((r) => r.links),
   revokeShare: (id: string) => request<void>("DELETE", `/shares/${enc(id)}`),
-  downloadURL: (bucket: string, key: string, inline = false) =>
-    `/api/v1/buckets/${enc(bucket)}/download?key=${enc(key)}${inline ? "&inline=1" : ""}`,
+  downloadURL: (bucket: string, key: string, inline = false, versionId?: string) =>
+    `/api/v1/buckets/${enc(bucket)}/download?key=${enc(key)}${inline ? "&inline=1" : ""}${versionId ? `&versionId=${enc(versionId)}` : ""}`,
 
   accessKeys: () => request<{ accessKeys: AccessKey[] }>("GET", "/access-keys").then((r) => r.accessKeys),
   createAccessKey: (body: { name: string; expiresAt?: string; buckets?: string[]; readOnly?: boolean; groups?: string[] }) =>
@@ -515,9 +553,9 @@ function saveAs(href: string, name: string) {
   a.remove();
 }
 
-/** Downloads an object to the user's disk, reporting the bytes received. */
+/** Downloads an object (the version it names, if any) to the user's disk, reporting the bytes received. */
 export async function downloadObject(bucket: string, object: ObjectInfo, onProgress: (received: number) => void): Promise<void> {
-  const url = api.downloadURL(bucket, object.key);
+  const url = api.downloadURL(bucket, object.key, false, object.versionId);
   const name = object.key.slice(object.key.lastIndexOf("/") + 1) || "download";
   if (object.size > FETCH_DOWNLOAD_MAX) {
     saveAs(url, name);
