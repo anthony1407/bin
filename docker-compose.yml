@@ -48,6 +48,10 @@ services:
       BIN_LOG_LEVEL: ${BIN_LOG_LEVEL:-}
       BIN_LOG_FORMAT: ${BIN_LOG_FORMAT:-}
       BIN_LOG_REQUESTS: ${BIN_LOG_REQUESTS:-}
+    # Lets replication and imports reach servers on the Docker host (or an SSH
+    # tunnel there) as host.docker.internal; Docker Desktop has it built in.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - bin-data:/data
     # The image has no curl or wget: bin checks itself.

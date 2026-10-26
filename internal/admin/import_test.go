@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,6 +56,19 @@ func TestRemoteClientRefusesLoopback(t *testing.T) {
 		cancel()
 		if code, _ := remoteErrorMessage(err); code != "endpoint_not_allowed" {
 			t.Errorf("%s: got %q (%v)", endpoint, code, err)
+		}
+	}
+}
+
+// In a container, localhost is the container: the refusal points to the host.
+func TestBlockedAddressHintsDockerHost(t *testing.T) {
+	saved := inContainer
+	t.Cleanup(func() { inContainer = saved })
+	for _, in := range []bool{false, true} {
+		inContainer = in
+		_, msg := remoteErrorMessage(errBlockedAddress)
+		if got := strings.Contains(msg, "host.docker.internal"); got != in {
+			t.Errorf("inContainer=%v: hint shown=%v in %q", in, got, msg)
 		}
 	}
 }

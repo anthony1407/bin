@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -165,6 +166,17 @@ func literalHostBlocked(endpoint string) bool {
 	return err == nil && dialGuard("tcp", net.JoinHostPort(ip.String(), "1"), nil) != nil
 }
 
+// inContainer reports whether bin runs in a Docker or Podman container, where
+// "localhost" in an endpoint usually meant the host; the refusal says so.
+var inContainer = func() bool {
+	for _, f := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(f); err == nil {
+			return true
+		}
+	}
+	return false
+}()
+
 // dialGuard is guardDial; tests that use a remote on 127.0.0.1 replace it.
 var dialGuard = guardDial
 
@@ -204,7 +216,12 @@ func remoteErrorMessage(err error) (code, message string) {
 	case errors.Is(err, errInvalidEndpoint):
 		return "invalid_endpoint", "The endpoint must be an http:// or https:// URL with a host and no path, e.g. https://s3.example.com."
 	case errors.Is(err, errBlockedAddress) || strings.Contains(err.Error(), errBlockedAddress.Error()):
-		return "endpoint_not_allowed", "bin does not connect to loopback, link-local or cloud metadata addresses."
+		msg := "bin does not connect to loopback, link-local or cloud metadata addresses."
+		if inContainer {
+			msg += " bin runs in a container, where localhost is the container itself:" +
+				" for a server on the Docker host (or an SSH tunnel there), use http://host.docker.internal:<port>."
+		}
+		return "endpoint_not_allowed", msg
 	}
 	switch minio.ToErrorResponse(err).Code {
 	case "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "InvalidToken", "ExpiredToken":
