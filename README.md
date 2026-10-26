@@ -181,6 +181,7 @@ Settings come from environment variables or from `KEY=VALUE` lines in
 | `BIN_REGION` | `us-east-1` | Region reported to clients and required in signatures |
 | `BIN_DOMAIN` | | Enables virtual-host style requests (`bucket.domain`) |
 | `BIN_PUBLIC_URL` | | S3 URL as clients see it (e.g. `https://s3.example.com`); used in share links |
+| `BIN_CONSOLE_URL` | | Console URL as users see it (e.g. `https://console.example.com`); shown at startup |
 | `BIN_TRUSTED_PROXIES` | | Reverse proxies (IPs or CIDRs, comma separated) whose `X-Forwarded-For` gives the real client IP for the audit log, sign-in limits and dropzone records; see below |
 | `BIN_MASTER_KEY` | generated | Key that encrypts secrets at rest; see [Backups](#backups) |
 | `BIN_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |

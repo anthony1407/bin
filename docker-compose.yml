@@ -38,7 +38,10 @@ services:
       # Optional settings; empty means bin's default (see .env.example).
       BIN_REGION: ${BIN_REGION:-}
       BIN_DOMAIN: ${BIN_DOMAIN:-}
-      BIN_PUBLIC_URL: ${BIN_PUBLIC_URL:-}
+      # URLs as seen from outside the container: used in share links and in the
+      # startup banner. The defaults follow the published host ports.
+      BIN_PUBLIC_URL: ${BIN_PUBLIC_URL:-http://127.0.0.1:${BIN_S3_PORT:-9000}}
+      BIN_CONSOLE_URL: ${BIN_CONSOLE_URL:-http://127.0.0.1:${BIN_CONSOLE_PORT:-9001}}
       # Behind a reverse proxy, its address/network, so bin records real client IPs.
       BIN_TRUSTED_PROXIES: ${BIN_TRUSTED_PROXIES:-}
       BIN_MASTER_KEY: ${BIN_MASTER_KEY:-}

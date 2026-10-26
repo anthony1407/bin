@@ -313,6 +313,14 @@ func announce(log *slog.Logger, cfg *config.Config, bound []server.Bound) {
 	for _, b := range bound {
 		urls[b.Name] = listenURLs(b.Addr)
 	}
+	// Behind Docker port mapping or a proxy, the configured URLs are the ones
+	// users can actually open; the listen addresses would point inside.
+	if cfg.PublicURL != "" {
+		urls["s3"] = []string{cfg.PublicURL}
+	}
+	if cfg.ConsoleURL != "" {
+		urls["console"] = []string{cfg.ConsoleURL}
+	}
 	if cfg.LogFormat == "json" {
 		log.Info("bin started", "version", buildinfo.Version, "commit", buildinfo.Commit,
 			"s3_api", urls["s3"], "console", urls["console"], "region", cfg.Region, "data_dir", cfg.DataDir)
