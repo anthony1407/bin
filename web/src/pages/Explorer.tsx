@@ -114,6 +114,9 @@ interface UploadJob {
   abort: AbortController;
 }
 
+// Deleted files are moved under this prefix, from where they can be restored.
+const TRASH = ".trash/";
+
 // Once every upload has finished the panel closes itself: soon when all went
 // well, later when something failed (so the error can be read), and never
 // while the pointer is over it.
@@ -1832,9 +1835,13 @@ export function ExplorerPage() {
       if (!after) api.bucket(bucket).then(setMeta).catch((e) => toast("error", errorText(e)));
       try {
         const page = await api.objects(bucket, { prefix, after, search: search || undefined, limit: 200 });
-        const files = page.objects.filter((o) => o.key !== prefix); // the folder marker itself
+        // Skip the folder marker itself and, outside the trash, the trash: it
+        // has its own panel, and browsing into it invites deleting from it.
+        const visible = (k: string) => prefix.startsWith(TRASH) || !k.startsWith(TRASH);
+        const files = page.objects.filter((o) => o.key !== prefix && visible(o.key));
+        const folders = page.prefixes.filter(visible);
         setObjects((cur) => (after ? [...cur, ...files] : files));
-        setPrefixes((cur) => (after ? [...cur, ...page.prefixes] : page.prefixes));
+        setPrefixes((cur) => (after ? [...cur, ...folders] : folders));
         setNext(page.truncated ? (page.nextAfter ?? null) : null);
       } catch (e) {
         toast("error", errorText(e));
@@ -2013,20 +2020,27 @@ export function ExplorerPage() {
   const displayedPrefixes = filterKind ? [] : prefixes;
 
   const allKeys = [...displayedPrefixes, ...displayedObjects.map((o) => o.key)];
+  // Every selected item is already in the trash: deleting means for good.
+  const inTrash = selected.size > 0 && [...selected].every((k) => k.startsWith(TRASH));
   const allSelected = allKeys.length > 0 && allKeys.every((k) => selected.has(k));
 
   // --- trash helpers ---
   async function loadTrash() {
     try {
-      const page = await api.objects(bucket, { prefix: ".trash/", limit: 500 });
-      setTrashObjects(page.objects.filter((o) => o.key !== ".trash/"));
+      // Recursive: files deleted from folders sit in subfolders of the trash.
+      const page = await api.objects(bucket, { prefix: TRASH, delimiter: "", limit: 500 });
+      setTrashObjects(page.objects.filter((o) => !o.key.endsWith("/"))); // skip folder markers
     } catch { setTrashObjects([]); }
   }
   async function softDeleteSelected() {
     setDeletingSelected(true);
     try {
+      // Objects already in the trash are deleted for good; moving them again
+      // would nest them under .trash/.trash/ forever.
       const keys = [...selected].filter((k) => !k.endsWith("/"));
-      for (const k of keys) {
+      const trashed = keys.filter((k) => k.startsWith(TRASH));
+      if (trashed.length > 0) await api.deleteObjects(bucket, trashed, []);
+      for (const k of keys.filter((k) => !k.startsWith(TRASH))) {
         const url = api.downloadURL(bucket, k);
         const res = await fetch(url);
         const blob = await res.blob();
@@ -2037,10 +2051,27 @@ export function ExplorerPage() {
       }
       const folders = [...selected].filter((k) => k.endsWith("/"));
       if (folders.length > 0) await api.deleteObjects(bucket, [], folders);
-      toast("ok", `Moved ${count(keys.length)} item${keys.length === 1 ? "" : "s"} to trash.`);
+      // Once the trash holds nothing, remove it too (with any folder markers
+      // left inside) and leave it, rather than staying in an empty folder.
+      if (prefix.startsWith(TRASH)) {
+        const left = await api.objects(bucket, { prefix: TRASH, limit: 2 });
+        if (left.prefixes.length === 0 && left.objects.every((o) => o.key === TRASH)) {
+          await api.deleteObjects(bucket, [], [TRASH]);
+          setConfirmDelete(false);
+          setSelected(new Set());
+          toast("ok", "Trash emptied.");
+          goTo("");
+          return;
+        }
+      }
+      const moved = keys.length - trashed.length;
+      toast("ok", moved > 0
+        ? `Moved ${count(moved)} item${moved === 1 ? "" : "s"} to trash.`
+        : `Permanently deleted ${count(keys.length + folders.length)} item${keys.length + folders.length === 1 ? "" : "s"}.`);
       setConfirmDelete(false);
       setSelected(new Set());
       load();
+      if (showTrash) loadTrash();
     } catch (e) {
       toast("error", errorText(e));
     } finally {
@@ -2075,6 +2106,8 @@ export function ExplorerPage() {
       toast("ok", `Permanently deleted ${count(keys.length)} item${keys.length === 1 ? "" : "s"}.`);
       setTrashObjects([]);
       setShowTrash(false);
+      if (prefix.startsWith(TRASH)) goTo("");
+      else load();
     } catch (e) {
       toast("error", errorText(e));
     }
@@ -2786,16 +2819,22 @@ export function ExplorerPage() {
               Cancel
             </Button>
             <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={softDeleteSelected}>
-              {deletingSelected ? "Moving to trash…" : `Move to Trash (${count(selected.size)})`}
+              {inTrash
+                ? (deletingSelected ? "Deleting…" : `Delete permanently (${count(selected.size)})`)
+                : (deletingSelected ? "Moving to trash…" : `Move to Trash (${count(selected.size)})`)}
             </Button>
           </>
         }
       >
         <p className="text-sm">
-          Move {count(selected.size)} selected item{selected.size === 1 ? "" : "s"} to trash?
+          {inTrash ? "Permanently delete" : "Move"} {count(selected.size)} selected item{selected.size === 1 ? "" : "s"}{inTrash ? "" : " to trash"}?
           {[...selected].some((k) => k.endsWith("/")) && " Folders are deleted with everything inside them."}
         </p>
-        <p className="text-xs text-muted mt-2">Files will be moved to <span className="font-mono">.trash/</span> and can be restored later.</p>
+        <p className="text-xs text-muted mt-2">
+          {inTrash
+            ? "These items are already in the trash and cannot be restored."
+            : <>Files will be moved to <span className="font-mono">.trash/</span> and can be restored later.</>}
+        </p>
       </Modal>
 
       <Modal

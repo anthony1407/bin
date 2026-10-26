@@ -266,9 +266,11 @@ export const api = {
   /** Replaces the CORS rules; an empty list removes them. */
   setCORS: (name: string, rules: CORSRule[]) => request<Bucket>("PUT", `/buckets/${enc(name)}/cors`, { rules }),
 
-  objects: (bucket: string, opts: { prefix?: string; after?: string; search?: string; limit?: number; deleted?: boolean }) => {
+  // delimiter defaults to "/" on the server; "" lists every key under prefix.
+  objects: (bucket: string, opts: { prefix?: string; delimiter?: string; after?: string; search?: string; limit?: number; deleted?: boolean }) => {
     const q = new URLSearchParams();
     if (opts.prefix) q.set("prefix", opts.prefix);
+    if (opts.delimiter !== undefined) q.set("delimiter", opts.delimiter);
     if (opts.after) q.set("after", opts.after);
     if (opts.search) q.set("search", opts.search);
     if (opts.limit) q.set("limit", String(opts.limit));
