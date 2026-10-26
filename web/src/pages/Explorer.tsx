@@ -1751,13 +1751,13 @@ export function ExplorerPage() {
   const isPublicKey = (key: string) => !!meta && publicReason(meta.policy, key).kind !== "private";
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [filterKind, setFilterKind] = useState<Kind | "large" | "today" | null>(null);
-  const [showTrash, setShowTrash] = useState(false);
   // Versioned buckets: objects of this folder whose latest version is a delete marker.
   const [showDeleted, setShowDeleted] = useState(false);
   const [deletedObjects, setDeletedObjects] = useState<ObjectInfo[] | null>(null);
   const [undeleting, setUndeleting] = useState<string | null>(null);
-  const [trashObjects, setTrashObjects] = useState<ObjectInfo[]>([]);
-  const [restoringTrash, setRestoringTrash] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [confirmEmptyTrash, setConfirmEmptyTrash] = useState(false);
+  const [emptyingTrash, setEmptyingTrash] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const toast = useToast();
@@ -1969,8 +1969,13 @@ export function ExplorerPage() {
 
   const crumbs = useMemo(() => {
     const parts = prefix.split("/").filter(Boolean);
-    return parts.map((p, i) => ({ name: p, prefix: parts.slice(0, i + 1).join("/") + "/" }));
+    return parts.map((p, i) => ({
+      name: i === 0 && prefix.startsWith(TRASH) ? "Trash" : p,
+      prefix: parts.slice(0, i + 1).join("/") + "/",
+    }));
   }, [prefix]);
+  // Inside the trash: deleting is for good, and selections can be restored.
+  const trashView = prefix.startsWith(TRASH);
 
   const parentPrefix = useMemo(() => {
     if (!prefix) return null;
@@ -2020,17 +2025,26 @@ export function ExplorerPage() {
   const displayedPrefixes = filterKind ? [] : prefixes;
 
   const allKeys = [...displayedPrefixes, ...displayedObjects.map((o) => o.key)];
-  // Every selected item is already in the trash: deleting means for good.
-  const inTrash = selected.size > 0 && [...selected].every((k) => k.startsWith(TRASH));
   const allSelected = allKeys.length > 0 && allKeys.every((k) => selected.has(k));
 
   // --- trash helpers ---
-  async function loadTrash() {
-    try {
-      // Recursive: files deleted from folders sit in subfolders of the trash.
-      const page = await api.objects(bucket, { prefix: TRASH, delimiter: "", limit: 500 });
-      setTrashObjects(page.objects.filter((o) => !o.key.endsWith("/"))); // skip folder markers
-    } catch { setTrashObjects([]); }
+  // The trash is browsed like any folder: deleted files keep their path under
+  // .trash/, so restoring one is moving it back to the same path without it.
+  async function moveObject(from: string, to: string) {
+    const res = await fetch(api.downloadURL(bucket, from));
+    const blob = await res.blob();
+    const f = Object.assign(blob, { name: baseName(to) }) as unknown as globalThis.File;
+    await uploadFile(bucket, to, f, () => {}, new AbortController().signal);
+    await api.deleteObjects(bucket, [from], []);
+  }
+  // Once the trash holds nothing, remove it too (with any folder markers left
+  // inside) and leave it, rather than staying in an empty folder.
+  async function leaveTrashIfEmpty(): Promise<boolean> {
+    const left = await api.objects(bucket, { prefix: TRASH, delimiter: "", limit: 1000 });
+    if (left.objects.some((o) => !o.key.endsWith("/"))) return false;
+    await api.deleteObjects(bucket, [], [TRASH]);
+    goTo("");
+    return true;
   }
   async function softDeleteSelected() {
     setDeletingSelected(true);
@@ -2040,76 +2054,57 @@ export function ExplorerPage() {
       const keys = [...selected].filter((k) => !k.endsWith("/"));
       const trashed = keys.filter((k) => k.startsWith(TRASH));
       if (trashed.length > 0) await api.deleteObjects(bucket, trashed, []);
-      for (const k of keys.filter((k) => !k.startsWith(TRASH))) {
-        const url = api.downloadURL(bucket, k);
-        const res = await fetch(url);
-        const blob = await res.blob();
-        const f = Object.assign(blob, { name: baseName(k) }) as unknown as globalThis.File;
-        const abortCtrl = new AbortController();
-        await uploadFile(bucket, ".trash/" + k, f, () => {}, abortCtrl.signal);
-        await api.deleteObjects(bucket, [k], []);
-      }
+      for (const k of keys.filter((k) => !k.startsWith(TRASH))) await moveObject(k, TRASH + k);
       const folders = [...selected].filter((k) => k.endsWith("/"));
       if (folders.length > 0) await api.deleteObjects(bucket, [], folders);
-      // Once the trash holds nothing, remove it too (with any folder markers
-      // left inside) and leave it, rather than staying in an empty folder.
-      if (prefix.startsWith(TRASH)) {
-        const left = await api.objects(bucket, { prefix: TRASH, limit: 2 });
-        if (left.prefixes.length === 0 && left.objects.every((o) => o.key === TRASH)) {
-          await api.deleteObjects(bucket, [], [TRASH]);
-          setConfirmDelete(false);
-          setSelected(new Set());
-          toast("ok", "Trash emptied.");
-          goTo("");
-          return;
-        }
+      setConfirmDelete(false);
+      setSelected(new Set());
+      if (trashView && (await leaveTrashIfEmpty())) {
+        toast("ok", "Trash emptied.");
+        return;
       }
       const moved = keys.length - trashed.length;
       toast("ok", moved > 0
         ? `Moved ${count(moved)} item${moved === 1 ? "" : "s"} to trash.`
         : `Permanently deleted ${count(keys.length + folders.length)} item${keys.length + folders.length === 1 ? "" : "s"}.`);
-      setConfirmDelete(false);
-      setSelected(new Set());
       load();
-      if (showTrash) loadTrash();
     } catch (e) {
       toast("error", errorText(e));
     } finally {
       setDeletingSelected(false);
     }
   }
-  async function restoreFromTrash(trashKey: string) {
-    setRestoringTrash(true);
+  // Restores the selected files, and everything inside the selected folders,
+  // to where they were deleted from.
+  async function restoreSelected() {
+    setRestoring(true);
     try {
-      const originalKey = trashKey.replace(/^\.trash\//, "");
-      const url = api.downloadURL(bucket, trashKey);
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const f = Object.assign(blob, { name: baseName(originalKey) }) as unknown as globalThis.File;
-      const abortCtrl = new AbortController();
-      await uploadFile(bucket, originalKey, f, () => {}, abortCtrl.signal);
-      await api.deleteObjects(bucket, [trashKey], []);
-      toast("ok", `Restored ${baseName(originalKey)}.`);
-      loadTrash();
-      load();
+      const keys = [...selected].filter((k) => !k.endsWith("/"));
+      for (const folder of [...selected].filter((k) => k.endsWith("/"))) {
+        const page = await api.objects(bucket, { prefix: folder, delimiter: "", limit: 1000 });
+        keys.push(...page.objects.map((o) => o.key).filter((k) => !k.endsWith("/")));
+      }
+      for (const k of keys) await moveObject(k, k.slice(TRASH.length));
+      setSelected(new Set());
+      toast("ok", `Restored ${count(keys.length)} item${keys.length === 1 ? "" : "s"}.`);
+      if (!(await leaveTrashIfEmpty())) load();
     } catch (e) {
       toast("error", errorText(e));
     } finally {
-      setRestoringTrash(false);
+      setRestoring(false);
     }
   }
   async function emptyTrash() {
+    setEmptyingTrash(true);
     try {
-      const keys = trashObjects.map((o) => o.key);
-      if (keys.length === 0) return;
-      await api.deleteObjects(bucket, keys, [".trash/"]);
-      toast("ok", `Permanently deleted ${count(keys.length)} item${keys.length === 1 ? "" : "s"}.`);
-      setTrashObjects([]);
-      setShowTrash(false);
-      if (prefix.startsWith(TRASH)) goTo("");
-      else load();
+      await api.deleteObjects(bucket, [], [TRASH]);
+      setConfirmEmptyTrash(false);
+      toast("ok", "Trash emptied.");
+      goTo("");
     } catch (e) {
       toast("error", errorText(e));
+    } finally {
+      setEmptyingTrash(false);
     }
   }
 
@@ -2187,7 +2182,9 @@ export function ExplorerPage() {
           <Button icon={<BarChart3 className="size-4 text-emerald-400" />} onClick={() => setAnalyticsOpen(true)}>Analytics</Button>
           <Button
             icon={<Archive className="size-4 text-amber-400" />}
-            onClick={() => { setShowTrash(!showTrash); if (!showTrash) loadTrash(); }}
+            aria-pressed={trashView}
+            className={cx(trashView && "border-amber-500/50 bg-amber-500/10")}
+            onClick={() => goTo(trashView ? "" : TRASH)}
           >
             Trash
           </Button>
@@ -2199,9 +2196,11 @@ export function ExplorerPage() {
           <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="contents">
             <Button icon={<Settings2 className="size-4" />}>Settings</Button>
           </Link>
-          <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
-            Upload
-          </Button>
+          {!trashView && (
+            <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
+              Upload
+            </Button>
+          )}
         </div>
       </div>
       <input ref={fileInput} type="file" name="files" multiple hidden onChange={(e) => e.target.files && upload(e.target.files)} />
@@ -2260,9 +2259,11 @@ export function ExplorerPage() {
         </div>
 
         {/* Create new path button */}
-        <Button icon={<FolderPlus className="size-4" />} onClick={() => setFolderOpen(true)} className="shrink-0">
-          Create new path
-        </Button>
+        {!trashView && (
+          <Button icon={<FolderPlus className="size-4" />} onClick={() => setFolderOpen(true)} className="shrink-0">
+            Create new path
+          </Button>
+        )}
 
         {/* Search */}
         <div className="relative w-full sm:w-56">
@@ -2322,49 +2323,24 @@ export function ExplorerPage() {
         </div>
       </div>
 
-      {/* Trash panel */}
-      {showTrash && (
-        <div className="mb-4 rounded-card border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
-              <Archive className="size-4 text-amber-400" />
-              Recycle Bin ({count(trashObjects.length)} items)
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => setShowTrash(false)}>Close</Button>
-              {trashObjects.length > 0 && (
-                <Button variant="danger" icon={<Trash2 className="size-3.5" />} onClick={emptyTrash}>
-                  Empty Trash
-                </Button>
-              )}
-            </div>
+      {/* Trash banner */}
+      {trashView && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
+          <div className="flex items-center gap-2 text-sm">
+            <Archive className="size-4 shrink-0 text-amber-400" />
+            <span>
+              <strong className="font-semibold text-ink">Trash.</strong>{" "}
+              <span className="text-muted">Deleted files keep their folders. Select items to restore them or delete them for good.</span>
+            </span>
           </div>
-          {trashObjects.length === 0 ? (
-            <div className="py-4 text-center text-sm text-muted">Trash is empty.</div>
-          ) : (
-            <div className="divide-y divide-line rounded-md border border-line max-h-60 overflow-y-auto text-xs">
-              {trashObjects.map((o) => {
-                const original = o.key.replace(/^\.trash\//, "");
-                return (
-                  <div key={o.key} className="flex items-center justify-between px-3 py-2 hover:bg-sunken/40">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Trash2 className="size-3.5 text-muted shrink-0" />
-                      <span className="truncate font-mono text-ink" title={original}>{original}</span>
-                      <span className="text-[10px] text-muted shrink-0">{bytes(o.size)}</span>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={restoringTrash}
-                      onClick={() => restoreFromTrash(o.key)}
-                      className="flex items-center gap-1 text-[11px] font-medium text-accent hover:underline shrink-0 ml-2"
-                    >
-                      <Undo2 className="size-3" /> Restore
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <div className="flex gap-2">
+            <Button onClick={() => goTo("")}>Close</Button>
+            {!empty && (
+              <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={() => setConfirmEmptyTrash(true)}>
+                Empty Trash
+              </Button>
+            )}
+          </div>
         </div>
       )}
 
@@ -2419,6 +2395,19 @@ export function ExplorerPage() {
       {selected.size > 0 && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent/30 bg-accent-soft px-4 py-2 text-sm">
           <span className="font-medium text-accent-ink">{count(selected.size)} selected</span>
+          {trashView ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="primary" icon={<Undo2 className="size-4" />} busy={restoring} onClick={restoreSelected}>
+                {restoring ? "Restoring…" : "Restore"}
+              </Button>
+              <Button variant="ghost" onClick={() => setSelected(new Set())}>
+                Clear
+              </Button>
+              <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={() => setConfirmDelete(true)}>
+                Delete permanently
+              </Button>
+            </div>
+          ) : (
           <div className="flex flex-wrap items-center gap-2">
             {selected.size === 2 && (
               <Button
@@ -2485,6 +2474,7 @@ export function ExplorerPage() {
               Delete
             </Button>
           </div>
+          )}
         </div>
       )}
 
@@ -2492,10 +2482,14 @@ export function ExplorerPage() {
       <div className="overflow-hidden rounded-card border border-line bg-surface">
         {empty ? (
           <EmptyState
-            title={search ? "Nothing matches" : prefix ? "This folder is empty" : "This bucket is empty"}
-            body={search ? `No object under this folder contains “${search}”.` : "Drop files anywhere on this page, or use the Upload button."}
+            title={search ? "Nothing matches" : trashView ? "Trash is empty" : prefix ? "This folder is empty" : "This bucket is empty"}
+            body={
+              search ? `No object under this folder contains “${search}”.`
+              : trashView ? "Deleted files show up here, where they can be restored."
+              : "Drop files anywhere on this page, or use the Upload button."
+            }
             action={
-              !search && (
+              !search && !trashView && (
                 <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
                   Upload files
                 </Button>
@@ -2819,7 +2813,7 @@ export function ExplorerPage() {
               Cancel
             </Button>
             <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={softDeleteSelected}>
-              {inTrash
+              {trashView
                 ? (deletingSelected ? "Deleting…" : `Delete permanently (${count(selected.size)})`)
                 : (deletingSelected ? "Moving to trash…" : `Move to Trash (${count(selected.size)})`)}
             </Button>
@@ -2827,14 +2821,32 @@ export function ExplorerPage() {
         }
       >
         <p className="text-sm">
-          {inTrash ? "Permanently delete" : "Move"} {count(selected.size)} selected item{selected.size === 1 ? "" : "s"}{inTrash ? "" : " to trash"}?
+          {trashView ? "Permanently delete" : "Move"} {count(selected.size)} selected item{selected.size === 1 ? "" : "s"}{trashView ? "" : " to trash"}?
           {[...selected].some((k) => k.endsWith("/")) && " Folders are deleted with everything inside them."}
         </p>
         <p className="text-xs text-muted mt-2">
-          {inTrash
+          {trashView
             ? "These items are already in the trash and cannot be restored."
-            : <>Files will be moved to <span className="font-mono">.trash/</span> and can be restored later.</>}
+            : <>Files will be moved to the Trash and can be restored later.</>}
         </p>
+      </Modal>
+
+      <Modal
+        open={confirmEmptyTrash}
+        onClose={() => !emptyingTrash && setConfirmEmptyTrash(false)}
+        title="Empty Trash"
+        footer={
+          <>
+            <Button disabled={emptyingTrash} onClick={() => setConfirmEmptyTrash(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={emptyingTrash} onClick={emptyTrash}>
+              Empty Trash
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm">Permanently delete everything in the Trash? This cannot be undone.</p>
       </Modal>
 
       <Modal
