@@ -79,6 +79,13 @@ func toObjectJSON(o storage.ObjectInfo) objectJSON {
 // listObjects lists a "folder" (prefix + delimiter), or searches under the
 // prefix when ?search= is set. With ?deleted=true it lists the objects of the
 // folder whose latest version is a delete marker.
+// folderJSON is what a listed folder (common prefix) holds.
+type folderJSON struct {
+	Objects      int64      `json:"objects"`
+	Size         int64      `json:"size"`
+	LastModified *time.Time `json:"lastModified"`
+}
+
 func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	bucket, prefix := r.PathValue("bucket"), q.Get("prefix")
@@ -125,8 +132,19 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	if prefixes == nil {
 		prefixes = []string{}
 	}
+	// Folders show what they hold: object count, total size and last change.
+	usage, err := h.opts.Store.PrefixUsage(r.Context(), bucket, prefixes)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	folders := make(map[string]folderJSON, len(usage))
+	for p, u := range usage {
+		folders[p] = folderJSON{Objects: u.Objects, Size: u.Bytes, LastModified: optionalTime(u.Modified)}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"objects": h.withShares(r, bucket, out), "prefixes": prefixes, "truncated": res.IsTruncated, "nextAfter": res.NextMarker,
+		"objects": h.withShares(r, bucket, out), "prefixes": prefixes, "folders": folders,
+		"truncated": res.IsTruncated, "nextAfter": res.NextMarker,
 	})
 }
 

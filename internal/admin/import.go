@@ -34,6 +34,11 @@ type importRemote struct {
 type importStartRequest struct {
 	importRemote
 	Buckets []string `json:"buckets"`
+	// Settings also copies each bucket's versioning, tags, anonymous access
+	// and quota; IAM recreates the remote's users, groups, policies and
+	// access keys (MinIO only).
+	Settings bool `json:"settings"`
+	IAM      bool `json:"iam"`
 }
 
 type remoteBucketInfo struct {
@@ -72,6 +77,8 @@ type importJob struct {
 	Failed     int        `json:"failed"`
 	Bytes      int64      `json:"bytes"`
 	Error      string     `json:"error,omitempty"`
+	Settings   []string   `json:"settings,omitempty"` // bucket settings copied
+	Notes      []string   `json:"notes,omitempty"`    // settings that could not be
 	StartedAt  time.Time  `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 
@@ -195,10 +202,9 @@ var importTransport = func() *http.Transport {
 // remoteClient validates the endpoint (http or https URL, no path) and returns
 // a client for it.
 func remoteClient(in importRemote) (*minio.Client, error) {
-	u, err := url.Parse(strings.TrimSpace(in.Endpoint))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
-		(u.Path != "" && u.Path != "/") || u.RawQuery != "" {
-		return nil, errInvalidEndpoint
+	u, err := parseRemoteEndpoint(in.Endpoint)
+	if err != nil {
+		return nil, err
 	}
 	return minio.New(u.Host, &minio.Options{
 		Creds:     credentials.NewStaticV4(in.AccessKey, in.SecretKey, ""),
@@ -206,6 +212,15 @@ func remoteClient(in importRemote) (*minio.Client, error) {
 		Region:    in.Region,
 		Transport: importTransport,
 	})
+}
+
+func parseRemoteEndpoint(endpoint string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" {
+		return nil, errInvalidEndpoint
+	}
+	return u, nil
 }
 
 // remoteErrorMessage turns a remote failure into a message that does not echo
@@ -276,7 +291,21 @@ func (h *Handler) handleImportTest(w http.ResponseWriter, r *http.Request) {
 	for _, b := range buckets {
 		out = append(out, remoteBucketStats(ctx, client, b.Name))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"buckets": out})
+	// Users and policies can come along when the remote is MinIO and the
+	// credentials may read them.
+	summary := iamSummary{}
+	if adm, err := newMinioAdmin(in); err == nil {
+		ictx, icancel := context.WithTimeout(r.Context(), 30*time.Second)
+		iam, err := adm.fetchIAM(ictx)
+		icancel()
+		if err != nil {
+			h.opts.Log.Info("import: remote users and policies not readable", "err", err)
+			summary.Reason = iamErrorMessage(err)
+		} else {
+			summary = summarizeIAM(iam)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": out, "iam": summary})
 }
 
 // remoteBucketStats counts up to maxStatObjects objects of a bucket.
@@ -306,11 +335,16 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) || !validRemote(w, in.importRemote) {
 		return
 	}
-	if len(in.Buckets) == 0 {
+	if len(in.Buckets) == 0 && !in.IAM {
 		writeError(w, http.StatusBadRequest, "bad_request", "Select at least one bucket.")
 		return
 	}
 	client, err := remoteClient(in.importRemote)
+	if err != nil {
+		h.remoteError(w, err)
+		return
+	}
+	adm, err := newMinioAdmin(in.importRemote)
 	if err != nil {
 		h.remoteError(w, err)
 		return
@@ -338,10 +372,32 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 			skipped = append(skipped, importSkipped{bucket, "The local bucket could not be created."})
 			continue
 		}
-		started = append(started, h.startImportJob(client, in.Endpoint, bucket))
+		var settings, notes []string
+		if in.Settings {
+			settings, notes = h.importBucketSettings(r.Context(), client, adm, bucket)
+		}
+		started = append(started, h.startImportJob(client, in.Endpoint, bucket, settings, notes))
 	}
 
-	if len(started) == 0 {
+	// Identities come after the buckets, so their access can name them.
+	resp := map[string]any{"jobs": started, "skipped": skipped}
+	if in.IAM {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		iam, err := adm.fetchIAM(ctx)
+		if err == nil {
+			var result iamImportResult
+			if result, err = h.importIAM(ctx, iam); err == nil {
+				resp["iam"] = result
+			}
+		}
+		if err != nil {
+			h.opts.Log.Warn("import: users and policies not imported", "err", err)
+			resp["iamError"] = iamErrorMessage(err)
+		}
+	}
+
+	if len(started) == 0 && !in.IAM {
 		if sw, ok := w.(*statusWriter); ok {
 			sw.errCode = "nothing_imported" // for the audit log
 		}
@@ -351,15 +407,17 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": started, "skipped": skipped})
+	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) startImportJob(client *minio.Client, endpoint, bucket string) importJob {
+func (h *Handler) startImportJob(client *minio.Client, endpoint, bucket string, settings, notes []string) importJob {
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &importJob{
 		ID:        "import-" + randomToken()[:12],
 		Bucket:    bucket,
 		Endpoint:  endpoint,
+		Settings:  settings,
+		Notes:     notes,
 		State:     "queued",
 		StartedAt: time.Now().UTC(),
 		cancel:    cancel,
@@ -476,7 +534,9 @@ func (h *Handler) finishImportJob(id, bucket string, err error) {
 		j.cancel()
 		job = *j
 	})
-	if job.Copied == 0 {
+	// A job that failed or was canceled before copying anything leaves no
+	// trace; an empty bucket that imported fine stays, empty like the remote.
+	if job.Copied == 0 && job.State != "done" {
 		if derr := h.opts.Store.DeleteBucket(context.Background(), bucket); derr != nil && !errors.Is(derr, storage.ErrBucketNotEmpty) {
 			h.opts.Log.Warn("import: removing empty bucket", "bucket", bucket, "err", derr)
 		}

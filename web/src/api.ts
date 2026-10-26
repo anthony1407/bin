@@ -119,9 +119,18 @@ export interface ShareLink {
   expiresAt: string;
 }
 
+// What a listed folder holds; lastModified is null for an empty folder.
+export interface FolderInfo {
+  objects: number;
+  size: number;
+  lastModified: string | null;
+}
+
 export interface ObjectPage {
   objects: ObjectInfo[];
   prefixes: string[];
+  folders?: Record<string, FolderInfo>; // absent in search results
+
   truncated: boolean;
   nextAfter?: string;
 }
@@ -359,20 +368,32 @@ export const api = {
 
   // Import from remote S3
   importTest: (endpoint: string, accessKey: string, secretKey: string, region: string) =>
-    request<{ buckets: RemoteBucket[] }>("POST", "/import/test", {
+    request<{ buckets: RemoteBucket[]; iam: ImportIAMSummary }>("POST", "/import/test", {
       endpoint,
       accessKey,
       secretKey,
       region,
     }),
-  /** Throws ApiError "nothing_imported" (with `skipped` in its data) when no bucket could start. */
-  importStart: (endpoint: string, accessKey: string, secretKey: string, region: string, buckets: string[]) =>
-    request<{ jobs: ImportJob[]; skipped: ImportSkipped[] }>("POST", "/import/start", {
+  /**
+   * settings copies each bucket's configuration; iam recreates the remote's
+   * users, groups, policies and access keys (MinIO). Throws ApiError
+   * "nothing_imported" (with `skipped` in its data) when no bucket could start.
+   */
+  importStart: (
+    endpoint: string,
+    accessKey: string,
+    secretKey: string,
+    region: string,
+    buckets: string[],
+    options: { settings: boolean; iam: boolean },
+  ) =>
+    request<{ jobs: ImportJob[]; skipped: ImportSkipped[]; iam?: ImportIAMResult; iamError?: string }>("POST", "/import/start", {
       endpoint,
       accessKey,
       secretKey,
       region,
       buckets,
+      ...options,
     }),
   importJobs: () => request<{ jobs: ImportJob[] }>("GET", "/import/jobs").then((r) => r.jobs),
 
@@ -530,6 +551,9 @@ export interface ImportJob {
   failed: number;
   bytes: number;
   error?: string;
+  /** Bucket settings copied, and notes on those that could not be. */
+  settings?: string[];
+  notes?: string[];
   startedAt: string;
   finishedAt?: string;
 }
@@ -537,6 +561,33 @@ export interface ImportJob {
 export interface ImportSkipped {
   bucket: string;
   reason: string;
+}
+
+/** What the connection test found of the remote's users and policies. */
+export interface ImportIAMSummary {
+  available: boolean;
+  reason?: string;
+  users: number;
+  groups: number;
+  policies: number;
+  accessKeys: number;
+}
+
+/** An access key created from a MinIO user or access key, with its new secret (shown once). */
+export interface ImportedKey {
+  accessKey: string;
+  secretKey: string;
+  kind: "user" | "accessKey";
+  parent?: string;
+  enabled: boolean;
+  groups: string[];
+  note?: string;
+}
+
+export interface ImportIAMResult {
+  keys: ImportedKey[];
+  groups: { name: string; from: "policy" | "group"; source: string; buckets: string[]; readOnly: boolean; note?: string }[];
+  skipped: { kind: "policy" | "group" | "user" | "accessKey"; name: string; reason: string }[];
 }
 
 // --- downloads ------------------------------------------------------------------------

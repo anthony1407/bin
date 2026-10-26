@@ -44,7 +44,7 @@ import {
 } from "lucide-react";
 import JSZip from "jszip";
 import Editor, { DiffEditor } from "../components/CodeEditor";
-import { ApiError, api, downloadObject, uploadFile, type Bucket, type ObjectInfo, type ObjectVersion, type ShareLink } from "../api";
+import { ApiError, api, downloadObject, uploadFile, type Bucket, type FolderInfo, type ObjectInfo, type ObjectVersion, type ShareLink } from "../api";
 import { baseName, bytes, count, dateTime, duration, relative, timeLeft } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
@@ -1706,6 +1706,7 @@ export function ExplorerPage() {
   const [meta, setMeta] = useState<Bucket | null>(null);
   const [objects, setObjects] = useState<ObjectInfo[]>([]);
   const [prefixes, setPrefixes] = useState<string[]>([]);
+  const [folderInfo, setFolderInfo] = useState<Record<string, FolderInfo>>({});
   const [next, setNext] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -1842,6 +1843,7 @@ export function ExplorerPage() {
         const folders = page.prefixes.filter(visible);
         setObjects((cur) => (after ? [...cur, ...files] : files));
         setPrefixes((cur) => (after ? [...cur, ...folders] : folders));
+        setFolderInfo((cur) => (after ? { ...cur, ...page.folders } : (page.folders ?? {})));
         setNext(page.truncated ? (page.nextAfter ?? null) : null);
       } catch (e) {
         toast("error", errorText(e));
@@ -2541,6 +2543,11 @@ export function ExplorerPage() {
                     <span className="w-full truncate text-xs font-medium text-ink group-hover:text-accent-ink" title={p}>
                       {search ? p : baseName(p)}/
                     </span>
+                    {folderInfo[p] && (
+                      <span className="mt-1 text-[11px] text-muted">
+                        {bytes(folderInfo[p].size)} · {count(folderInfo[p].objects)} item{folderInfo[p].objects === 1 ? "" : "s"}
+                      </span>
+                    )}
                   </div>
                 );
               })}
@@ -2638,6 +2645,7 @@ export function ExplorerPage() {
             <tbody className="divide-y divide-line">
               {displayedPrefixes.map((p) => {
                 const folderPublic = isPublicKey(p);
+                const info = folderInfo[p];
                 return (
                   <tr key={p} className="group hover:bg-sunken/60">
                     <td className="py-2.5 pl-4">
@@ -2649,11 +2657,28 @@ export function ExplorerPage() {
                         <span className="truncate font-medium text-ink group-hover:text-accent-ink">{search ? p : baseName(p)}/</span>
                         {folderPublic && <span title="Public"><Globe className="size-3 shrink-0 text-warn" /></span>}
                       </button>
+                      {info && (
+                        <div className="num mt-0.5 pl-6.5 text-[11px] text-muted sm:hidden">
+                          {bytes(info.size)}{info.lastModified && <> · {relative(info.lastModified)}</>}
+                        </div>
+                      )}
                     </td>
-                    <td className="hidden py-2.5 pr-4 text-faint md:table-cell">-</td>
+                    {info?.lastModified ? (
+                      <td className="hidden py-2.5 pr-4 text-muted md:table-cell" title={dateTime(info.lastModified)}>
+                        {dateTime(info.lastModified)}
+                      </td>
+                    ) : (
+                      <td className="hidden py-2.5 pr-4 text-faint md:table-cell">-</td>
+                    )}
                     <td className="hidden py-2.5 pr-4 text-right sm:table-cell">
                       <div className="flex items-center justify-end gap-1.5">
-                        <span className="text-faint">-</span>
+                        {info ? (
+                          <span className="num text-muted" title={`${count(info.objects)} item${info.objects === 1 ? "" : "s"}`}>
+                            {bytes(info.size)}
+                          </span>
+                        ) : (
+                          <span className="text-faint">-</span>
+                        )}
                         {meta?.policy.mode !== "public" && (
                           <IconButton
                             label={folderPublic ? "Make private" : "Make public"}

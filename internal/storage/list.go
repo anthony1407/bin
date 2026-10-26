@@ -3,7 +3,39 @@ package storage
 import (
 	"context"
 	"strings"
+	"time"
 )
+
+// PrefixUsage sums the current objects under a prefix (a folder).
+type PrefixUsage struct {
+	Objects  int64
+	Bytes    int64
+	Modified time.Time // latest change of any object under it; zero when empty
+}
+
+// PrefixUsage returns the usage of each prefix, read as a key range so a
+// folder costs one index scan of what it holds.
+func (s *Store) PrefixUsage(ctx context.Context, bucket string, prefixes []string) (map[string]PrefixUsage, error) {
+	bid, err := bucketID(ctx, s.read, bucket)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]PrefixUsage, len(prefixes))
+	for _, p := range prefixes {
+		var u PrefixUsage
+		var modified int64
+		if err := s.read.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size), 0), COALESCE(MAX(modified_at), 0) FROM objects
+			WHERE bucket_id = ? AND is_latest = 1 AND delete_marker = 0 AND key >= ? AND key < ?`,
+			bid, p, p+maxRune).Scan(&u.Objects, &u.Bytes, &modified); err != nil {
+			return nil, err
+		}
+		if modified > 0 {
+			u.Modified = fromNanos(modified)
+		}
+		out[p] = u
+	}
+	return out, nil
+}
 
 // ListOptions selects a page of a bucket listing.
 type ListOptions struct {

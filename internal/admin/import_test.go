@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 func TestAllowedRemoteIP(t *testing.T) {
@@ -56,6 +59,48 @@ func TestRemoteClientRefusesLoopback(t *testing.T) {
 		cancel()
 		if code, _ := remoteErrorMessage(err); code != "endpoint_not_allowed" {
 			t.Errorf("%s: got %q (%v)", endpoint, code, err)
+		}
+	}
+}
+
+// An empty remote bucket is imported as an empty bucket, not dropped.
+func TestImportKeepsEmptyBuckets(t *testing.T) {
+	remote, rc := newRemote(t)
+	ctx := context.Background()
+	for _, b := range []string{"full", "empty"} {
+		rc.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String(b)})
+	}
+	rc.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("full"), Key: aws.String("a.txt"), Body: strings.NewReader("a")})
+
+	e := newEnv(t)
+	e.login()
+	if code := e.call("POST", "/api/v1/import/start", map[string]any{
+		"endpoint": remote.URL, "accessKey": remoteAK, "secretKey": remoteSK, "region": "us-east-1",
+		"buckets": []string{"full", "empty"},
+	}, nil); code != 200 {
+		t.Fatalf("start: %d", code)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var list struct{ Jobs []importJob }
+		e.call("GET", "/api/v1/import/jobs", nil, &list)
+		done := 0
+		for _, j := range list.Jobs {
+			if j.State == "done" {
+				done++
+			}
+		}
+		if done == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("jobs did not finish: %+v", list.Jobs)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, b := range []string{"full", "empty"} {
+		if code := e.call("GET", "/api/v1/buckets/"+b, nil, nil); code != 200 {
+			t.Errorf("bucket %s after import: %d", b, code)
 		}
 	}
 }

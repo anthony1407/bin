@@ -28,6 +28,28 @@ func entries(r ListResult) []string {
 	return out
 }
 
+// A folder counts every current object under it, nested ones included, and
+// nothing from a sibling whose name merely starts the same.
+func TestPrefixUsage(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, t.TempDir())
+	mustCreate(t, s, "photos")
+	putKeys(t, s, "photos", "2024/a.jpg", "2024/sub/b.jpg", "2024-old/c.jpg")
+	got, err := s.PrefixUsage(ctx, "photos", []string{"2024/", "2024-old/", "none/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := got["2024/"]; u.Objects != 2 || u.Bytes != 2 || u.Modified.IsZero() {
+		t.Errorf("2024/: %+v", u)
+	}
+	if u := got["2024-old/"]; u.Objects != 1 || u.Bytes != 1 {
+		t.Errorf("2024-old/: %+v", u)
+	}
+	if u := got["none/"]; u.Objects != 0 || u.Bytes != 0 || !u.Modified.IsZero() {
+		t.Errorf("none/: %+v", u)
+	}
+}
+
 func TestListBasics(t *testing.T) {
 	ctx := context.Background()
 	s := openTest(t, t.TempDir())

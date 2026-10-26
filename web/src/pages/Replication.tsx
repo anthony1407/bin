@@ -1,6 +1,15 @@
 import { useState, useEffect } from "react";
-import { AlertCircle, ArrowDownLeft, CheckCircle2, CircleAlert } from "lucide-react";
-import { api, ApiError, type Bucket, type ImportJob, type ImportSkipped, type RemoteBucket } from "../api";
+import { AlertCircle, ArrowDownLeft, Check, CheckCircle2, CircleAlert, Copy, Download, KeyRound } from "lucide-react";
+import {
+  api,
+  ApiError,
+  type Bucket,
+  type ImportIAMResult,
+  type ImportIAMSummary,
+  type ImportJob,
+  type ImportSkipped,
+  type RemoteBucket,
+} from "../api";
 import { PageHeader, Button, Input, Modal, PasswordInput, Spinner, cx, useToast } from "../components/ui";
 import { ReplicationRules } from "./ReplicationRules";
 import { bytes, count } from "../lib/format";
@@ -22,6 +31,12 @@ export function ReplicationPage() {
   const [importErrors, setImportErrors] = useState<Record<string, string>>({});
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [importSkipped, setImportSkipped] = useState<ImportSkipped[]>([]);
+  // What else comes along: bucket settings, and the remote's identities (MinIO).
+  const [remoteIam, setRemoteIam] = useState<ImportIAMSummary | null>(null);
+  const [withSettings, setWithSettings] = useState(true);
+  const [withIam, setWithIam] = useState(false);
+  const [iamResult, setIamResult] = useState<ImportIAMResult | null>(null);
+  const [iamError, setIamError] = useState("");
 
   const toast = useToast();
 
@@ -77,6 +92,11 @@ export function ReplicationPage() {
     setImportErrors({});
     setImportJobs([]);
     setImportSkipped([]);
+    setRemoteIam(null);
+    setWithSettings(true);
+    setWithIam(false);
+    setIamResult(null);
+    setIamError("");
     setImportModal(true);
   }
 
@@ -103,11 +123,13 @@ export function ReplicationPage() {
     }
 
     try {
-      const { buckets } = await api.importTest(importEndpoint, importAccessKey, importSecretKey, importRegion);
-      setRemoteBuckets(buckets);
+      const { buckets: remote, iam } = await api.importTest(importEndpoint, importAccessKey, importSecretKey, importRegion);
+      setRemoteBuckets(remote);
       // Buckets that already exist here would be skipped, so leave them unselected.
       const local = new Set(buckets.map((b) => b.name));
-      setSelectedRemoteBuckets(new Set(buckets.filter((b) => !local.has(b.name)).map((b) => b.name)));
+      setSelectedRemoteBuckets(new Set(remote.filter((b) => !local.has(b.name)).map((b) => b.name)));
+      setRemoteIam(iam);
+      setWithIam(false);
       setImportStep(2);
     } catch (e: any) {
       setImportError(e.message || "Failed to connect to remote server");
@@ -130,14 +152,21 @@ export function ReplicationPage() {
     setImportError("");
     setImportJobs([]);
     setImportSkipped([]);
+    setIamResult(null);
+    setIamError("");
 
     try {
-      const { jobs, skipped } = await api.importStart(importEndpoint, importAccessKey, importSecretKey, importRegion, Array.from(selectedRemoteBuckets));
+      const res = await api.importStart(importEndpoint, importAccessKey, importSecretKey, importRegion, Array.from(selectedRemoteBuckets), {
+        settings: withSettings,
+        iam: withIam,
+      });
       api.buckets().then(setBuckets).catch(() => {});
-      setImportJobs(jobs);
-      setImportSkipped(skipped);
+      setImportJobs(res.jobs);
+      setImportSkipped(res.skipped);
+      setIamResult(res.iam ?? null);
+      setIamError(res.iamError ?? "");
       setImportStep(3);
-      toast("ok", `Import started for ${jobs.length} bucket(s).`);
+      if (res.jobs.length > 0) toast("ok", `Import started for ${res.jobs.length} bucket(s).`);
     } catch (e) {
       if (e instanceof ApiError && Array.isArray(e.data.skipped)) {
         setImportSkipped(e.data.skipped as ImportSkipped[]);
@@ -182,10 +211,10 @@ export function ReplicationPage() {
           <Button
             variant="primary"
             busy={importLoading}
-            disabled={selectedRemoteBuckets.size === 0}
+            disabled={selectedRemoteBuckets.size === 0 && !withIam}
             onClick={importSelectedBuckets}
           >
-            Import Selected ({selectedRemoteBuckets.size})
+            {selectedRemoteBuckets.size === 0 && withIam ? "Import Users & Policies" : `Import Selected (${selectedRemoteBuckets.size})`}
           </Button>
         </>
       );
@@ -377,6 +406,44 @@ export function ReplicationPage() {
                 <div className="p-8 text-center text-muted">No buckets found on remote server</div>
               )}
             </div>
+
+            <div className="space-y-3 rounded-lg border border-line p-3">
+              <div className="label-strip">Also import</div>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={withSettings}
+                  onChange={(e) => setWithSettings(e.target.checked)}
+                  className="mt-0.5 size-4 accent-[var(--accent)]"
+                />
+                <div>
+                  <div className="text-sm font-medium text-ink">Bucket settings</div>
+                  <div className="text-xs text-muted">Versioning, tags, anonymous (public) access and quota of each selected bucket.</div>
+                </div>
+              </label>
+              <label className={cx("flex items-start gap-3", remoteIam?.available ? "cursor-pointer" : "cursor-not-allowed opacity-70")}>
+                <input
+                  type="checkbox"
+                  checked={withIam}
+                  disabled={!remoteIam?.available}
+                  onChange={(e) => setWithIam(e.target.checked)}
+                  className="mt-0.5 size-4 accent-[var(--accent)]"
+                />
+                <div>
+                  <div className="text-sm font-medium text-ink">Users, groups, policies and access keys</div>
+                  {remoteIam?.available ? (
+                    <div className="text-xs text-muted">
+                      {count(remoteIam.users)} user{remoteIam.users === 1 ? "" : "s"} · {count(remoteIam.groups)} group
+                      {remoteIam.groups === 1 ? "" : "s"} · {count(remoteIam.policies)} custom polic{remoteIam.policies === 1 ? "y" : "ies"} ·{" "}
+                      {count(remoteIam.accessKeys)} access key{remoteIam.accessKeys === 1 ? "" : "s"}. Policies become groups here.
+                      MinIO never reveals secrets, so every user and access key gets a new secret key, shown once.
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted">{remoteIam?.reason ?? "Only available from MinIO servers."}</div>
+                  )}
+                </div>
+              </label>
+            </div>
           </div>
         )}
 
@@ -395,10 +462,12 @@ export function ReplicationPage() {
               )}
               <div>
                 <div className="font-semibold text-ink">{importActive ? "Importing…" : "Import finished"}</div>
-                <div className="text-xs text-muted">
-                  {importJobs.filter((j) => j.state === "done").length} of {importJobs.length + importSkipped.length}{" "}
-                  bucket(s) imported. You can close this window; the copy continues on the server.
-                </div>
+                {importJobs.length + importSkipped.length > 0 && (
+                  <div className="text-xs text-muted">
+                    {importJobs.filter((j) => j.state === "done").length} of {importJobs.length + importSkipped.length}{" "}
+                    bucket(s) imported. You can close this window; the copy continues on the server.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -422,6 +491,12 @@ export function ReplicationPage() {
                         {job.state === "canceled" && " · canceled"}
                       </div>
                       {job.error && <div className="text-xs text-danger mt-0.5">{job.error}</div>}
+                      {!!job.settings?.length && (
+                        <div className="text-xs text-ok mt-0.5">Settings: {job.settings.join(", ")}</div>
+                      )}
+                      {job.notes?.map((n) => (
+                        <div key={n} className="text-xs text-warning mt-0.5">{n}</div>
+                      ))}
                     </div>
                     {active && (
                       <Button variant="ghost" onClick={() => cancelImport(job.jobId)}>
@@ -447,9 +522,133 @@ export function ReplicationPage() {
                 Some objects could not be copied; the server log lists each one.
               </div>
             )}
+
+            {iamError && (
+              <div className="p-3 rounded-md bg-danger-soft border border-danger text-danger text-sm">
+                Users and policies were not imported: {iamError}
+              </div>
+            )}
+            {iamResult && <IAMReport result={iamResult} />}
           </div>
         )}
       </Modal>
+    </div>
+  );
+}
+
+const kindLabels = { policy: "Policy", group: "Group", user: "User", accessKey: "Access key" } as const;
+
+// IAMReport shows what the import made of the remote's identities. The new
+// secret keys exist only here, so they can be copied or saved as CSV.
+function IAMReport({ result }: { result: ImportIAMResult }) {
+  const [copied, setCopied] = useState("");
+  const copy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(id);
+      setTimeout(() => setCopied(""), 1500);
+    });
+  };
+  const downloadCSV = () => {
+    const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
+    const rows = [
+      ["access_key", "secret_key", "kind", "user", "enabled", "groups"],
+      ...result.keys.map((k) => [k.accessKey, k.secretKey, k.kind, k.parent ?? "", String(k.enabled), k.groups.join(" ")]),
+    ];
+    const url = URL.createObjectURL(new Blob([rows.map((r) => r.map(quote).join(",")).join("\n") + "\n"], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "imported-access-keys.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+        <KeyRound className="size-4 text-accent" />
+        Users and policies: {count(result.keys.length)} access key{result.keys.length === 1 ? "" : "s"} and{" "}
+        {count(result.groups.length)} group{result.groups.length === 1 ? "" : "s"} created
+      </div>
+
+      {result.keys.length > 0 && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning bg-warning-soft p-3 text-sm text-warning">
+            <span>These secret keys are shown only now. Save them before closing this window.</span>
+            <Button icon={<Download className="size-4" />} onClick={downloadCSV}>
+              Download CSV
+            </Button>
+          </div>
+          <div className="max-h-60 overflow-auto rounded-lg border border-line">
+            <table className="w-full text-xs">
+              <thead className="bg-sunken/60 text-left">
+                <tr className="label-strip">
+                  <th className="px-3 py-2">Access key</th>
+                  <th className="px-3 py-2">Secret key</th>
+                  <th className="px-3 py-2">Access</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {result.keys.map((k) => (
+                  <tr key={k.accessKey} className="align-top">
+                    <td className="px-3 py-2">
+                      <div className="font-mono text-ink">{k.accessKey}</div>
+                      <div className="text-muted">
+                        {k.kind === "user" ? "User" : `Access key of ${k.parent}`}
+                        {!k.enabled && " · disabled"}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => copy(k.secretKey, k.accessKey)}
+                        className="flex items-center gap-1.5 font-mono text-ink hover:text-accent"
+                        title="Copy secret key"
+                      >
+                        <span className="break-all">{k.secretKey}</span>
+                        {copied === k.accessKey ? <Check className="size-3.5 shrink-0 text-ok" /> : <Copy className="size-3.5 shrink-0 text-muted" />}
+                      </button>
+                    </td>
+                    <td className="px-3 py-2 text-muted">
+                      {k.groups.length > 0 ? k.groups.join(", ") : k.note ? "" : "Own scope"}
+                      {k.note && <div className="text-warning">{k.note}</div>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {result.groups.length > 0 && (
+        <div className="space-y-1 text-xs">
+          {result.groups.map((g) => (
+            <div key={g.name} className="flex flex-wrap gap-x-2">
+              <CheckCircle2 className="size-3.5 shrink-0 text-ok" />
+              <span className="font-mono text-ink">{g.name}</span>
+              <span className="text-muted">
+                from {g.from === "policy" ? "policy" : "group"} {g.source} · {g.readOnly ? "read-only" : "read-write"} ·{" "}
+                {g.buckets.length > 0 ? g.buckets.join(", ") : "all buckets"}
+              </span>
+              {g.note && <span className="text-warning">{g.note}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {result.skipped.length > 0 && (
+        <div className="space-y-1 rounded-md border border-line p-3 text-xs">
+          <div className="font-medium text-ink">Not imported</div>
+          {result.skipped.map((s) => (
+            <div key={s.kind + s.name} className="flex gap-2">
+              <CircleAlert className="size-3.5 shrink-0 text-warning" />
+              <span>
+                {kindLabels[s.kind]} <span className="font-mono text-ink">{s.name}</span>: <span className="text-muted">{s.reason}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
