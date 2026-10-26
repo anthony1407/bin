@@ -72,13 +72,13 @@ serves two ports:
 
 ### With Docker Compose
 
-1. Create a `.env` file next to `docker-compose.yml` (it is ignored by git).
+1. Create a `.env` file next to `docker-compose.yml` (it is ignored by git),
+   starting from `.env.example`, and set your own credentials.
    Without it bin has no credentials, refuses to start and keeps restarting;
    `docker compose logs` shows why:
 
-   ```env
-   BIN_ROOT_USER=admin
-   BIN_ROOT_PASSWORD=change-me-to-something-long
+   ```sh
+   cp .env.example .env
    ```
 
 2. Build and start:

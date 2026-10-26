@@ -1,4 +1,5 @@
-# Example deployment. Put the settings in a .env file next to this one:
+# Example deployment. Put the settings in a .env file next to this one
+# (start from .env.example, which lists every optional setting too):
 #
 #   BIN_ROOT_ACCESS_KEY=admin
 #   BIN_ROOT_SECRET_KEY=change-me-to-something-long
@@ -34,9 +35,16 @@ services:
       BIN_ROOT_SECRET_KEY: ${BIN_ROOT_SECRET_KEY:-}
       BIN_ROOT_PASSWORD: ${BIN_ROOT_PASSWORD:-}
       BIN_SECRET_KEY: ${BIN_SECRET_KEY:-}
-      BIN_REGION: us-east-1
+      # Optional settings; empty means bin's default (see .env.example).
+      BIN_REGION: ${BIN_REGION:-}
+      BIN_DOMAIN: ${BIN_DOMAIN:-}
+      BIN_PUBLIC_URL: ${BIN_PUBLIC_URL:-}
       # Behind a reverse proxy, its address/network, so bin records real client IPs.
       BIN_TRUSTED_PROXIES: ${BIN_TRUSTED_PROXIES:-}
+      BIN_MASTER_KEY: ${BIN_MASTER_KEY:-}
+      BIN_LOG_LEVEL: ${BIN_LOG_LEVEL:-}
+      BIN_LOG_FORMAT: ${BIN_LOG_FORMAT:-}
+      BIN_LOG_REQUESTS: ${BIN_LOG_REQUESTS:-}
     volumes:
       - bin-data:/data
     # The image has no curl or wget: bin checks itself.
