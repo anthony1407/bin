@@ -217,9 +217,9 @@ func TestImportIAM(t *testing.T) {
 	check("alice", true, "policy-photos-ro")
 	check("bob", true, "editors")
 	check("dave", false, "policy-docs-rw", "policy-photos-ro") // disabled in MinIO
-	check("carol", false)                                       // its only policy is untranslatable
-	check("alice-app", true, "policy-photos-ro")                // implied: its user's access
-	check("bob-ci", true)                                       // own scope: docs, read-only
+	check("carol", false)                                      // its only policy is untranslatable
+	check("alice-app", true, "policy-photos-ro")               // implied: its user's access
+	check("bob-ci", true)                                      // own scope: docs, read-only
 
 	var groups struct{ Groups []groupJSON }
 	e.call("GET", "/api/v1/groups", nil, &groups)

@@ -22,6 +22,7 @@ type bucketJSON struct {
 	Tags       map[string]string `json:"tags"`
 	Versioning string            `json:"versioning"` // "", "Enabled" or "Suspended"
 	CORS       []cors.Rule       `json:"cors"`
+	TrashDays  int               `json:"trashDays"` // 0: the trash keeps files until emptied
 }
 
 func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage) bucketJSON {
@@ -37,6 +38,7 @@ func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage)
 	return bucketJSON{
 		Name: b.Name, CreatedAt: b.CreatedAt, Objects: u.Objects, Size: u.Bytes,
 		QuotaBytes: b.QuotaBytes, Policy: policy, Tags: tags, Versioning: b.Versioning, CORS: rules,
+		TrashDays: b.TrashDays,
 	}
 }
 

@@ -17,14 +17,15 @@ type Bucket struct {
 	QuotaBytes int64  // 0: unlimited
 	Policy     string // access policy JSON (package auth); "": private
 	CORS       string // CORS rules JSON (package cors); "": none
+	TrashDays  int    // days files stay in the console's trash; 0: until emptied
 }
 
-const bucketColumns = `name, created_at, versioning, quota_bytes, policy, cors`
+const bucketColumns = `name, created_at, versioning, quota_bytes, policy, cors, trash_days`
 
 func scanBucket(scan func(...any) error) (Bucket, error) {
 	var b Bucket
 	var created int64
-	err := scan(&b.Name, &created, &b.Versioning, &b.QuotaBytes, &b.Policy, &b.CORS)
+	err := scan(&b.Name, &created, &b.Versioning, &b.QuotaBytes, &b.Policy, &b.CORS, &b.TrashDays)
 	b.CreatedAt = fromNanos(created)
 	return b, err
 }

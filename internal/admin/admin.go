@@ -48,8 +48,8 @@ type Options struct {
 	LogFormat string
 	// LogRing holds the latest log lines for GET /logs; nil serves none.
 	LogRing *logging.Ring
-	// RunReplication runs replication rules on their schedule; without it they
-	// only run on demand (tests).
+	// RunReplication runs replication rules on their schedule and empties
+	// trashes past their retention; without it they only run on demand (tests).
 	RunReplication bool
 	// Panel serves everything outside /api/ (the embedded web panel).
 	Panel http.Handler
@@ -78,6 +78,7 @@ func NewHandler(opts Options) http.Handler {
 		oidcStates: newOIDCStates(), repl: newReplicator()}
 	if opts.RunReplication {
 		go h.runReplicationScheduler()
+		go h.runTrashPurge()
 	}
 
 	mux := http.NewServeMux()
@@ -111,6 +112,9 @@ func NewHandler(opts Options) http.Handler {
 
 	private("GET /api/v1/buckets/{bucket}/objects", h.listObjects)
 	private("DELETE /api/v1/buckets/{bucket}/objects", h.deleteObjects)
+	private("POST /api/v1/buckets/{bucket}/trash", h.trashObjects)
+	private("POST /api/v1/buckets/{bucket}/trash/restore", h.restoreObjects)
+	private("PUT /api/v1/buckets/{bucket}/trash/retention", h.putTrashRetention)
 	private("GET /api/v1/buckets/{bucket}/object", h.statObject)
 	private("GET /api/v1/buckets/{bucket}/download", h.download)
 	private("PUT /api/v1/buckets/{bucket}/upload", h.upload)
@@ -150,6 +154,11 @@ func NewHandler(opts Options) http.Handler {
 	private("POST /api/v1/import/start", h.handleImportStart)
 	private("GET /api/v1/import/jobs", h.listImportJobs)
 	private("DELETE /api/v1/import/jobs/{id}", h.cancelImportJob)
+	private("GET /api/v1/import/sources", h.listImportSources)
+	private("POST /api/v1/import/sources", h.createImportSource)
+	private("PUT /api/v1/import/sources/{id}", h.updateImportSource)
+	private("DELETE /api/v1/import/sources/{id}", h.deleteImportSource)
+	private("POST /api/v1/import/sources/{id}/run", h.runImportSource)
 
 	private("GET /api/v1/identity/openid", h.getOpenID)
 	private("PUT /api/v1/identity/openid", h.putOpenID)
@@ -279,6 +288,7 @@ func (h *Handler) storageError(w http.ResponseWriter, r *http.Request, err error
 		{storage.ErrNoSuchDropzone, 404, "no_such_dropzone", "The upload link does not exist."},
 		{storage.ErrNoSuchShareLink, 404, "no_such_share_link", "The share link does not exist."},
 		{storage.ErrNoSuchReplicationRule, 404, "no_such_replication_rule", "The replication rule does not exist."},
+		{storage.ErrNoSuchImportSource, 404, "no_such_import", "The saved import does not exist."},
 	} {
 		if errors.Is(err, m.err) {
 			writeError(w, m.status, m.code, m.message)

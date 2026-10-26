@@ -271,6 +271,26 @@ var migrations = []string{
 	// listings scan a bucket's rows in key order, newest version first.
 	`ALTER TABLE buckets ADD COLUMN cors TEXT NOT NULL DEFAULT '';  -- '' = no CORS configuration
 	CREATE INDEX objects_versions ON objects (bucket_id, key, id);`,
+
+	// 12: how many days deleted files stay in a bucket's trash (.trash/)
+	// before they are removed for good.
+	`ALTER TABLE buckets ADD COLUMN trash_days INTEGER NOT NULL DEFAULT 0;  -- 0 = kept until emptied`,
+
+	// 13: saved imports: a remote S3 server and what to import from it, run
+	// again on demand to bring what is new there.
+	`CREATE TABLE import_sources (
+		id          TEXT    PRIMARY KEY,
+		name        TEXT    NOT NULL,
+		endpoint    TEXT    NOT NULL,
+		access_key  TEXT    NOT NULL,
+		secret_enc  TEXT    NOT NULL,
+		region      TEXT    NOT NULL DEFAULT '',
+		buckets     TEXT    NOT NULL DEFAULT '[]',  -- JSON list of remote bucket names
+		settings    INTEGER NOT NULL DEFAULT 1,     -- also copy bucket settings
+		iam         INTEGER NOT NULL DEFAULT 0,     -- also recreate users and policies
+		created_at  INTEGER NOT NULL,
+		last_run_at INTEGER NOT NULL DEFAULT 0
+	) WITHOUT ROWID;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

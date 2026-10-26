@@ -81,6 +81,8 @@ export interface Bucket {
   /** "" (never versioned), "Enabled" or "Suspended". */
   versioning: "" | "Enabled" | "Suspended";
   cors: CORSRule[];
+  /** Days deleted files stay in the trash; 0 keeps them until it is emptied. */
+  trashDays: number;
 }
 
 export interface ObjectInfo {
@@ -298,6 +300,14 @@ export const api = {
     request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/versions/restore`, { key, versionId }),
   deleteObjects: (bucket: string, keys: string[], prefixes: string[]) =>
     request<{ deleted: number }>("DELETE", `/buckets/${enc(bucket)}/objects`, { keys, prefixes }),
+  /** Moves objects and folders (prefixes) to the bucket's trash, server side. */
+  trashObjects: (bucket: string, keys: string[], prefixes: string[]) =>
+    request<{ moved: number }>("POST", `/buckets/${enc(bucket)}/trash`, { keys, prefixes }),
+  /** Moves trashed objects and folders back to where they were deleted from. */
+  restoreObjects: (bucket: string, keys: string[], prefixes: string[]) =>
+    request<{ moved: number }>("POST", `/buckets/${enc(bucket)}/trash/restore`, { keys, prefixes }),
+  setTrashRetention: (bucket: string, days: number) =>
+    request<Bucket>("PUT", `/buckets/${enc(bucket)}/trash/retention`, { days }),
   createFolder: (bucket: string, prefix: string) => request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/folders`, { prefix }),
   share: (bucket: string, key: string, expiresIn: number, download: boolean) =>
     request<{ id: string; url: string; expiresAt: string }>("POST", `/buckets/${enc(bucket)}/share`, { key, expiresIn, download }),
@@ -367,13 +377,26 @@ export const api = {
   },
 
   // Import from remote S3
-  importTest: (endpoint: string, accessKey: string, secretKey: string, region: string) =>
+  /** With an empty secretKey, source names a saved import whose stored secret is used. */
+  importTest: (endpoint: string, accessKey: string, secretKey: string, region: string, source?: string) =>
     request<{ buckets: RemoteBucket[]; iam: ImportIAMSummary }>("POST", "/import/test", {
       endpoint,
       accessKey,
       secretKey,
       region,
+      source,
     }),
+  importSources: () => request<{ imports: ImportSource[] }>("GET", "/import/sources").then((r) => r.imports),
+  createImportSource: (input: ImportSourceInput) => request<ImportSource>("POST", "/import/sources", input),
+  /** An empty secretKey keeps the stored one. */
+  updateImportSource: (id: string, input: ImportSourceInput) => request<ImportSource>("PUT", `/import/sources/${enc(id)}`, input),
+  deleteImportSource: (id: string) => request<void>("DELETE", `/import/sources/${enc(id)}`),
+  /** Runs a saved import: new buckets are created, existing ones get what is new. */
+  runImportSource: (id: string) =>
+    request<{ jobs: ImportJob[]; skipped: ImportSkipped[]; iam?: ImportIAMResult; iamError?: string }>(
+      "POST",
+      `/import/sources/${enc(id)}/run`,
+    ),
   /**
    * settings copies each bucket's configuration; iam recreates the remote's
    * users, groups, policies and access keys (MinIO). Throws ApiError
@@ -546,10 +569,15 @@ export interface ImportJob {
   jobId: string;
   bucket: string;
   endpoint: string;
+  /** The saved import it was run from. */
+  source?: string;
   state: "queued" | "running" | "done" | "failed" | "canceled";
   copied: number;
   failed: number;
   bytes: number;
+  /** The bucket existed here: only new and changed objects are copied. */
+  update: boolean;
+  unchanged: number;
   error?: string;
   /** Bucket settings copied, and notes on those that could not be. */
   settings?: string[];
@@ -561,6 +589,34 @@ export interface ImportJob {
 export interface ImportSkipped {
   bucket: string;
   reason: string;
+}
+
+/** A saved import: a remote server and what to import from it, run again on demand. */
+export interface ImportSource {
+  id: string;
+  name: string;
+  endpoint: string;
+  accessKey: string;
+  secretKeySet: boolean;
+  region: string;
+  buckets: string[];
+  settings: boolean;
+  iam: boolean;
+  createdAt: string;
+  lastRunAt: string | null;
+  /** Its copies started since bin last restarted, newest first. */
+  jobs: ImportJob[];
+}
+
+export interface ImportSourceInput {
+  name: string;
+  endpoint: string;
+  accessKey: string;
+  secretKey: string;
+  region: string;
+  buckets: string[];
+  settings: boolean;
+  iam: boolean;
 }
 
 /** What the connection test found of the remote's users and policies. */

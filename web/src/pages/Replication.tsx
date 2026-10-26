@@ -1,5 +1,17 @@
-import { useState, useEffect } from "react";
-import { AlertCircle, ArrowDownLeft, Check, CheckCircle2, CircleAlert, Copy, Download, KeyRound } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import {
+  AlertCircle,
+  ArrowDownLeft,
+  Check,
+  CheckCircle2,
+  CircleAlert,
+  Copy,
+  Download,
+  KeyRound,
+  Pencil,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import {
   api,
   ApiError,
@@ -8,11 +20,12 @@ import {
   type ImportIAMSummary,
   type ImportJob,
   type ImportSkipped,
+  type ImportSource,
   type RemoteBucket,
 } from "../api";
-import { PageHeader, Button, Input, Modal, PasswordInput, Spinner, cx, useToast } from "../components/ui";
+import { PageHeader, Button, Card, Input, Modal, PasswordInput, Spinner, cx, errorText, useToast } from "../components/ui";
 import { ReplicationRules } from "./ReplicationRules";
-import { bytes, count } from "../lib/format";
+import { bytes, count, dateTime, relative } from "../lib/format";
 
 export function ReplicationPage() {
   const [buckets, setBuckets] = useState<Bucket[]>([]);
@@ -37,8 +50,27 @@ export function ReplicationPage() {
   const [withIam, setWithIam] = useState(false);
   const [iamResult, setIamResult] = useState<ImportIAMResult | null>(null);
   const [iamError, setIamError] = useState("");
+  // Imports are saved under a name, to be run again, edited or deleted.
+  const [importName, setImportName] = useState("");
+  const [editing, setEditing] = useState<ImportSource | null>(null);
+  const [sources, setSources] = useState<ImportSource[] | null>(null);
+  const [deleting, setDeleting] = useState<ImportSource | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [runningSource, setRunningSource] = useState("");
 
   const toast = useToast();
+
+  const loadSources = useCallback(() => {
+    api.importSources().then(setSources).catch((e) => toast("error", errorText(e)));
+  }, [toast]);
+  useEffect(loadSources, [loadSources]);
+  // While a saved import is copying, follow it in the list.
+  const sourcesActive = !!sources?.some((s) => s.jobs.some((j) => j.state === "queued" || j.state === "running"));
+  useEffect(() => {
+    if (!sourcesActive) return;
+    const timer = setInterval(loadSources, 2000);
+    return () => clearInterval(timer);
+  }, [sourcesActive, loadSources]);
 
   // While the import modal shows started jobs, follow their progress.
   const importActive = importJobs.some((j) => j.state === "queued" || j.state === "running");
@@ -79,13 +111,15 @@ export function ReplicationPage() {
   }
 
 
-  // Import wizard functions
-  function openImportModal() {
+  // Import wizard functions; src opens a saved import for editing.
+  function openImportModal(src?: ImportSource) {
+    setEditing(src ?? null);
+    setImportName(src?.name ?? "");
     setImportStep(1);
-    setImportEndpoint("");
-    setImportAccessKey("");
+    setImportEndpoint(src?.endpoint ?? "");
+    setImportAccessKey(src?.accessKey ?? "");
     setImportSecretKey("");
-    setImportRegion("us-east-1");
+    setImportRegion(src?.region || "us-east-1");
     setRemoteBuckets([]);
     setSelectedRemoteBuckets(new Set());
     setImportError("");
@@ -112,7 +146,7 @@ export function ReplicationPage() {
     if (!importAccessKey.trim()) {
       errs.importAccessKey = "Remote Access Key ID is required.";
     }
-    if (!importSecretKey.trim()) {
+    if (!importSecretKey.trim() && !editing?.secretKeySet) {
       errs.importSecretKey = "Remote Secret Key is required.";
     }
 
@@ -123,13 +157,26 @@ export function ReplicationPage() {
     }
 
     try {
-      const { buckets: remote, iam } = await api.importTest(importEndpoint, importAccessKey, importSecretKey, importRegion);
+      const { buckets: remote, iam } = await api.importTest(importEndpoint, importAccessKey, importSecretKey, importRegion, editing?.id);
       setRemoteBuckets(remote);
-      // Buckets that already exist here would be skipped, so leave them unselected.
-      const local = new Set(buckets.map((b) => b.name));
-      setSelectedRemoteBuckets(new Set(remote.filter((b) => !local.has(b.name)).map((b) => b.name)));
+      if (editing) {
+        // Keep the saved choices.
+        setSelectedRemoteBuckets(new Set(remote.map((b) => b.name).filter((n) => editing.buckets.includes(n))));
+        setWithSettings(editing.settings);
+        setWithIam(editing.iam && iam.available);
+      } else {
+        // Buckets that already exist here get only what is new, so all start selected.
+        setSelectedRemoteBuckets(new Set(remote.map((b) => b.name)));
+        setWithIam(false);
+        if (!importName.trim()) {
+          try {
+            setImportName(new URL(importEndpoint.trim()).host);
+          } catch {
+            /* the server already accepted it; a name is only a default */
+          }
+        }
+      }
       setRemoteIam(iam);
-      setWithIam(false);
       setImportStep(2);
     } catch (e: any) {
       setImportError(e.message || "Failed to connect to remote server");
@@ -147,7 +194,12 @@ export function ReplicationPage() {
     });
   }
 
-  async function importSelectedBuckets() {
+  // saveImport saves the import under its name and, with run, runs it.
+  async function saveImport(run: boolean) {
+    if (!importName.trim()) {
+      setImportErrors({ importName: "Give the import a name." });
+      return;
+    }
     setImportLoading(true);
     setImportError("");
     setImportJobs([]);
@@ -156,10 +208,26 @@ export function ReplicationPage() {
     setIamError("");
 
     try {
-      const res = await api.importStart(importEndpoint, importAccessKey, importSecretKey, importRegion, Array.from(selectedRemoteBuckets), {
+      const input = {
+        name: importName.trim(),
+        endpoint: importEndpoint.trim(),
+        accessKey: importAccessKey.trim(),
+        secretKey: importSecretKey,
+        region: importRegion,
+        buckets: Array.from(selectedRemoteBuckets),
         settings: withSettings,
         iam: withIam,
-      });
+      };
+      const saved = editing ? await api.updateImportSource(editing.id, input) : await api.createImportSource(input);
+      setEditing(saved);
+      loadSources();
+      if (!run) {
+        toast("ok", `Saved “${saved.name}”.`);
+        setImportModal(false);
+        return;
+      }
+      const res = await api.runImportSource(saved.id);
+      loadSources();
       api.buckets().then(setBuckets).catch(() => {});
       setImportJobs(res.jobs);
       setImportSkipped(res.skipped);
@@ -176,6 +244,43 @@ export function ReplicationPage() {
       }
     } finally {
       setImportLoading(false);
+    }
+  }
+
+  // runSource runs a saved import from the list; what is new comes along.
+  async function runSource(src: ImportSource) {
+    setRunningSource(src.id);
+    try {
+      const res = await api.runImportSource(src.id);
+      const notes = [res.iamError, ...res.skipped.map((s) => `${s.bucket}: ${s.reason}`)].filter(Boolean);
+      toast(notes.length ? "error" : "ok", notes.length ? notes.join(" ") : `Syncing “${src.name}”: only new and changed files are copied.`);
+      if (res.iam?.keys.length) {
+        // New secrets exist only in this answer: show them.
+        openImportModal(src);
+        setIamResult(res.iam);
+        setImportJobs(res.jobs);
+        setImportStep(3);
+      }
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setRunningSource("");
+      loadSources();
+    }
+  }
+
+  async function deleteSource() {
+    if (!deleting) return;
+    setDeleteBusy(true);
+    try {
+      await api.deleteImportSource(deleting.id);
+      toast("ok", `Deleted “${deleting.name}”. What it imported stays.`);
+      setDeleting(null);
+      loadSources();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -208,13 +313,18 @@ export function ReplicationPage() {
           <Button variant="ghost" onClick={() => { setImportStep(1); setImportErrors({}); setImportError(""); }}>
             Back
           </Button>
+          {editing && (
+            <Button busy={importLoading} disabled={selectedRemoteBuckets.size === 0 && !withIam} onClick={() => saveImport(false)}>
+              Save
+            </Button>
+          )}
           <Button
             variant="primary"
             busy={importLoading}
             disabled={selectedRemoteBuckets.size === 0 && !withIam}
-            onClick={importSelectedBuckets}
+            onClick={() => saveImport(true)}
           >
-            {selectedRemoteBuckets.size === 0 && withIam ? "Import Users & Policies" : `Import Selected (${selectedRemoteBuckets.size})`}
+            {editing ? "Save & Sync" : selectedRemoteBuckets.size === 0 && withIam ? "Save & Import Users" : `Save & Import (${selectedRemoteBuckets.size})`}
           </Button>
         </>
       );
@@ -235,21 +345,109 @@ export function ReplicationPage() {
         <Button
           variant="primary"
           icon={<ArrowDownLeft className="size-4" />}
-          onClick={openImportModal}
+          onClick={() => openImportModal()}
           className="shrink-0"
         >
           Import from Remote
         </Button>
       </div>
 
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold text-ink">Saved imports</h2>
+          <p className="text-sm text-muted">
+            Buckets copied in from another server. Sync brings what is new or changed there; nothing is deleted here.
+          </p>
+        </div>
+        <Card className="overflow-hidden">
+          {sources === null ? (
+            <Spinner className="mx-auto my-8" />
+          ) : sources.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted">
+              No saved imports yet. Use Import from Remote to copy buckets in; the import is saved here to sync again later.
+            </div>
+          ) : (
+            <div className="divide-y divide-line">
+              {sources.map((s) => {
+                const active = s.jobs.filter((j) => j.state === "queued" || j.state === "running");
+                const last = s.jobs.filter((j) => j.startedAt >= (s.lastRunAt ?? ""));
+                const failed = last.some((j) => j.state === "failed");
+                return (
+                  <div key={s.id} className="flex flex-wrap items-center gap-3 p-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-ink">{s.name}</div>
+                      <div className="truncate font-mono text-xs text-muted" title={s.endpoint}>
+                        {s.endpoint} · {s.buckets.length > 0 ? s.buckets.join(", ") : "no buckets"}
+                        {s.iam && " · users & policies"}
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted">
+                        {active.length > 0 ? (
+                          <span className="inline-flex items-center gap-1.5 text-accent">
+                            <Spinner className="size-3" /> Syncing {count(active.length)} bucket{active.length === 1 ? "" : "s"}…
+                          </span>
+                        ) : (
+                          <span title={s.lastRunAt ? dateTime(s.lastRunAt) : undefined}>
+                            Last sync {relative(s.lastRunAt)}
+                            {last.length > 0 && !failed && ` · ${count(last.reduce((n, j) => n + j.copied, 0))} new or changed files`}
+                            {failed && <span className="text-danger"> · some buckets failed</span>}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        variant="primary"
+                        icon={<RefreshCw className={cx("size-4", (active.length > 0 || runningSource === s.id) && "animate-spin")} />}
+                        busy={runningSource === s.id}
+                        disabled={active.length > 0}
+                        onClick={() => runSource(s)}
+                      >
+                        Sync now
+                      </Button>
+                      <Button icon={<Pencil className="size-4" />} onClick={() => openImportModal(s)}>
+                        Edit
+                      </Button>
+                      <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={() => setDeleting(s)}>
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      </section>
+
       <ReplicationRules buckets={buckets} />
+
+      <Modal
+        open={!!deleting}
+        onClose={() => !deleteBusy && setDeleting(null)}
+        title="Delete saved import"
+        footer={
+          <>
+            <Button disabled={deleteBusy} onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="danger" busy={deleteBusy} icon={<Trash2 className="size-4" />} onClick={deleteSource}>
+              Delete
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm">
+          Delete <strong>{deleting?.name}</strong>? Buckets, files, users and groups it imported stay; only the saved
+          connection is removed.
+        </p>
+      </Modal>
 
 
       {/* Import from Remote Wizard Modal */}
       <Modal
         open={importModal}
         onClose={closeImportModal}
-        title="Import Buckets from Remote S3"
+        title={editing ? `Edit “${editing.name}”` : "Import Buckets from Remote S3"}
         wide
         footer={<ImportFooter />}
       >
@@ -318,7 +516,7 @@ export function ReplicationPage() {
                     setImportSecretKey(e.target.value);
                     clearImportError("importSecretKey");
                   }}
-                  placeholder="••••••••••••••••"
+                  placeholder={editing?.secretKeySet ? "Saved · leave blank to keep it" : "••••••••••••••••"}
                   className={cx("font-mono text-xs", importErrors.importSecretKey && "!border-danger focus:!border-danger focus:!ring-danger/25")}
                 />
                 {importErrors.importSecretKey && (
@@ -352,9 +550,34 @@ export function ReplicationPage() {
 
         {importStep === 2 && (
           <div className="space-y-4">
+            <div>
+              <label htmlFor="import-name" className="label-strip mb-1.5 block">
+                Name <span className="text-danger">*</span>
+              </label>
+              <Input
+                id="import-name"
+                autoComplete="off"
+                value={importName}
+                onChange={(e) => {
+                  setImportName(e.target.value);
+                  clearImportError("importName");
+                }}
+                placeholder="e.g. Old MinIO"
+                aria-invalid={!!importErrors.importName}
+              />
+              {importErrors.importName ? (
+                <p className="mt-1 flex items-center gap-1 text-xs font-medium text-danger">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  <span>{importErrors.importName}</span>
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted">The import is saved under this name, to sync it again later.</p>
+              )}
+            </div>
+
             <p className="text-sm text-muted">
-              Select the buckets to import. Each bucket is created here and its objects are copied
-              once from the remote server; later changes there are not followed.
+              Select the buckets to import. Each bucket is created here and its objects are copied from the
+              remote server. Importing a bucket again copies only the files that are new or changed there.
             </p>
 
             {importError && (
@@ -396,8 +619,8 @@ export function ReplicationPage() {
                     </div>
                   </div>
                   {buckets.some((b) => b.name === bucket.name) && (
-                    <span className="text-xs text-warning bg-warning-soft px-2 py-0.5 rounded">
-                      Exists locally
+                    <span className="text-xs text-accent bg-accent-soft px-2 py-0.5 rounded" title="Only new and changed files are copied">
+                      Exists here · update
                     </span>
                   )}
                 </label>
@@ -486,7 +709,10 @@ export function ReplicationPage() {
                     <div className="flex-1 min-w-0">
                       <div className="font-mono text-sm font-medium text-ink">{job.bucket}</div>
                       <div className="text-xs text-muted mt-0.5">
-                        {job.state === "queued" ? "Waiting to start" : `${count(job.copied)} objects · ${bytes(job.bytes)}`}
+                        {job.state === "queued"
+                          ? "Waiting to start"
+                          : `${count(job.copied)} ${job.update ? "new or changed " : ""}objects · ${bytes(job.bytes)}`}
+                        {job.update && job.unchanged > 0 && ` · ${count(job.unchanged)} unchanged`}
                         {job.failed > 0 && <span className="text-danger"> · {count(job.failed)} failed</span>}
                         {job.state === "canceled" && " · canceled"}
                       </div>

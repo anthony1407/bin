@@ -1933,6 +1933,7 @@ export function ExplorerPage() {
   // Drag and drop of files onto the whole window.
   const uploadRef = useRef(upload);
   uploadRef.current = upload;
+  const inTrashRef = useRef(false); // nothing is uploaded into the trash
   useEffect(() => {
     let hide: ReturnType<typeof setTimeout> | undefined;
     const hasFiles = (e: globalThis.DragEvent) => !!e.dataTransfer?.types.includes("Files");
@@ -1941,7 +1942,7 @@ export function ExplorerPage() {
       setDragging(false);
     };
     const onOver = (e: globalThis.DragEvent) => {
-      if (!hasFiles(e)) return;
+      if (!hasFiles(e) || inTrashRef.current) return;
       e.preventDefault();
       setDragging(true);
       clearTimeout(hide);
@@ -1952,8 +1953,9 @@ export function ExplorerPage() {
     };
     const onDrop = (e: globalThis.DragEvent) => {
       if (!hasFiles(e)) return;
-      e.preventDefault();
+      e.preventDefault(); // also keeps the browser from opening the file
       stop();
+      if (inTrashRef.current) return;
       if (e.dataTransfer?.files.length) uploadRef.current(e.dataTransfer.files);
     };
     window.addEventListener("dragover", onOver);
@@ -1978,6 +1980,7 @@ export function ExplorerPage() {
   }, [prefix]);
   // Inside the trash: deleting is for good, and selections can be restored.
   const trashView = prefix.startsWith(TRASH);
+  inTrashRef.current = trashView;
 
   const parentPrefix = useMemo(() => {
     if (!prefix) return null;
@@ -2031,14 +2034,7 @@ export function ExplorerPage() {
 
   // --- trash helpers ---
   // The trash is browsed like any folder: deleted files keep their path under
-  // .trash/, so restoring one is moving it back to the same path without it.
-  async function moveObject(from: string, to: string) {
-    const res = await fetch(api.downloadURL(bucket, from));
-    const blob = await res.blob();
-    const f = Object.assign(blob, { name: baseName(to) }) as unknown as globalThis.File;
-    await uploadFile(bucket, to, f, () => {}, new AbortController().signal);
-    await api.deleteObjects(bucket, [from], []);
-  }
+  // .trash/, and the server moves them in and out.
   // Once the trash holds nothing, remove it too (with any folder markers left
   // inside) and leave it, rather than staying in an empty folder.
   async function leaveTrashIfEmpty(): Promise<boolean> {
@@ -2051,24 +2047,29 @@ export function ExplorerPage() {
   async function softDeleteSelected() {
     setDeletingSelected(true);
     try {
-      // Objects already in the trash are deleted for good; moving them again
-      // would nest them under .trash/.trash/ forever.
-      const keys = [...selected].filter((k) => !k.endsWith("/"));
-      const trashed = keys.filter((k) => k.startsWith(TRASH));
-      if (trashed.length > 0) await api.deleteObjects(bucket, trashed, []);
-      for (const k of keys.filter((k) => !k.startsWith(TRASH))) await moveObject(k, TRASH + k);
-      const folders = [...selected].filter((k) => k.endsWith("/"));
-      if (folders.length > 0) await api.deleteObjects(bucket, [], folders);
+      // Folders go to the trash too, with everything inside. What is already
+      // in the trash is deleted for good: moving it again would nest it
+      // under .trash/.trash/.
+      const inTrash = (k: string) => k.startsWith(TRASH);
+      const items = [...selected];
+      const files = items.filter((k) => !k.endsWith("/"));
+      const folders = items.filter((k) => k.endsWith("/"));
+      const goneFiles = files.filter(inTrash);
+      const goneFolders = folders.filter(inTrash);
+      if (goneFiles.length + goneFolders.length > 0) await api.deleteObjects(bucket, goneFiles, goneFolders);
+      const toTrash = items.length - goneFiles.length - goneFolders.length;
+      if (toTrash > 0) {
+        await api.trashObjects(bucket, files.filter((k) => !inTrash(k)), folders.filter((k) => !inTrash(k)));
+      }
       setConfirmDelete(false);
       setSelected(new Set());
       if (trashView && (await leaveTrashIfEmpty())) {
         toast("ok", "Trash emptied.");
         return;
       }
-      const moved = keys.length - trashed.length;
-      toast("ok", moved > 0
-        ? `Moved ${count(moved)} item${moved === 1 ? "" : "s"} to trash.`
-        : `Permanently deleted ${count(keys.length + folders.length)} item${keys.length + folders.length === 1 ? "" : "s"}.`);
+      toast("ok", toTrash > 0
+        ? `Moved ${count(toTrash)} item${toTrash === 1 ? "" : "s"} to trash.`
+        : `Permanently deleted ${count(items.length)} item${items.length === 1 ? "" : "s"}.`);
       load();
     } catch (e) {
       toast("error", errorText(e));
@@ -2081,19 +2082,23 @@ export function ExplorerPage() {
   async function restoreSelected() {
     setRestoring(true);
     try {
-      const keys = [...selected].filter((k) => !k.endsWith("/"));
-      for (const folder of [...selected].filter((k) => k.endsWith("/"))) {
-        const page = await api.objects(bucket, { prefix: folder, delimiter: "", limit: 1000 });
-        keys.push(...page.objects.map((o) => o.key).filter((k) => !k.endsWith("/")));
-      }
-      for (const k of keys) await moveObject(k, k.slice(TRASH.length));
+      const items = [...selected];
+      await api.restoreObjects(bucket, items.filter((k) => !k.endsWith("/")), items.filter((k) => k.endsWith("/")));
       setSelected(new Set());
-      toast("ok", `Restored ${count(keys.length)} item${keys.length === 1 ? "" : "s"}.`);
+      toast("ok", `Restored ${count(items.length)} item${items.length === 1 ? "" : "s"}.`);
       if (!(await leaveTrashIfEmpty())) load();
     } catch (e) {
       toast("error", errorText(e));
     } finally {
       setRestoring(false);
+    }
+  }
+  async function setTrashRetention(days: number) {
+    try {
+      setMeta(await api.setTrashRetention(bucket, days));
+      toast("ok", days === 0 ? "Deleted files are kept until the trash is emptied." : `Deleted files are removed after ${days} days in the trash.`);
+    } catch (e) {
+      toast("error", errorText(e));
     }
   }
   async function emptyTrash() {
@@ -2335,7 +2340,19 @@ export function ExplorerPage() {
               <span className="text-muted">Deleted files keep their folders. Select items to restore them or delete them for good.</span>
             </span>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-2 text-xs text-muted">
+              Keep deleted files
+              <select
+                value={meta?.trashDays ?? 0}
+                onChange={(e) => setTrashRetention(Number(e.target.value))}
+                className="h-9 rounded-md border border-line-strong bg-surface px-2 text-sm text-ink"
+              >
+                {[...new Set([0, 7, 30, 90, 365, meta?.trashDays ?? 0])].sort((a, b) => (a || 1e9) - (b || 1e9)).map((d) => (
+                  <option key={d} value={d}>{d === 0 ? "until emptied" : `${d} days`}</option>
+                ))}
+              </select>
+            </label>
             <Button onClick={() => goTo("")}>Close</Button>
             {!empty && (
               <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={() => setConfirmEmptyTrash(true)}>
@@ -2847,12 +2864,15 @@ export function ExplorerPage() {
       >
         <p className="text-sm">
           {trashView ? "Permanently delete" : "Move"} {count(selected.size)} selected item{selected.size === 1 ? "" : "s"}{trashView ? "" : " to trash"}?
-          {[...selected].some((k) => k.endsWith("/")) && " Folders are deleted with everything inside them."}
+          {[...selected].some((k) => k.endsWith("/")) &&
+            (trashView ? " Folders are deleted with everything inside them." : " Folders are moved with everything inside them.")}
         </p>
         <p className="text-xs text-muted mt-2">
           {trashView
             ? "These items are already in the trash and cannot be restored."
-            : <>Files will be moved to the Trash and can be restored later.</>}
+            : meta?.trashDays
+              ? `They can be restored from the Trash for ${meta.trashDays} days.`
+              : "They can be restored from the Trash until it is emptied."}
         </p>
       </Modal>
 

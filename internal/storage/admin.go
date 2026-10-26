@@ -221,6 +221,12 @@ func (s *Store) SetBucketCORS(ctx context.Context, bucket, rules string) error {
 	return s.setBucketColumn(ctx, bucket, "cors", rules)
 }
 
+// SetBucketTrashDays sets how many days deleted files stay in the bucket's
+// trash; 0 keeps them until the trash is emptied.
+func (s *Store) SetBucketTrashDays(ctx context.Context, bucket string, days int) error {
+	return s.setBucketColumn(ctx, bucket, "trash_days", days)
+}
+
 func (s *Store) setBucketColumn(ctx context.Context, bucket, column string, value any) error {
 	res, err := s.write.ExecContext(ctx, `UPDATE buckets SET `+column+` = ? WHERE name = ?`, value, bucket)
 	if err != nil {

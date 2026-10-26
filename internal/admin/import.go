@@ -69,12 +69,17 @@ const maxImportedMeta = 2 << 10
 // --- jobs ------------------------------------------------------------------------------
 
 type importJob struct {
-	ID         string     `json:"jobId"`
-	Bucket     string     `json:"bucket"`
-	Endpoint   string     `json:"endpoint"`
-	State      string     `json:"state"` // queued, running, done, failed, canceled
-	Copied     int        `json:"copied"`
-	Failed     int        `json:"failed"`
+	ID       string `json:"jobId"`
+	Bucket   string `json:"bucket"`
+	Endpoint string `json:"endpoint"`
+	Source   string `json:"source,omitempty"` // the saved import it was run from
+	State    string `json:"state"`            // queued, running, done, failed, canceled
+	Copied   int    `json:"copied"`
+	Failed   int    `json:"failed"`
+	// Update is set when the bucket existed here: only new and changed
+	// objects are copied, and Unchanged counts the others.
+	Update     bool       `json:"update"`
+	Unchanged  int        `json:"unchanged"`
 	Bytes      int64      `json:"bytes"`
 	Error      string     `json:"error,omitempty"`
 	Settings   []string   `json:"settings,omitempty"` // bucket settings copied
@@ -271,8 +276,28 @@ func validRemote(w http.ResponseWriter, in importRemote) bool {
 
 // handleImportTest connects to a remote S3-compatible server and lists its buckets.
 func (h *Handler) handleImportTest(w http.ResponseWriter, r *http.Request) {
-	var in importRemote
-	if !readJSON(w, r, &in) || !validRemote(w, in) {
+	var body struct {
+		importRemote
+		// Source is a saved import whose stored secret key is used when
+		// SecretKey is empty, so editing one does not ask for it again.
+		Source string `json:"source"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	in := body.importRemote
+	if in.SecretKey == "" && body.Source != "" {
+		src, err := h.opts.Store.ImportSource(r.Context(), body.Source)
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		if in.SecretKey, err = h.opts.Keys.Box.Decrypt(src.SecretEnc); err != nil {
+			writeError(w, http.StatusInternalServerError, "secret_unreadable", "The saved secret key could not be read; enter it again.")
+			return
+		}
+	}
+	if !validRemote(w, in) {
 		return
 	}
 	client, err := remoteClient(in)
@@ -329,7 +354,7 @@ func remoteBucketStats(ctx context.Context, client *minio.Client, bucket string)
 }
 
 // handleImportStart creates each selected bucket locally and copies it in
-// the background. Buckets that already exist locally are skipped.
+// the background. Buckets that already exist here get what is new.
 func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 	var in importStartRequest
 	if !readJSON(w, r, &in) || !validRemote(w, in.importRemote) {
@@ -339,6 +364,13 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Select at least one bucket.")
 		return
 	}
+	setAuditResource(r, strings.Join(in.Buckets, ","))
+	h.startImport(w, r, in, "")
+}
+
+// startImport runs an import and writes its outcome; source names the saved
+// import it comes from, if any.
+func (h *Handler) startImport(w http.ResponseWriter, r *http.Request, in importStartRequest, source string) {
 	client, err := remoteClient(in.importRemote)
 	if err != nil {
 		h.remoteError(w, err)
@@ -349,7 +381,6 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 		h.remoteError(w, err)
 		return
 	}
-	setAuditResource(r, strings.Join(in.Buckets, ","))
 
 	started := []importJob{}
 	skipped := []importSkipped{}
@@ -362,7 +393,12 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 		err := h.opts.Store.CreateBucket(r.Context(), bucket)
 		switch {
 		case errors.Is(err, storage.ErrBucketExists):
-			skipped = append(skipped, importSkipped{bucket, "A bucket with this name already exists here."})
+			// Importing again brings what is new or changed on the remote; the
+			// bucket's own settings here are left as they are.
+			started = append(started, h.startImportJob(client, importJob{
+				Bucket: bucket, Endpoint: in.Endpoint, Source: source, Update: true,
+				Notes: []string{"The bucket already exists here: only new and changed files are copied, and its settings are kept."},
+			}))
 			continue
 		case errors.Is(err, storage.ErrInvalidBucketName):
 			skipped = append(skipped, importSkipped{bucket, "The name is not a valid bucket name here."})
@@ -376,7 +412,9 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 		if in.Settings {
 			settings, notes = h.importBucketSettings(r.Context(), client, adm, bucket)
 		}
-		started = append(started, h.startImportJob(client, in.Endpoint, bucket, settings, notes))
+		started = append(started, h.startImportJob(client, importJob{
+			Bucket: bucket, Endpoint: in.Endpoint, Source: source, Settings: settings, Notes: notes,
+		}))
 	}
 
 	// Identities come after the buckets, so their access can name them.
@@ -410,28 +448,25 @@ func (h *Handler) handleImportStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) startImportJob(client *minio.Client, endpoint, bucket string, settings, notes []string) importJob {
+// startImportJob queues the copy of spec.Bucket (with Endpoint, Source,
+// Update, Settings and Notes set by the caller) and returns the job.
+func (h *Handler) startImportJob(client *minio.Client, spec importJob) importJob {
 	ctx, cancel := context.WithCancel(context.Background())
-	job := &importJob{
-		ID:        "import-" + randomToken()[:12],
-		Bucket:    bucket,
-		Endpoint:  endpoint,
-		Settings:  settings,
-		Notes:     notes,
-		State:     "queued",
-		StartedAt: time.Now().UTC(),
-		cancel:    cancel,
-	}
+	job := &spec
+	job.ID = "import-" + randomToken()[:12]
+	job.State = "queued"
+	job.StartedAt = time.Now().UTC()
+	job.cancel = cancel
 	h.imports.mu.Lock()
 	h.imports.jobs[job.ID] = job
 	snapshot := *job
 	h.imports.mu.Unlock()
 
-	go h.runImportJob(ctx, client, job.ID, bucket)
+	go h.runImportJob(ctx, client, job.ID, job.Bucket, job.Update)
 	return snapshot
 }
 
-func (h *Handler) runImportJob(ctx context.Context, client *minio.Client, id, bucket string) {
+func (h *Handler) runImportJob(ctx context.Context, client *minio.Client, id, bucket string, update bool) {
 	select {
 	case h.imports.sem <- struct{}{}:
 		defer func() { <-h.imports.sem }()
@@ -447,6 +482,10 @@ func (h *Handler) runImportJob(ctx context.Context, client *minio.Client, id, bu
 		if obj.Err != nil {
 			listErr = obj.Err
 			break
+		}
+		if update && h.unchangedHere(ctx, bucket, obj) {
+			h.imports.update(id, func(j *importJob) { j.Unchanged++ })
+			continue
 		}
 		n, err := h.importObject(ctx, client, bucket, obj)
 		if ctx.Err() != nil {
@@ -468,6 +507,17 @@ func (h *Handler) runImportJob(ctx context.Context, client *minio.Client, id, bu
 		listErr = ctx.Err()
 	}
 	h.finishImportJob(id, bucket, listErr)
+}
+
+// unchangedHere reports whether a remote object already has its copy here:
+// same size, and the same ETag or a local copy made after the remote last
+// changed (multipart ETags differ between servers for the same content).
+func (h *Handler) unchangedHere(ctx context.Context, bucket string, obj minio.ObjectInfo) bool {
+	local, err := h.opts.Store.StatObject(ctx, bucket, obj.Key)
+	if err != nil || local.Size != obj.Size {
+		return false
+	}
+	return local.ETag == strings.Trim(obj.ETag, `"`) || !local.ModTime.Before(obj.LastModified)
 }
 
 // importObject copies one object, keeping its content type and user metadata.
@@ -536,7 +586,8 @@ func (h *Handler) finishImportJob(id, bucket string, err error) {
 	})
 	// A job that failed or was canceled before copying anything leaves no
 	// trace; an empty bucket that imported fine stays, empty like the remote.
-	if job.Copied == 0 && job.State != "done" {
+	// A bucket that existed before the import is never removed.
+	if job.Copied == 0 && job.State != "done" && !job.Update {
 		if derr := h.opts.Store.DeleteBucket(context.Background(), bucket); derr != nil && !errors.Is(derr, storage.ErrBucketNotEmpty) {
 			h.opts.Log.Warn("import: removing empty bucket", "bucket", bucket, "err", derr)
 		}
