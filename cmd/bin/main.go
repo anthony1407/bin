@@ -179,6 +179,7 @@ func runServer(args []string) error {
 		return fmt.Errorf("opening data directory %s: %w", cfg.DataDir, err)
 	}
 	defer store.Close()
+	store.SetReadVerify(cfg.ReadVerify)
 
 	keys, err := openKeyring(log, cfg, store)
 	if err != nil {

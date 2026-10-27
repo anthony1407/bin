@@ -194,7 +194,7 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 	}
 	hdr.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": path.Base(key)}))
 
-	body := data.Verified()
+	body := data.Reader()
 	status, length := http.StatusOK, info.Size
 	if rh := r.Header.Get("Range"); rh != "" {
 		start, n, ok, satisfiable := httprange.Parse(rh, info.Size)

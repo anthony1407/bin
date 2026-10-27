@@ -90,7 +90,7 @@ func (s *Store) ListDropzones(ctx context.Context) ([]Dropzone, error) {
 
 // RecordDropzoneUpload remembers a file uploaded through a dropzone.
 func (s *Store) RecordDropzoneUpload(ctx context.Context, id string, u DropzoneUpload) error {
-	_, err := s.write.ExecContext(ctx, `INSERT INTO dropzone_uploads (dropzone_id, key, size, uploaded_at, remote, user_agent)
+	_, err := s.exec(ctx, `INSERT INTO dropzone_uploads (dropzone_id, key, size, uploaded_at, remote, user_agent)
 		VALUES (?, ?, ?, ?, ?, ?)`, id, u.Key, u.Size, s.nowNanos(), u.Remote, u.UserAgent)
 	return err
 }
@@ -135,7 +135,7 @@ func (s *Store) DropzoneByToken(ctx context.Context, tokenHash string) (Dropzone
 
 // DeleteDropzone removes a dropzone; its link stops working at once.
 func (s *Store) DeleteDropzone(ctx context.Context, id string) error {
-	res, err := s.write.ExecContext(ctx, `DELETE FROM dropzones WHERE id = ?`, id)
+	res, err := s.exec(ctx, `DELETE FROM dropzones WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}

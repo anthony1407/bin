@@ -48,6 +48,7 @@ services:
       BIN_LOG_LEVEL: ${BIN_LOG_LEVEL:-}
       BIN_LOG_FORMAT: ${BIN_LOG_FORMAT:-}
       BIN_LOG_REQUESTS: ${BIN_LOG_REQUESTS:-}
+      BIN_READ_VERIFY: ${BIN_READ_VERIFY:-}
     # Lets replication and imports reach servers on the Docker host (or an SSH
     # tunnel there) as host.docker.internal; Docker Desktop has it built in.
     extra_hosts:

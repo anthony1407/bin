@@ -163,7 +163,7 @@ func setMembers(ctx context.Context, tx *sql.Tx, group string, keys []string) er
 
 // DeleteGroup removes a group; its members keep their own scope again.
 func (s *Store) DeleteGroup(ctx context.Context, name string) error {
-	res, err := s.write.ExecContext(ctx, `DELETE FROM groups WHERE name = ?`, name)
+	res, err := s.exec(ctx, `DELETE FROM groups WHERE name = ?`, name)
 	if err != nil {
 		return err
 	}

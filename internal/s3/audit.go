@@ -2,6 +2,7 @@ package s3
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/http"
 
@@ -41,6 +42,14 @@ func (w *statusRecorder) Write(p []byte) (int, error) {
 		w.status = http.StatusOK
 	}
 	return w.ResponseWriter.Write(p)
+}
+
+// ReadFrom passes zero-copy body writes through; see server.ReadFrom.
+func (w *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return server.ReadFrom(w.ResponseWriter, r)
 }
 
 // Unwrap lets http.ResponseController reach Flush and friends.

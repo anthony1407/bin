@@ -139,18 +139,41 @@ func (s *Store) StatVersion(ctx context.Context, bucket, key, versionID string) 
 	if versionID != "" && !ValidVersionID(versionID) {
 		return ObjectInfo{}, ErrInvalidVersion
 	}
-	bid, err := bucketID(ctx, s.read, bucket)
+	info, err := s.lookupVersion(ctx, bucket, key, versionID)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
-	info, err := loadVersion(ctx, s.read, bid, key, versionID)
+	if info.DeleteMarker {
+		return info, ErrDeleteMarker
+	}
+	return info, nil
+}
+
+// lookupVersion finds one version, from the cache when no write happened
+// since it was last read. The returned maps and parts are shared with the
+// cache: callers must not modify them.
+func (s *Store) lookupVersion(ctx context.Context, bucket, key, versionID string) (ObjectInfo, error) {
+	epoch := s.Epoch()
+	ck := objectCacheKey{bucket, key, versionID}
+	if info, ok := s.objects.Get(ck, epoch); ok {
+		return info, nil
+	}
+	stmt, args := s.stmtLatest, []any{bucket, key}
+	if versionID != "" {
+		stmt, args = s.stmtVersion, append(args, versionID)
+	}
+	info, err := scanVersion(ctx, s.read, stmt.QueryRowContext(ctx, args...), key, versionID)
+	if errors.Is(err, ErrNoSuchKey) || errors.Is(err, ErrNoSuchVersion) {
+		// The join also finds nothing for a missing bucket.
+		if _, berr := bucketID(ctx, s.read, bucket); berr != nil {
+			return ObjectInfo{}, berr
+		}
+	}
 	if err != nil {
 		return ObjectInfo{}, err
 	}
 	info.Bucket = bucket
-	if info.DeleteMarker {
-		return info, ErrDeleteMarker
-	}
+	s.objects.Put(ck, info, epoch)
 	return info, nil
 }
 

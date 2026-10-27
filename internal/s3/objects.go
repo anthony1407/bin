@@ -265,8 +265,9 @@ func (h *Handler) getObject(w http.ResponseWriter, r *http.Request, req Request)
 }
 
 // respondObject writes the response for GET (data != nil) or HEAD. Whole
-// objects are streamed through the SHA-256 verifier (per part for multipart
-// objects); ranges and single parts are not verified.
+// objects are verified against their SHA-256 (per part for multipart
+// objects) as the store's ReadVerify policy says; ranges and single parts
+// are not verified.
 func (h *Handler) respondObject(w http.ResponseWriter, r *http.Request, info storage.ObjectInfo, data *storage.ObjectData) error {
 	if status := evaluateConditions(r, info); status == http.StatusPreconditionFailed {
 		return s3err.ErrPreconditionFailed
@@ -333,7 +334,7 @@ func (h *Handler) respondObject(w http.ResponseWriter, r *http.Request, info sto
 		return nil
 	}
 
-	body := data.Verified()
+	body := data.Reader()
 	if partial {
 		body = data.Range(start, length)
 	}

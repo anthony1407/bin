@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"bin/internal/s3/s3err"
@@ -61,6 +62,31 @@ type Verifier struct {
 	Region string
 	Store  SecretStore
 	Now    func() time.Time // nil = time.Now
+
+	mu   sync.Mutex
+	keys map[signingKeyID][]byte // derived keys; they change once a day
+}
+
+type signingKeyID struct{ secret, date, region string }
+
+// maxSigningKeys bounds the derived-key cache; when full it starts over.
+const maxSigningKeys = 4096
+
+// signingKey returns the derived key for secret, date and region, computing
+// it (four HMACs) only on first use.
+func (v *Verifier) signingKey(secret, date, region string) []byte {
+	id := signingKeyID{secret, date, region}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if k, ok := v.keys[id]; ok {
+		return k
+	}
+	if v.keys == nil || len(v.keys) >= maxSigningKeys {
+		v.keys = map[signingKeyID][]byte{}
+	}
+	k := signingKey(secret, date, region)
+	v.keys[id] = k
+	return k
 }
 
 // Auth is the outcome of a successful verification.
@@ -195,7 +221,7 @@ func (v *Verifier) verifyHeader(r *http.Request, authz string) (*Auth, error) {
 		return nil, s3err.ErrInvalidArgument.WithMessage("x-amz-content-sha256 must be UNSIGNED-PAYLOAD, a STREAMING mode or a valid sha256 value.")
 	}
 
-	key := signingKey(secret, cred.date, cred.region)
+	key := v.signingKey(secret, cred.date, cred.region)
 	query := canonicalQuery(r.URL.RawQuery, false)
 	if !signatureMatches(r, query, signedHeaders, payload, key, amzDate, cred.scope(), signature) {
 		return nil, s3err.ErrSignatureDoesNotMatch
@@ -243,7 +269,7 @@ func (v *Verifier) verifyQuery(r *http.Request) (*Auth, error) {
 		payload = UnsignedPayload
 	}
 
-	key := signingKey(secret, cred.date, cred.region)
+	key := v.signingKey(secret, cred.date, cred.region)
 	query := canonicalQuery(r.URL.RawQuery, true)
 	if !signatureMatches(r, query, signedHeaders, payload, key, amzDate, cred.scope(), signature) {
 		return nil, s3err.ErrSignatureDoesNotMatch

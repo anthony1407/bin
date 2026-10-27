@@ -113,7 +113,7 @@ func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]AuditEntry, err
 
 // PruneAudit deletes the entries recorded before cutoff and returns how many.
 func (s *Store) PruneAudit(ctx context.Context, cutoff time.Time) (int64, error) {
-	res, err := s.write.ExecContext(ctx, `DELETE FROM audit_log WHERE at < ?`, cutoff.UnixNano())
+	res, err := s.exec(ctx, `DELETE FROM audit_log WHERE at < ?`, cutoff.UnixNano())
 	if err != nil {
 		return 0, err
 	}

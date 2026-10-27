@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"bin/internal/server"
+	"bin/internal/storage"
 )
 
 // Config holds every server setting.
@@ -34,6 +35,9 @@ type Config struct {
 	LogLevel    slog.Level
 	LogFormat   string // "text" or "json"
 	LogRequests bool   // one log line per request
+
+	// ReadVerify is when served reads are checked against their SHA-256.
+	ReadVerify storage.ReadVerify
 
 	// TrustedProxies are reverse proxies whose X-Forwarded-For names the real
 	// client; empty = the connection's own address is the client.
@@ -57,6 +61,7 @@ const (
 	envPublicURL      = "BIN_PUBLIC_URL"
 	envConsoleURL     = "BIN_CONSOLE_URL"
 	envTrustedProxies = "BIN_TRUSTED_PROXIES"
+	envReadVerify     = "BIN_READ_VERIFY"
 )
 
 // Setting documents one configuration variable, for --help and validation.
@@ -85,6 +90,7 @@ var Settings = []Setting{
 	{envLogLevel, nil, "info", "debug, info, warn or error"},
 	{envLogFormat, nil, "text", "text (readable) or json (for log collectors)"},
 	{envLogRequests, nil, "true", "log one line per request"},
+	{envReadVerify, nil, "once", "check downloads against their SHA-256: once (first read of each file, then zero-copy), always, or off"},
 	{envConfigFile, nil, "bin.env", "optional KEY=VALUE file read before applying the environment"},
 }
 
@@ -238,6 +244,11 @@ func Load(getenv func(string) string) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("%s must be true or false, got %q", envLogRequests, v)
 	}
+	readVerify, err := storage.ParseReadVerify(strings.ToLower(get(envReadVerify, "once")))
+	if err != nil {
+		return nil, fmt.Errorf("%s %w", envReadVerify, err)
+	}
+	c.ReadVerify = readVerify
 	proxies, err := server.ParseTrustedProxies(get(envTrustedProxies, ""))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", envTrustedProxies, err)

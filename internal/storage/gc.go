@@ -22,6 +22,9 @@ func (s *Store) collect(ctx context.Context, blobs ...string) {
 	for _, b := range blobs {
 		s.mu.Lock()
 		busy := s.inUse[b] > 0
+		if busy {
+			s.deferred[b] = true // the last reader's release collects it
+		}
 		s.mu.Unlock()
 		if busy {
 			continue
@@ -36,6 +39,8 @@ func (s *Store) collect(ctx context.Context, blobs ...string) {
 			if s.removeBlob(b) == nil {
 				s.write.ExecContext(ctx, `DELETE FROM gc_blobs WHERE blob = ?`, b)
 			}
+		} else {
+			s.deferred[b] = true
 		}
 		s.mu.Unlock()
 	}

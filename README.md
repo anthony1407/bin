@@ -187,6 +187,7 @@ Settings come from environment variables or from `KEY=VALUE` lines in
 | `BIN_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `BIN_LOG_FORMAT` | `text` | `text` or `json` |
 | `BIN_LOG_REQUESTS` | `true` | One log line per request |
+| `BIN_READ_VERIFY` | `once` | When downloads are checked against their SHA-256: `once` (first read of each file per process start, then served zero-copy), `always` (every read), or `off`. Copies, replication and the integrity scan always check |
 | `BIN_CONFIG_FILE` | `bin.env` | Optional `KEY=VALUE` file |
 
 The data directory and listen addresses can also be passed as arguments, which

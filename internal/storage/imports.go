@@ -50,7 +50,7 @@ func encodeBuckets(b []string) string {
 
 // CreateImportSource stores a new saved import.
 func (s *Store) CreateImportSource(ctx context.Context, src ImportSource) error {
-	_, err := s.write.ExecContext(ctx, `INSERT INTO import_sources (`+importSourceColumns+`)
+	_, err := s.exec(ctx, `INSERT INTO import_sources (`+importSourceColumns+`)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		src.ID, src.Name, src.Endpoint, src.AccessKey, src.SecretEnc, src.Region, encodeBuckets(src.Buckets),
 		src.Settings, src.IAM, s.nowNanos())
@@ -59,7 +59,7 @@ func (s *Store) CreateImportSource(ctx context.Context, src ImportSource) error 
 
 // UpdateImportSource replaces a saved import's settings, keeping its history.
 func (s *Store) UpdateImportSource(ctx context.Context, src ImportSource) error {
-	res, err := s.write.ExecContext(ctx, `UPDATE import_sources SET name = ?, endpoint = ?, access_key = ?,
+	res, err := s.exec(ctx, `UPDATE import_sources SET name = ?, endpoint = ?, access_key = ?,
 		secret_enc = ?, region = ?, buckets = ?, settings = ?, iam = ? WHERE id = ?`,
 		src.Name, src.Endpoint, src.AccessKey, src.SecretEnc, src.Region, encodeBuckets(src.Buckets), src.Settings, src.IAM, src.ID)
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *Store) ListImportSources(ctx context.Context) ([]ImportSource, error) {
 
 // DeleteImportSource removes a saved import; what it imported stays.
 func (s *Store) DeleteImportSource(ctx context.Context, id string) error {
-	res, err := s.write.ExecContext(ctx, `DELETE FROM import_sources WHERE id = ?`, id)
+	res, err := s.exec(ctx, `DELETE FROM import_sources WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -112,6 +112,6 @@ func (s *Store) DeleteImportSource(ctx context.Context, id string) error {
 
 // MarkImportSourceRun records that a saved import was just run.
 func (s *Store) MarkImportSourceRun(ctx context.Context, id string) error {
-	_, err := s.write.ExecContext(ctx, `UPDATE import_sources SET last_run_at = ? WHERE id = ?`, s.nowNanos(), id)
+	_, err := s.exec(ctx, `UPDATE import_sources SET last_run_at = ? WHERE id = ?`, s.nowNanos(), id)
 	return err
 }

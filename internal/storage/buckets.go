@@ -82,9 +82,16 @@ func (s *Store) CreateBucket(ctx context.Context, name string) error {
 
 // GetBucket returns a bucket's settings.
 func (s *Store) GetBucket(ctx context.Context, name string) (Bucket, error) {
+	epoch := s.Epoch()
+	if b, ok := s.buckets.Get(name, epoch); ok {
+		return b, nil
+	}
 	b, err := scanBucket(s.read.QueryRowContext(ctx, `SELECT `+bucketColumns+` FROM buckets WHERE name = ?`, name).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Bucket{}, ErrNoSuchBucket
+	}
+	if err == nil {
+		s.buckets.Put(name, b, epoch)
 	}
 	return b, err
 }

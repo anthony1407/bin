@@ -312,6 +312,10 @@ func nonNil(m map[string]string) map[string]string {
 const objectColumns = `id, version_id, is_latest, delete_marker, blob, size, etag, sha256, content_type,
 	headers, user_meta, checksums, checksum_type, parts_count, modified_at`
 
+// objectColumnsQualified is objectColumns for queries joining objects as "o".
+const objectColumnsQualified = `o.id, o.version_id, o.is_latest, o.delete_marker, o.blob, o.size, o.etag, o.sha256,
+	o.content_type, o.headers, o.user_meta, o.checksums, o.checksum_type, o.parts_count, o.modified_at`
+
 type rowsQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -330,20 +334,25 @@ func latest(ctx context.Context, q rowsQuerier, bucketID int64, key string) (Obj
 // loadVersion returns one version of a key, delete markers included: the
 // given versionID, or the latest version when versionID is "".
 func loadVersion(ctx context.Context, q rowsQuerier, bucketID int64, key, versionID string) (ObjectInfo, error) {
+	query, args := `SELECT `+objectColumns+` FROM objects WHERE bucket_id = ? AND key = ? AND is_latest = 1`, []any{bucketID, key}
+	if versionID != "" {
+		query = `SELECT ` + objectColumns + ` FROM objects WHERE bucket_id = ? AND key = ? AND version_id = ?`
+		args = append(args, versionID)
+	}
+	return scanVersion(ctx, q, q.QueryRowContext(ctx, query, args...), key, versionID)
+}
+
+// scanVersion reads a row of objectColumns (or objectColumnsQualified) and
+// the object's parts.
+func scanVersion(ctx context.Context, q rowsQuerier, row *sql.Row, key, versionID string) (ObjectInfo, error) {
 	var (
 		info                ObjectInfo
 		id, modified        int64
 		blob                sql.NullString
 		headers, meta, sums string
 	)
-	query, args := `SELECT `+objectColumns+` FROM objects WHERE bucket_id = ? AND key = ? AND is_latest = 1`, []any{bucketID, key}
-	if versionID != "" {
-		query = `SELECT ` + objectColumns + ` FROM objects WHERE bucket_id = ? AND key = ? AND version_id = ?`
-		args = append(args, versionID)
-	}
-	err := q.QueryRowContext(ctx, query, args...).
-		Scan(&id, &info.VersionID, &info.IsLatest, &info.DeleteMarker, &blob, &info.Size, &info.ETag, &info.SHA256,
-			&info.ContentType, &headers, &meta, &sums, &info.ChecksumType, &info.PartsCount, &modified)
+	err := row.Scan(&id, &info.VersionID, &info.IsLatest, &info.DeleteMarker, &blob, &info.Size, &info.ETag, &info.SHA256,
+		&info.ContentType, &headers, &meta, &sums, &info.ChecksumType, &info.PartsCount, &modified)
 	if errors.Is(err, sql.ErrNoRows) {
 		if versionID != "" {
 			return ObjectInfo{}, ErrNoSuchVersion
@@ -362,6 +371,9 @@ func loadVersion(ctx context.Context, q rowsQuerier, bucketID int64, key, versio
 		src string
 		dst any
 	}{{headers, &info.Headers}, {meta, &info.UserMeta}, {sums, &info.Checksums}} {
+		if f.src == "{}" {
+			continue // the common case needs no JSON decoding
+		}
 		if err := json.Unmarshal([]byte(f.src), f.dst); err != nil {
 			return ObjectInfo{}, err
 		}

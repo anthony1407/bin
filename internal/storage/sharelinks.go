@@ -41,7 +41,7 @@ func scanShareLink(scan func(...any) error) (ShareLink, error) {
 
 // CreateShareLink records an issued link.
 func (s *Store) CreateShareLink(ctx context.Context, l ShareLink) error {
-	_, err := s.write.ExecContext(ctx, `INSERT INTO share_links (`+shareLinkColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+	_, err := s.exec(ctx, `INSERT INTO share_links (`+shareLinkColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		l.ID, l.Bucket, l.Key, l.SignatureHash, l.URLEnc, l.Download, l.CreatedBy, s.nowNanos(), l.Expires.UnixNano())
 	return err
 }
@@ -99,7 +99,7 @@ func (s *Store) RevokeShareLink(ctx context.Context, id string) (ShareLink, erro
 	} else if err != nil {
 		return ShareLink{}, err
 	}
-	if _, err := s.write.ExecContext(ctx, `UPDATE share_links SET revoked_at = ? WHERE id = ? AND revoked_at = 0`,
+	if _, err := s.exec(ctx, `UPDATE share_links SET revoked_at = ? WHERE id = ? AND revoked_at = 0`,
 		s.nowNanos(), id); err != nil {
 		return ShareLink{}, err
 	}
@@ -108,7 +108,7 @@ func (s *Store) RevokeShareLink(ctx context.Context, id string) (ShareLink, erro
 
 // RevokeAllShareLinks marks every link revoked, when the share key rotates.
 func (s *Store) RevokeAllShareLinks(ctx context.Context) error {
-	_, err := s.write.ExecContext(ctx, `UPDATE share_links SET revoked_at = ? WHERE revoked_at = 0`, s.nowNanos())
+	_, err := s.exec(ctx, `UPDATE share_links SET revoked_at = ? WHERE revoked_at = 0`, s.nowNanos())
 	return err
 }
 
@@ -116,17 +116,25 @@ func (s *Store) RevokeAllShareLinks(ctx context.Context) error {
 // signature of a revoked share link. Unknown signatures (other presigned
 // URLs, links issued before links were recorded) are not revoked.
 func (s *Store) ShareSignatureRevoked(ctx context.Context, signatureHash string) (bool, error) {
+	epoch := s.Epoch()
+	if v, ok := s.revoked.Get(signatureHash, epoch); ok {
+		return v, nil
+	}
 	var revoked int64
 	err := s.read.QueryRowContext(ctx, `SELECT revoked_at FROM share_links WHERE signature_hash = ?`, signatureHash).Scan(&revoked)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		err = nil
 	}
-	return revoked != 0, err
+	if err != nil {
+		return false, err
+	}
+	s.revoked.Put(signatureHash, revoked != 0, epoch)
+	return revoked != 0, nil
 }
 
 // pruneShareLinks forgets links that ended (expired or revoked) over a week
 // ago; they can no longer be used, and the console only shows live ones.
 func (s *Store) pruneShareLinks(ctx context.Context) {
 	cutoff := s.now().Add(-7 * 24 * time.Hour).UnixNano()
-	s.write.ExecContext(ctx, `DELETE FROM share_links WHERE expires_at < ? OR (revoked_at != 0 AND revoked_at < ?)`, cutoff, cutoff)
+	s.exec(ctx, `DELETE FROM share_links WHERE expires_at < ? OR (revoked_at != 0 AND revoked_at < ?)`, cutoff, cutoff)
 }

@@ -120,7 +120,7 @@ func (s *Store) UpdateAccessKey(ctx context.Context, accessKey string, fn func(*
 
 // DeleteAccessKey removes a key.
 func (s *Store) DeleteAccessKey(ctx context.Context, accessKey string) error {
-	res, err := s.write.ExecContext(ctx, `DELETE FROM access_keys WHERE access_key = ?`, accessKey)
+	res, err := s.exec(ctx, `DELETE FROM access_keys WHERE access_key = ?`, accessKey)
 	if err != nil {
 		return err
 	}
@@ -132,6 +132,7 @@ func (s *Store) DeleteAccessKey(ctx context.Context, accessKey string) error {
 
 // TouchAccessKey records that a key was used.
 func (s *Store) TouchAccessKey(ctx context.Context, accessKey string, at time.Time) error {
+	// Bypasses exec: last use feeds no cache, so it must not empty them.
 	_, err := s.write.ExecContext(ctx, `UPDATE access_keys SET last_used_at = ? WHERE access_key = ?`, at.UnixNano(), accessKey)
 	return err
 }
@@ -149,7 +150,7 @@ type Session struct {
 
 // CreateSession stores a session.
 func (s *Store) CreateSession(ctx context.Context, sess Session) error {
-	_, err := s.write.ExecContext(ctx, `INSERT INTO sessions (token_hash, csrf, user, created_at, expires_at)
+	_, err := s.exec(ctx, `INSERT INTO sessions (token_hash, csrf, user, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?)`, sess.TokenHash, sess.CSRF, sess.User, s.nowNanos(), sess.Expires.UnixNano())
 	return err
 }
@@ -169,18 +170,18 @@ func (s *Store) GetSession(ctx context.Context, tokenHash string) (Session, erro
 
 // DeleteSession ends a session.
 func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
-	_, err := s.write.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
+	_, err := s.exec(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
 	return err
 }
 
 // DeleteSessions ends every session (e.g. after the root secret changes).
 func (s *Store) DeleteSessions(ctx context.Context) error {
-	_, err := s.write.ExecContext(ctx, `DELETE FROM sessions`)
+	_, err := s.exec(ctx, `DELETE FROM sessions`)
 	return err
 }
 
 func (s *Store) deleteExpiredSessions(ctx context.Context) {
-	s.write.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, s.nowNanos())
+	s.exec(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, s.nowNanos())
 }
 
 // --- settings -----------------------------------------------------------------
@@ -197,7 +198,7 @@ func (s *Store) Setting(ctx context.Context, key string) (string, bool, error) {
 
 // SetSetting stores a runtime setting.
 func (s *Store) SetSetting(ctx context.Context, key, value string) error {
-	_, err := s.write.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)
+	_, err := s.exec(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)
 		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
 }
@@ -228,7 +229,7 @@ func (s *Store) SetBucketTrashDays(ctx context.Context, bucket string, days int)
 }
 
 func (s *Store) setBucketColumn(ctx context.Context, bucket, column string, value any) error {
-	res, err := s.write.ExecContext(ctx, `UPDATE buckets SET `+column+` = ? WHERE name = ?`, value, bucket)
+	res, err := s.exec(ctx, `UPDATE buckets SET `+column+` = ? WHERE name = ?`, value, bucket)
 	if err != nil {
 		return err
 	}

@@ -26,6 +26,28 @@ type Keyring struct {
 
 	mu      sync.Mutex
 	touched map[string]time.Time
+
+	// Every signed request needs its key's secret and grants. Both are
+	// cached until the next write to the store (see storage.EpochCache), so
+	// a disabled, deleted or re-scoped key stops working at once.
+	cacheOnce sync.Once
+	secrets   *storage.EpochCache[string, cachedSecret]
+	grants    *storage.EpochCache[string, Grants]
+}
+
+// cachedSecret is the decrypted secret of a usable key (ok), or the fact that
+// the key does not exist or is disabled.
+type cachedSecret struct {
+	secret  string
+	expires time.Time
+	ok      bool
+}
+
+func (k *Keyring) caches() {
+	k.cacheOnce.Do(func() {
+		k.secrets = storage.NewEpochCache[string, cachedSecret](16 << 10)
+		k.grants = storage.NewEpochCache[string, Grants](16 << 10)
+	})
 }
 
 const touchInterval = time.Minute
@@ -43,19 +65,33 @@ func (k *Keyring) Secret(accessKey string) (string, bool) {
 		return k.RootSecretKey, true
 	}
 	ctx := context.Background()
-	key, err := k.Store.GetAccessKey(ctx, accessKey)
-	if err != nil || !key.Enabled || (!key.Expires.IsZero() && k.now().After(key.Expires)) {
-		return "", false
-	}
-	secret, err := k.Box.Decrypt(key.SecretEnc)
-	if err != nil {
-		if k.Log != nil {
-			k.Log.Error("cannot decrypt access key secret; was BIN_MASTER_KEY changed?", "access_key", accessKey)
+	k.caches()
+	epoch := k.Store.Epoch()
+	c, hit := k.secrets.Get(accessKey, epoch)
+	if !hit {
+		key, err := k.Store.GetAccessKey(ctx, accessKey)
+		switch {
+		case errors.Is(err, storage.ErrNoSuchAccessKey) || (err == nil && !key.Enabled):
+			k.secrets.Put(accessKey, cachedSecret{}, epoch)
+			return "", false
+		case err != nil:
+			return "", false
 		}
+		secret, err := k.Box.Decrypt(key.SecretEnc)
+		if err != nil {
+			if k.Log != nil {
+				k.Log.Error("cannot decrypt access key secret; was BIN_MASTER_KEY changed?", "access_key", accessKey)
+			}
+			return "", false
+		}
+		c = cachedSecret{secret: secret, expires: key.Expires, ok: true}
+		k.secrets.Put(accessKey, c, epoch)
+	}
+	if !c.ok || (!c.expires.IsZero() && k.now().After(c.expires)) {
 		return "", false
 	}
 	k.touch(ctx, accessKey)
-	return secret, true
+	return c.secret, true
 }
 
 // touch records the last use of a key, at most once per touchInterval.
@@ -81,6 +117,19 @@ func (k *Keyring) Grants(ctx context.Context, accessKey string) (Grants, error) 
 	if accessKey == k.RootAccessKey {
 		return FullAccess, nil
 	}
+	k.caches()
+	epoch := k.Store.Epoch()
+	if g, ok := k.grants.Get(accessKey, epoch); ok {
+		return g, nil
+	}
+	g, err := k.loadGrants(ctx, accessKey)
+	if err == nil {
+		k.grants.Put(accessKey, g, epoch)
+	}
+	return g, err
+}
+
+func (k *Keyring) loadGrants(ctx context.Context, accessKey string) (Grants, error) {
 	key, err := k.Store.GetAccessKey(ctx, accessKey)
 	if err != nil {
 		return nil, err

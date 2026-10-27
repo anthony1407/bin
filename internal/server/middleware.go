@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -88,6 +89,29 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 	w.bytes += int64(n)
 	return n, err
 }
+
+// ReadFrom keeps net/http's zero-copy path (sendfile) reachable through the
+// wrapper: io.Copy only uses it when the writer it is given has ReadFrom.
+func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := ReadFrom(w.ResponseWriter, r)
+	w.bytes += n
+	return n, err
+}
+
+// ReadFrom copies r to w, through w's own ReadFrom when it has one.
+func ReadFrom(w http.ResponseWriter, r io.Reader) (int64, error) {
+	if rf, ok := w.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(writerOnly{w}, r)
+}
+
+// writerOnly hides every method but Write, so io.Copy cannot loop back into
+// ReadFrom.
+type writerOnly struct{ io.Writer }
 
 // Unwrap lets http.ResponseController reach Flush and friends.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

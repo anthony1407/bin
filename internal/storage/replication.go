@@ -146,7 +146,7 @@ func (s *Store) ListReplicationRules(ctx context.Context) ([]ReplicationRule, er
 // DeleteReplicationRule removes a rule and what it remembered. Objects it
 // copied stay where they are.
 func (s *Store) DeleteReplicationRule(ctx context.Context, id string) error {
-	res, err := s.write.ExecContext(ctx, `DELETE FROM replication_rules WHERE id = ?`, id)
+	res, err := s.exec(ctx, `DELETE FROM replication_rules WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,7 @@ func (s *Store) DeleteReplicationRule(ctx context.Context, id string) error {
 
 // RecordReplicationRun stores the outcome of a run.
 func (s *Store) RecordReplicationRun(ctx context.Context, id string, run ReplicationRun) error {
-	_, err := s.write.ExecContext(ctx, `UPDATE replication_rules SET last_run_at = ?, last_status = ?, last_error = ?,
+	_, err := s.exec(ctx, `UPDATE replication_rules SET last_run_at = ?, last_status = ?, last_error = ?,
 		last_copied = ?, last_deleted = ?, last_failed = ?, last_bytes = ?,
 		total_copied = total_copied + ?, total_bytes = total_bytes + ? WHERE id = ?`,
 		run.At.UnixNano(), run.Status, run.Error, run.Copied, run.Deleted, run.Failed, run.Bytes, run.Copied, run.Bytes, id)
@@ -186,7 +186,7 @@ func (s *Store) ReplicationState(ctx context.Context, id string) (map[string]Rep
 
 // SetReplicatedObject records that a rule copied one object.
 func (s *Store) SetReplicatedObject(ctx context.Context, id, key string, o ReplicatedObject) error {
-	_, err := s.write.ExecContext(ctx, `INSERT INTO replication_state (rule_id, key, local_etag, remote_etag) VALUES (?, ?, ?, ?)
+	_, err := s.exec(ctx, `INSERT INTO replication_state (rule_id, key, local_etag, remote_etag) VALUES (?, ?, ?, ?)
 		ON CONFLICT (rule_id, key) DO UPDATE SET local_etag = excluded.local_etag, remote_etag = excluded.remote_etag`,
 		id, key, o.LocalETag, o.RemoteETag)
 	return err
@@ -194,6 +194,6 @@ func (s *Store) SetReplicatedObject(ctx context.Context, id, key string, o Repli
 
 // ForgetReplicatedObject drops a rule's record of one object.
 func (s *Store) ForgetReplicatedObject(ctx context.Context, id, key string) error {
-	_, err := s.write.ExecContext(ctx, `DELETE FROM replication_state WHERE rule_id = ? AND key = ?`, id, key)
+	_, err := s.exec(ctx, `DELETE FROM replication_state WHERE rule_id = ? AND key = ?`, id, key)
 	return err
 }

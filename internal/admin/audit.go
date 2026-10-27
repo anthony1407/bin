@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -158,6 +159,14 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 		w.status = http.StatusOK
 	}
 	return w.ResponseWriter.Write(p)
+}
+
+// ReadFrom passes zero-copy body writes through; see server.ReadFrom.
+func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return server.ReadFrom(w.ResponseWriter, r)
 }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

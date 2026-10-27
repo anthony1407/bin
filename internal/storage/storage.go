@@ -18,7 +18,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -50,9 +52,27 @@ type Store struct {
 	now    func() time.Time
 	stopGC context.CancelFunc
 
-	mu    sync.Mutex
-	inUse map[string]int // blobs being read; never deleted meanwhile
+	mu       sync.Mutex
+	inUse    map[string]int  // blobs being read; never deleted meanwhile
+	deferred map[string]bool // queued blobs whose removal waits for readers
+
+	// Read fast path; see cache.go.
+	epoch       atomic.Uint64
+	objects     *EpochCache[objectCacheKey, ObjectInfo]
+	buckets     *EpochCache[string, Bucket]
+	revoked     *EpochCache[string, bool]
+	stmtLatest  *sql.Stmt
+	stmtVersion *sql.Stmt
+
+	readVerify ReadVerify
+	verified   verifiedSet
+	hot        *blobCache // small blobs in memory; nil: disabled
 }
+
+// DefaultReadCache is how much memory small blobs may use by default.
+const DefaultReadCache = 128 << 20
+
+type objectCacheKey struct{ bucket, key, versionID string }
 
 // Open takes exclusive ownership of dir, creating it if needed, brings the
 // metadata schema up to date and repairs anything an unclean shutdown left.
@@ -71,7 +91,15 @@ func Open(dir string, log *slog.Logger) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, lock: lock, now: time.Now, inUse: map[string]int{}}
+	s := &Store{
+		dir: dir, lock: lock, now: time.Now,
+		inUse:    map[string]int{},
+		deferred: map[string]bool{},
+		objects:  NewEpochCache[objectCacheKey, ObjectInfo](64 << 10),
+		buckets:  NewEpochCache[string, Bucket](4 << 10),
+		revoked:  NewEpochCache[string, bool](16 << 10),
+		hot:      newBlobCache(DefaultReadCache),
+	}
 	if err := s.openDB(); err != nil {
 		s.Close()
 		return nil, err
@@ -106,9 +134,27 @@ func (s *Store) openDB() error {
 	if s.read, err = sql.Open("sqlite", dsn); err != nil {
 		return err
 	}
-	s.read.SetMaxOpenConns(8)
+	// Readers never block each other in WAL mode: size the pool for the
+	// machine, and keep every connection open, since opening one (and
+	// re-reading the schema) costs far more than the queries it serves.
+	readers := max(8, 2*runtime.GOMAXPROCS(0))
+	s.read.SetMaxOpenConns(readers)
+	s.read.SetMaxIdleConns(readers)
 	if err := migrate(context.Background(), s.write); err != nil {
 		return fmt.Errorf("migrating %s: %w", path, err)
+	}
+	// Object lookups are prepared once per connection instead of being
+	// parsed on every request.
+	ctx := context.Background()
+	if s.stmtLatest, err = s.read.PrepareContext(ctx, `SELECT `+objectColumnsQualified+`
+		FROM objects o JOIN buckets b ON b.id = o.bucket_id
+		WHERE b.name = ? AND o.key = ? AND o.is_latest = 1`); err != nil {
+		return err
+	}
+	if s.stmtVersion, err = s.read.PrepareContext(ctx, `SELECT `+objectColumnsQualified+`
+		FROM objects o JOIN buckets b ON b.id = o.bucket_id
+		WHERE b.name = ? AND o.key = ? AND o.version_id = ?`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -119,6 +165,11 @@ func (s *Store) Close() error {
 		s.stopGC()
 	}
 	var errs []error
+	for _, st := range []*sql.Stmt{s.stmtLatest, s.stmtVersion} {
+		if st != nil {
+			errs = append(errs, st.Close())
+		}
+	}
 	for _, db := range []*sql.DB{s.read, s.write} {
 		if db != nil {
 			errs = append(errs, db.Close())
@@ -140,7 +191,16 @@ func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 		tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	err = tx.Commit()
+	s.bump() // even after a failed commit: whether it landed is unknown
+	return err
+}
+
+// exec runs a single write statement outside a transaction.
+func (s *Store) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	res, err := s.write.ExecContext(ctx, query, args...)
+	s.bump()
+	return res, err
 }
 
 // nowNanos is the current time as stored in the database.

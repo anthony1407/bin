@@ -115,6 +115,7 @@ func (s *Store) writeBlob(r io.Reader, size int64, algs []checksum.Algorithm) (i
 
 // removeBlob deletes a blob file. A missing file is not an error.
 func (s *Store) removeBlob(id string) error {
+	s.hot.evict(id)
 	err := os.Remove(s.blobPath(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
