@@ -198,7 +198,7 @@ func (s *Store) DeleteVersion(ctx context.Context, bucket, key, versionID string
 	}
 	var res DeleteResult
 	var dropped []string
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		bid, err := bucketID(ctx, tx, bucket)
 		if err != nil {
 			return err
@@ -438,7 +438,7 @@ func (s *Store) PurgePrefix(ctx context.Context, bucket, prefix string) (int, er
 			return total, nil
 		}
 		var dropped []string
-		err = s.tx(ctx, func(tx *sql.Tx) error {
+		err = s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			keys := map[string]bool{}
 			for _, v := range batch {
 				blobs, err := dropVersion(ctx, tx, bid, v.key, v.id, s.nowNanos())

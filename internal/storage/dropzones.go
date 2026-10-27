@@ -49,7 +49,7 @@ func scanDropzone(scan func(...any) error) (Dropzone, error) {
 
 // CreateDropzone stores a new dropzone in an existing bucket.
 func (s *Store) CreateDropzone(ctx context.Context, d Dropzone) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var one int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM buckets WHERE name = ?`, d.Bucket).Scan(&one); errors.Is(err, sql.ErrNoRows) {
 			return ErrNoSuchBucket

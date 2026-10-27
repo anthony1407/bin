@@ -64,6 +64,11 @@ type Store struct {
 	stmtLatest  *sql.Stmt
 	stmtVersion *sql.Stmt
 
+	// Group commit; see commit.go.
+	txq    chan *txRequest
+	stopTx chan struct{}
+	txDone chan struct{}
+
 	readVerify ReadVerify
 	verified   verifiedSet
 	hot        *blobCache // small blobs in memory; nil: disabled
@@ -104,6 +109,7 @@ func Open(dir string, log *slog.Logger) (*Store, error) {
 		s.Close()
 		return nil, err
 	}
+	s.startCommitter()
 	if err := s.recover(context.Background(), log); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("recovering data directory: %w", err)
@@ -164,6 +170,7 @@ func (s *Store) Close() error {
 	if s.stopGC != nil {
 		s.stopGC()
 	}
+	s.stopCommitter()
 	var errs []error
 	for _, st := range []*sql.Stmt{s.stmtLatest, s.stmtVersion} {
 		if st != nil {
@@ -179,21 +186,6 @@ func (s *Store) Close() error {
 		errs = append(errs, unlockDir(s.lock))
 	}
 	return errors.Join(errs...)
-}
-
-// tx runs fn in a write transaction.
-func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := s.write.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		tx.Rollback()
-		return err
-	}
-	err = tx.Commit()
-	s.bump() // even after a failed commit: whether it landed is unknown
-	return err
 }
 
 // exec runs a single write statement outside a transaction.

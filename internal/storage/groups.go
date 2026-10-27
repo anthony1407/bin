@@ -34,7 +34,7 @@ func scanGroup(scan func(...any) error) (Group, error) {
 
 // CreateGroup stores a new group with its members.
 func (s *Store) CreateGroup(ctx context.Context, g Group) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var one int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM groups WHERE name = ?`, g.Name).Scan(&one); err == nil {
 			return ErrGroupExists
@@ -108,7 +108,7 @@ func (s *Store) groupMembers(ctx context.Context) (map[string][]string, error) {
 // name and creation time cannot change.
 func (s *Store) UpdateGroup(ctx context.Context, name string, fn func(*Group) error) (Group, error) {
 	var g Group
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		g, err = scanGroup(tx.QueryRowContext(ctx, `SELECT `+groupColumns+` FROM groups WHERE name = ?`, name).Scan)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -195,7 +195,7 @@ func (s *Store) KeyGroups(ctx context.Context, accessKey string) ([]Group, error
 
 // SetKeyGroups makes an access key a member of exactly the given groups.
 func (s *Store) SetKeyGroups(ctx context.Context, accessKey string, groups []string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var one int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM access_keys WHERE access_key = ? AND internal = 0`, accessKey).Scan(&one); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

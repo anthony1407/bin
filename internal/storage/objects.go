@@ -154,7 +154,7 @@ func (s *Store) PutObject(ctx context.Context, bucket, key string, r io.Reader, 
 	}
 
 	var replaced []string
-	err = s.tx(ctx, func(tx *sql.Tx) error {
+	err = s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		bid, err := bucketID(ctx, tx, bucket)
 		if err != nil {
 			return err

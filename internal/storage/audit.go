@@ -39,7 +39,7 @@ func (s *Store) AddAudit(ctx context.Context, entries ...AuditEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx, `INSERT INTO audit_log (at, source, actor, action, bucket, resource, status, error, remote, request_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {

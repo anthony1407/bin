@@ -56,7 +56,7 @@ func scanAccessKey(scan func(...any) error) (AccessKey, error) {
 
 // CreateAccessKey stores a new key.
 func (s *Store) CreateAccessKey(ctx context.Context, k AccessKey) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		var one int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM access_keys WHERE access_key = ?`, k.AccessKey).Scan(&one); err == nil {
 			return ErrAccessKeyExists
@@ -100,7 +100,7 @@ func (s *Store) ListAccessKeys(ctx context.Context) ([]AccessKey, error) {
 // and its creation time cannot change.
 func (s *Store) UpdateAccessKey(ctx context.Context, accessKey string, fn func(*AccessKey) error) (AccessKey, error) {
 	var k AccessKey
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		row := tx.QueryRowContext(ctx, `SELECT `+accessKeyColumns+` FROM access_keys WHERE access_key = ?`, accessKey)
 		var err error
 		if k, err = scanAccessKey(row.Scan); errors.Is(err, sql.ErrNoRows) {
@@ -326,7 +326,7 @@ func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, e
 			return total, nil
 		}
 		var dropped []string
-		err = s.tx(ctx, func(tx *sql.Tx) error {
+		err = s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			bid, err := bucketID(ctx, tx, bucket)
 			if err != nil {
 				return err

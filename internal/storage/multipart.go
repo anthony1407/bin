@@ -87,7 +87,7 @@ func (s *Store) CreateUpload(ctx context.Context, bucket, key string, opts Uploa
 	u.ID = base64.RawURLEncoding.EncodeToString(id[:])
 	headers, _ := json.Marshal(nonNil(opts.Headers))
 	meta, _ := json.Marshal(nonNil(opts.UserMeta))
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		bid, err := bucketID(ctx, tx, bucket)
 		if err != nil {
 			return err
@@ -171,7 +171,7 @@ func (s *Store) PutPart(ctx context.Context, bucket, key, uploadID string, n int
 		part.Checksums[a] = checksum.Encode(v)
 	}
 	var replaced []string
-	err = s.tx(ctx, func(tx *sql.Tx) error {
+	err = s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := loadUpload(ctx, tx, bucket, key, uploadID); err != nil {
 			return err // aborted or completed meanwhile
 		}
@@ -347,7 +347,7 @@ func (s *Store) ListUploads(ctx context.Context, bucket string, opts UploadListO
 // AbortUpload discards an upload and its parts.
 func (s *Store) AbortUpload(ctx context.Context, bucket, key, uploadID string) error {
 	var dropped []string
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := loadUpload(ctx, tx, bucket, key, uploadID); err != nil {
 			return err
 		}
@@ -402,7 +402,7 @@ func (s *Store) expireUploads(ctx context.Context, cutoff time.Time) (int, error
 	rows.Close()
 	for _, id := range ids {
 		var dropped []string
-		if err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			var err error
 			dropped, err = s.dropUpload(ctx, tx, id)
 			return err
@@ -439,7 +439,7 @@ type CompleteOptions struct {
 func (s *Store) CompleteUpload(ctx context.Context, bucket, key, uploadID string, opts CompleteOptions) (ObjectInfo, error) {
 	var info ObjectInfo
 	var dropped []string
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		u, err := loadUpload(ctx, tx, bucket, key, uploadID)
 		if err != nil {
 			return err

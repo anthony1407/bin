@@ -69,7 +69,7 @@ func (s *Store) CreateBucket(ctx context.Context, name string) error {
 	if !ValidBucketName(name) {
 		return ErrInvalidBucketName
 	}
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := bucketID(ctx, tx, name); err == nil {
 			return ErrBucketExists
 		} else if !errors.Is(err, ErrNoSuchBucket) {
@@ -119,7 +119,7 @@ func (s *Store) ListBuckets(ctx context.Context) ([]Bucket, error) {
 func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 	var dropped []string
 	defer func() { s.collect(context.Background(), dropped...) }()
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		id, err := bucketID(ctx, tx, name)
 		if err != nil {
 			return err
@@ -201,7 +201,7 @@ func (s *Store) BucketTags(ctx context.Context, name string) (map[string]string,
 
 // SetBucketTags replaces the bucket's tag set. An empty set removes all tags.
 func (s *Store) SetBucketTags(ctx context.Context, name string, tags map[string]string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		id, err := bucketID(ctx, tx, name)
 		if err != nil {
 			return err

@@ -74,7 +74,7 @@ func scanReplicationRule(scan func(...any) error) (ReplicationRule, error) {
 
 // CreateReplicationRule stores a new rule on an existing bucket.
 func (s *Store) CreateReplicationRule(ctx context.Context, r ReplicationRule) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := bucketID(ctx, tx, r.Bucket); err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func (s *Store) CreateReplicationRule(ctx context.Context, r ReplicationRule) er
 // change of what is copied (buckets, prefixes, endpoint, direction) forgets
 // what was copied before: the next run compares everything again.
 func (s *Store) UpdateReplicationRule(ctx context.Context, r ReplicationRule) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := bucketID(ctx, tx, r.Bucket); err != nil {
 			return err
 		}
