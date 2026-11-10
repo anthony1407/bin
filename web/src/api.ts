@@ -306,6 +306,14 @@ export const api = {
   /** Moves trashed objects and folders back to where they were deleted from. */
   restoreObjects: (bucket: string, keys: string[], prefixes: string[]) =>
     request<{ moved: number }>("POST", `/buckets/${enc(bucket)}/trash/restore`, { keys, prefixes }),
+  /**
+   * Copies objects and folders into targetPrefix of targetBucket, server side.
+   * With move, the originals then go to the source bucket's trash.
+   */
+  copyObjects: (
+    bucket: string,
+    req: { keys: string[]; prefixes: string[]; targetBucket: string; targetPrefix: string; move: boolean },
+  ) => request<{ copied: number }>("POST", `/buckets/${enc(bucket)}/copy`, req),
   setTrashRetention: (bucket: string, days: number) =>
     request<Bucket>("PUT", `/buckets/${enc(bucket)}/trash/retention`, { days }),
   createFolder: (bucket: string, prefix: string) => request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/folders`, { prefix }),

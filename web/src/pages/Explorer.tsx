@@ -1774,6 +1774,7 @@ export function ExplorerPage() {
   const [emptyingTrash, setEmptyingTrash] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const inTrashRef = useRef(false); // nothing is uploaded into the trash (set below)
   const toast = useToast();
 
   useEffect(() => {
@@ -1812,43 +1813,52 @@ export function ExplorerPage() {
     }
   }
 
+  // The server copies the data (folders with everything inside) and, for a
+  // move, sends the originals to the trash once their copy is in place.
   async function executeTransfer() {
     setTransferBusy(true);
+    const move = transferMode === "move";
     try {
-      const keys = Array.from(selected);
-      for (const k of keys) {
-        const destKey = transferPrefix
-          ? (transferPrefix.endsWith("/") ? transferPrefix : transferPrefix + "/") + baseName(k)
-          : baseName(k);
-        const url = api.downloadURL(bucket, k);
-        const res = await fetch(url);
-        const blob = await res.blob();
-        const f = Object.assign(blob, { name: baseName(k) }) as unknown as File;
-        const abortCtrl = new AbortController();
-        await uploadFile(transferTargetBucket, destKey, f, () => {}, abortCtrl.signal);
-        if (transferMode === "move" && (transferTargetBucket !== bucket || destKey !== k)) {
-          await api.deleteObjects(bucket, [k], []);
-        }
-      }
-      toast("ok", `${transferMode === "copy" ? "Copied" : "Moved"} ${keys.length} items successfully.`);
+      const items = [...selected];
+      const { copied } = await api.copyObjects(bucket, {
+        keys: items.filter((k) => !k.endsWith("/")),
+        prefixes: items.filter((k) => k.endsWith("/")),
+        targetBucket: transferTargetBucket,
+        targetPrefix: transferPrefix.trim(),
+        move,
+      });
+      const files = `${count(copied)} file${copied === 1 ? "" : "s"}`;
+      toast("ok", move ? `Moved ${files}. The originals are in the Trash.` : `Copied ${files}.`);
       setTransferOpen(false);
       setSelected(new Set());
-      load();
-    } catch (e: any) {
-      toast("error", e.message || "Transfer failed.");
+    } catch (e) {
+      toast("error", errorText(e));
     } finally {
       setTransferBusy(false);
+      load(); // a failed transfer may have done part of the work
     }
   }
 
+  // Listings can resolve out of order (quick clicks between folders, typing a
+  // search): only the latest one may update the page.
+  const loadSeq = useRef(0);
   const load = useCallback(
     async (after?: string) => {
+      const seq = ++loadSeq.current;
+      const current = () => seq === loadSeq.current;
       setLoading(true);
+      // "Load more" must not continue another folder's (or search's) listing.
+      if (!after) setNext(null);
       // A fresh listing also refreshes the object count and size in the
       // header, so they follow uploads, deletes and the refresh button.
-      if (!after) api.bucket(bucket).then(setMeta).catch((e) => toast("error", errorText(e)));
+      if (!after)
+        api
+          .bucket(bucket)
+          .then((m) => current() && setMeta(m))
+          .catch((e) => current() && toast("error", errorText(e)));
       try {
         const page = await api.objects(bucket, { prefix, after, search: search || undefined, limit: 200 });
+        if (!current()) return;
         // Skip the folder marker itself and, outside the trash, the trash: it
         // has its own panel, and browsing into it invites deleting from it.
         const visible = (k: string) => prefix.startsWith(TRASH) || !k.startsWith(TRASH);
@@ -1859,9 +1869,9 @@ export function ExplorerPage() {
         setFolderInfo((cur) => (after ? { ...cur, ...page.folders } : (page.folders ?? {})));
         setNext(page.truncated ? (page.nextAfter ?? null) : null);
       } catch (e) {
-        toast("error", errorText(e));
+        if (current()) toast("error", errorText(e));
       } finally {
-        setLoading(false);
+        if (current()) setLoading(false);
       }
     },
     [bucket, prefix, search, toast],
@@ -1921,7 +1931,7 @@ export function ExplorerPage() {
       if (e.key === "/") {
         e.preventDefault();
         searchInput.current?.focus();
-      } else if (e.key === "u") {
+      } else if (e.key === "u" && !inTrashRef.current) {
         fileInput.current?.click();
       }
     };
@@ -1946,7 +1956,6 @@ export function ExplorerPage() {
   // Drag and drop of files onto the whole window.
   const uploadRef = useRef(upload);
   uploadRef.current = upload;
-  const inTrashRef = useRef(false); // nothing is uploaded into the trash
   useEffect(() => {
     let hide: ReturnType<typeof setTimeout> | undefined;
     const hasFiles = (e: globalThis.DragEvent) => !!e.dataTransfer?.types.includes("Files");
@@ -2052,7 +2061,8 @@ export function ExplorerPage() {
   // inside) and leave it, rather than staying in an empty folder.
   async function leaveTrashIfEmpty(): Promise<boolean> {
     const left = await api.objects(bucket, { prefix: TRASH, delimiter: "", limit: 1000 });
-    if (left.objects.some((o) => !o.key.endsWith("/"))) return false;
+    // A partial listing proves nothing: files may follow the folder markers.
+    if (left.truncated || left.objects.some((o) => !o.key.endsWith("/"))) return false;
     await api.deleteObjects(bucket, [], [TRASH]);
     goTo("");
     return true;
@@ -2223,7 +2233,10 @@ export function ExplorerPage() {
           )}
         </div>
       </div>
-      <input ref={fileInput} type="file" name="files" multiple hidden onChange={(e) => e.target.files && upload(e.target.files)} />
+      <input ref={fileInput} type="file" name="files" multiple hidden onChange={(e) => {
+          if (e.target.files) upload(e.target.files);
+          e.target.value = ""; // so picking the same file again still uploads it
+        }} />
 
       {/* Navigation / Path Toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -2953,7 +2966,7 @@ export function ExplorerPage() {
                     : "border-line bg-card text-muted hover:text-ink"
                 )}
               >
-                <FolderInput className="size-3.5" /> Move (Delete originals)
+                <FolderInput className="size-3.5" /> Move (Originals to Trash)
               </button>
             </div>
           </div>

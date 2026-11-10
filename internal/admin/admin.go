@@ -115,6 +115,7 @@ func NewHandler(opts Options) http.Handler {
 	private("POST /api/v1/buckets/{bucket}/trash", h.trashObjects)
 	private("POST /api/v1/buckets/{bucket}/trash/restore", h.restoreObjects)
 	private("PUT /api/v1/buckets/{bucket}/trash/retention", h.putTrashRetention)
+	private("POST /api/v1/buckets/{bucket}/copy", h.copyObjects)
 	private("GET /api/v1/buckets/{bucket}/object", h.statObject)
 	private("GET /api/v1/buckets/{bucket}/download", h.download)
 	private("PUT /api/v1/buckets/{bucket}/upload", h.upload)

@@ -31,6 +31,7 @@ var auditedRoutes = map[string]string{
 	"POST /api/v1/buckets/{bucket}/trash":                 "TrashObjects",
 	"POST /api/v1/buckets/{bucket}/trash/restore":         "RestoreObjects",
 	"PUT /api/v1/buckets/{bucket}/trash/retention":        "PutTrashRetention",
+	"POST /api/v1/buckets/{bucket}/copy":                  "CopyObjects",
 	"PUT /api/v1/buckets/{bucket}/upload":                 "PutObject",
 	"POST /api/v1/buckets/{bucket}/folders":               "CreateFolder",
 	"POST /api/v1/buckets/{bucket}/share":                 "CreateShareLink",
