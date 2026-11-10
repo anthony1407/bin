@@ -177,7 +177,9 @@ export function PublicUploadPage() {
             <p className="text-sm text-muted">
               {info.note || "Drop your files below."}
               <span className="block text-xs text-faint mt-1">
-                Up to {bytes(info.maxBytes)} per file · link valid until {dateTime(info.expiresAt)}
+                Up to {bytes(info.maxBytes)} per file
+                {info.filesLeft !== undefined && ` · ${info.filesLeft.toLocaleString()} file${info.filesLeft === 1 ? "" : "s"} left`} · link
+                valid until {dateTime(info.expiresAt)}
               </span>
               <span className="block text-[11px] text-faint mt-1">
                 Your IP address and browser are recorded with each file you upload.
@@ -402,6 +404,7 @@ export function DropzonePage() {
   const [selectedPrefix, setSelectedPrefix] = useState("");
   const [expiryHours, setExpiryHours] = useState("24");
   const [maxSizeMB, setMaxSizeMB] = useState("100");
+  const [maxFiles, setMaxFiles] = useState("100");
   const [note, setNote] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Dropzone | null>(null);
@@ -459,6 +462,7 @@ export function DropzonePage() {
         note: note.trim(),
         expiresIn: Number(expiryHours) * 3600,
         maxBytes: Number(maxSizeMB) * 1024 * 1024,
+        maxFiles: Number(maxFiles),
       });
       setLinks((prev) => [created, ...(prev ?? [])]);
       setCreateModal(false);
@@ -562,6 +566,9 @@ export function DropzonePage() {
                 <div>
                   <span className="text-muted block text-[10px]">Limit:</span>
                   <span>{bytes(link.maxBytes)} per file</span>
+                  <span className="block text-[10px] text-muted">
+                    {link.maxFiles > 0 ? `${link.maxFiles.toLocaleString()} files max` : "no file limit"}
+                  </span>
                 </div>
                 <div>
                   <span className="text-muted block text-[10px]">Received:</span>
@@ -679,6 +686,25 @@ export function DropzonePage() {
                 ]}
               />
             </div>
+          </div>
+
+          <div>
+            <label htmlFor="dropzone-max-files" className="label-strip mb-1.5 block">Max Files</label>
+            <Select
+              id="dropzone-max-files"
+              aria-label="Max Files"
+              value={maxFiles}
+              onChange={setMaxFiles}
+              options={[
+                { value: "10", label: "10 files" },
+                { value: "100", label: "100 files" },
+                { value: "1000", label: "1,000 files" },
+                { value: "10000", label: "10,000 files" },
+              ]}
+            />
+            <p className="mt-1 text-[11px] text-muted">
+              Up to {bytes(Number(maxFiles) * Number(maxSizeMB) * 1024 * 1024)} in total, so a shared link cannot fill the disk.
+            </p>
           </div>
 
           <div>

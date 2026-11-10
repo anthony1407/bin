@@ -135,6 +135,43 @@ func anon(t *testing.T, method, url, body string) (int, string) {
 	return resp.StatusCode, string(data)
 }
 
+// Deleting from the console moves files to .trash/: no policy may keep them
+// downloadable or listable by anonymous users, even "public" or a rule that
+// covers the whole bucket.
+func TestE2ETrashIsNeverPublic(t *testing.T) {
+	ctx := context.Background()
+	e := newAuthE2E(t)
+	mustBucket(t, e.root, "site")
+	e.put(t, "site", "index.html", "hi")
+	e.put(t, "site", ".trash/deleted.txt", "gone")
+	for _, p := range []auth.Policy{
+		{Mode: "public"},
+		{Mode: "custom", Rules: []auth.Rule{{Prefix: "", Access: auth.ReadWrite}}},
+		{Mode: "custom", Rules: []auth.Rule{{Prefix: ".trash/", Access: auth.ReadWrite}}},
+	} {
+		e.store.SetBucketPolicy(ctx, "site", p.String())
+		name := p.String()
+		if code, _ := anon(t, "GET", e.url+"/site/.trash/deleted.txt", ""); code != 403 {
+			t.Errorf("%s: trashed file served: %d", name, code)
+		}
+		if code, _ := anon(t, "PUT", e.url+"/site/.trash/planted.txt", "x"); code != 403 {
+			t.Errorf("%s: write into the trash: %d", name, code)
+		}
+		if code, _ := anon(t, "GET", e.url+"/site?list-type=2&prefix=.trash/", ""); code != 403 {
+			t.Errorf("%s: trash listed: %d", name, code)
+		}
+		for _, u := range []string{"/site?list-type=2", "/site?list-type=2&delimiter=/", "/site", "/site?list-type=2&prefix=."} {
+			if code, body := anon(t, "GET", e.url+u, ""); code == 200 && strings.Contains(body, ".trash") {
+				t.Errorf("%s: %s shows the trash: %s", name, u, body)
+			}
+		}
+	}
+	// Signed requests still see it: the console and the bucket's users do.
+	if out, err := e.root.ListObjectsV2(ctx, &awss3.ListObjectsV2Input{Bucket: aws.String("site"), Prefix: aws.String(".trash/")}); err != nil || len(out.Contents) != 1 {
+		t.Errorf("signed listing of the trash: %v %v", out, err)
+	}
+}
+
 func TestE2EAnonymousPolicies(t *testing.T) {
 	ctx := context.Background()
 	e := newAuthE2E(t)

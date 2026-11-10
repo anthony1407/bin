@@ -175,12 +175,19 @@ const (
 	loginWindow      = 15 * time.Minute
 )
 
+// sweepAbove is how many tracked IPs make fail() drop the ones whose
+// failures all left the window (at most once per window): an IP that failed
+// once and never came back would otherwise be kept forever, and rotating
+// addresses (cheap with IPv6) would grow the map without bound.
+const sweepAbove = 10000
+
 // loginLimiter blocks an IP after maxLoginFailures failed sign-ins within
 // loginWindow, until the window passes.
 type loginLimiter struct {
-	mu    sync.Mutex
-	fails map[string][]time.Time
-	now   func() time.Time
+	mu        sync.Mutex
+	fails     map[string][]time.Time
+	now       func() time.Time
+	lastSweep time.Time
 }
 
 func newLoginLimiter() *loginLimiter {
@@ -218,6 +225,12 @@ func (l *loginLimiter) fail(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.fails[ip] = append(l.recent(ip), l.now())
+	if len(l.fails) > sweepAbove && l.now().Sub(l.lastSweep) >= loginWindow {
+		l.lastSweep = l.now()
+		for other := range l.fails {
+			l.recent(other) // deletes the IP once nothing recent is left
+		}
+	}
 }
 
 func (l *loginLimiter) reset(ip string) {

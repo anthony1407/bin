@@ -59,6 +59,47 @@ func TestTrashAndRestore(t *testing.T) {
 	}
 }
 
+// In a versioned bucket, emptying the trash, deleting from it, restoring from
+// it and its retention must free the space of the trashed copies, while the
+// original key keeps its history.
+func TestVersionedTrashFreesSpace(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.call("POST", "/api/v1/buckets", map[string]string{"name": "ver"}, nil)
+	e.call("PUT", "/api/v1/buckets/ver/versioning", map[string]string{"status": "Enabled"}, nil)
+	data := strings.Repeat("x", 1000)
+	for _, k := range []string{"a.bin", "b.bin", "c.bin"} {
+		e.call("PUT", "/api/v1/buckets/ver/upload?key="+k, data, nil)
+	}
+	size := func() int64 {
+		var b struct{ Size int64 }
+		e.call("GET", "/api/v1/buckets/ver", nil, &b)
+		return b.Size
+	}
+	e.call("POST", "/api/v1/buckets/ver/trash", map[string]any{"keys": []string{"a.bin", "b.bin", "c.bin"}}, nil)
+	if got := size(); got != 6000 {
+		t.Fatalf("after trashing: %d bytes, want the originals' history plus the trashed copies", got)
+	}
+
+	e.call("DELETE", "/api/v1/buckets/ver/objects", map[string]any{"keys": []string{".trash/a.bin"}, "prefixes": []string{}}, nil)
+	if got := size(); got != 5000 {
+		t.Errorf("after deleting one from the trash: %d", got)
+	}
+	e.call("POST", "/api/v1/buckets/ver/trash/restore", map[string]any{"keys": []string{".trash/b.bin"}}, nil)
+	if got := size(); got != 5000 { // b.bin: old version + restored one; its trashed copy is gone
+		t.Errorf("after restoring one: %d", got)
+	}
+	e.call("DELETE", "/api/v1/buckets/ver/objects", map[string]any{"keys": []string{}, "prefixes": []string{".trash/"}}, nil)
+	if got := size(); got != 4000 {
+		t.Errorf("after emptying the trash: %d", got)
+	}
+	var versions struct{ Versions []struct{ DeleteMarker bool } }
+	e.call("GET", "/api/v1/buckets/ver/versions?key=a.bin", nil, &versions)
+	if len(versions.Versions) != 2 {
+		t.Errorf("the original key lost its history: %+v", versions.Versions)
+	}
+}
+
 func TestPurgeTrash(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -69,6 +110,7 @@ func TestPurgeTrash(t *testing.T) {
 	defer store.Close()
 	for _, b := range []string{"kept", "expiring"} {
 		store.CreateBucket(ctx, b)
+		store.SetBucketVersioning(ctx, b, storage.VersioningEnabled) // purges must not leave versions behind
 		store.PutObject(ctx, b, ".trash/old.txt", strings.NewReader("x"), 1, storage.PutOptions{})
 		store.PutObject(ctx, b, "live.txt", strings.NewReader("x"), 1, storage.PutOptions{})
 	}
@@ -83,6 +125,9 @@ func TestPurgeTrash(t *testing.T) {
 	}
 	if _, err := store.StatObject(ctx, "expiring", ".trash/old.txt"); err == nil {
 		t.Error("expired file still in the trash")
+	}
+	if usage, _ := store.BucketUsage(ctx); usage["expiring"].Bytes != 1 {
+		t.Errorf("expired file still takes space: %+v", usage["expiring"])
 	}
 	for _, c := range [][2]string{{"expiring", "live.txt"}, {"kept", ".trash/old.txt"}} {
 		if _, err := store.StatObject(ctx, c[0], c[1]); err != nil {

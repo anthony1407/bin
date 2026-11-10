@@ -1835,6 +1835,12 @@ export function ExplorerPage() {
   // Listings can resolve out of order (quick clicks between folders, typing a
   // search): only the latest one may update the page.
   const loadSeq = useRef(0);
+  // Folder totals of another bucket must not show here.
+  const bucketRef = useRef(bucket);
+  useEffect(() => {
+    bucketRef.current = bucket;
+    setFolderInfo({});
+  }, [bucket]);
   const load = useCallback(
     async (after?: string) => {
       const seq = ++loadSeq.current;
@@ -1861,14 +1867,15 @@ export function ExplorerPage() {
         setPrefixes((cur) => (after ? [...cur, ...folders] : folders));
         setNext(page.truncated ? (page.nextAfter ?? null) : null);
         // Folder totals cost a pass over each folder's content: the listing
-        // shows first, and they fill in when ready. Until then a fresh
-        // listing keeps the totals it had, so a refresh does not flicker.
+        // shows first, and they fill in when ready. They are keyed by full
+        // folder path, so totals that arrive late (after "Load more" or a
+        // refresh) still belong to their folder: they are merged, not
+        // dropped, as long as the page still shows the same bucket.
         if (folders.length > 0)
           api
             .folderUsage(bucket, folders)
-            .then((f) => current() && setFolderInfo((cur) => (after ? { ...cur, ...f } : f)))
+            .then((f) => bucketRef.current === bucket && setFolderInfo((cur) => ({ ...cur, ...f })))
             .catch(() => {}); // totals are a nicety; the listing stands without them
-        else if (!after) setFolderInfo({});
       } catch (e) {
         if (current()) toast("error", errorText(e));
       } finally {

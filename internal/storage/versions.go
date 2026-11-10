@@ -405,18 +405,73 @@ func (s *Store) ObjectVersions(ctx context.Context, bucket, key string, limit in
 	return out, rows.Err()
 }
 
+// PurgeKey removes every version and delete marker of one key, whatever the
+// bucket's versioning: the data is gone for good. Purging a missing key
+// succeeds. It returns how many versions were removed.
+func (s *Store) PurgeKey(ctx context.Context, bucket, key string) (int, error) {
+	var dropped []string
+	n := 0
+	err := s.tx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		dropped, n = nil, 0 // a retried round starts over
+		bid, err := bucketID(ctx, tx, bucket)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT version_id FROM objects WHERE bucket_id = ? AND key = ?`, bid, key)
+		if err != nil {
+			return err
+		}
+		var versions []string
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				rows.Close()
+				return err
+			}
+			versions = append(versions, v)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		now := s.nowNanos()
+		for _, v := range versions {
+			blobs, err := dropVersion(ctx, tx, bid, key, v, now)
+			if err != nil && !errors.Is(err, ErrNoSuchKey) {
+				return err
+			}
+			dropped = append(dropped, blobs...)
+		}
+		n = len(versions)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	s.collect(ctx, dropped...)
+	return n, nil
+}
+
 // PurgePrefix removes every version and delete marker of the keys starting
 // with prefix ("" empties the bucket for good), in batches, and returns how
 // many versions were removed.
 func (s *Store) PurgePrefix(ctx context.Context, bucket, prefix string) (int, error) {
 	total := 0
+	// The upper bound ends each batch's scan at the end of the prefix rather
+	// than the end of the bucket (keys continuing it with U+10FFFF excepted,
+	// as in PrefixUsage).
+	bound, bounds := "", []any{prefix}
+	if prefix != "" {
+		bound, bounds = "AND key < ?", append(bounds, prefix+maxRune)
+	}
 	for {
 		bid, err := bucketID(ctx, s.read, bucket)
 		if err != nil {
 			return total, err
 		}
+		args := append(append([]any{bid}, bounds...), len(prefix), prefix)
 		rows, err := s.read.QueryContext(ctx, `SELECT key, version_id FROM objects
-			WHERE bucket_id = ? AND key >= ? AND substr(key, 1, ?) = ? LIMIT 500`, bid, prefix, len(prefix), prefix)
+			WHERE bucket_id = ? AND key >= ? `+bound+` AND substr(key, 1, ?) = ? LIMIT 500`, args...)
 		if err != nil {
 			return total, err
 		}

@@ -17,7 +17,7 @@ import (
 // renames when the bucket allows it (see relocate). A trashed object's
 // modification time is when it was trashed, which the retention purge goes by.
 
-const trashPrefix = ".trash/"
+const trashPrefix = storage.TrashPrefix
 
 // trashPurgeTick is how often trashes are checked for expired files.
 const trashPurgeTick = time.Hour
@@ -58,9 +58,15 @@ func (h *Handler) expandKeys(ctx context.Context, bucket string, keys, prefixes 
 }
 
 // moveObject copies an object to its new key (verifying its data) and then
-// deletes the old one, so a failure never loses it.
+// deletes the old one, so a failure never loses it. A source in the trash is
+// a copy made by trashing: it is purged with its versions, not hidden behind
+// a delete marker that would keep its space taken.
 func (h *Handler) moveObject(ctx context.Context, bucket, from, to string) error {
 	if _, err := h.opts.Store.CopyObject(ctx, bucket, from, bucket, to, storage.CopyOptions{}); err != nil {
+		return err
+	}
+	if strings.HasPrefix(from, trashPrefix) {
+		_, err := h.opts.Store.PurgeKey(ctx, bucket, from)
 		return err
 	}
 	return h.opts.Store.DeleteObject(ctx, bucket, from)
@@ -149,8 +155,8 @@ func (h *Handler) runTrashPurge() {
 	}
 }
 
-// purgeTrash deletes, in every bucket with a retention, the trashed files
-// older than it. It returns how many were deleted.
+// purgeTrash deletes for good (every version), in every bucket with a
+// retention, the trashed files older than it. It returns how many were deleted.
 func (h *Handler) purgeTrash(ctx context.Context, now time.Time) (int, error) {
 	buckets, err := h.opts.Store.ListBuckets(ctx)
 	if err != nil {
@@ -171,7 +177,7 @@ func (h *Handler) purgeTrash(ctx context.Context, now time.Time) (int, error) {
 			if o.ModTime.After(cutoff) {
 				continue
 			}
-			if err := h.opts.Store.DeleteObject(ctx, b.Name, o.Key); err != nil {
+			if _, err := h.opts.Store.PurgeKey(ctx, b.Name, o.Key); err != nil {
 				return total, err
 			}
 			n++

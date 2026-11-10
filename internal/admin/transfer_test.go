@@ -135,7 +135,8 @@ func TestZipDownload(t *testing.T) {
 	e.call("POST", "/api/v1/buckets/zips/folders", map[string]string{"prefix": "docs/empty"}, nil)
 
 	var ticket struct{ URL string }
-	req := map[string]any{"keys": []string{"docs/a.txt", "docs/../../evil.txt"}, "prefixes": []string{"docs/pics/", "docs/empty/"}, "base": "docs/"}
+	// docs/pics/b.txt is selected on its own and inside its folder: it goes in once.
+	req := map[string]any{"keys": []string{"docs/a.txt", "docs/../../evil.txt", "docs/pics/b.txt"}, "prefixes": []string{"docs/pics/", "docs/empty/"}, "base": "docs/"}
 	if code := e.call("POST", "/api/v1/buckets/zips/zip", req, &ticket); code != 201 || ticket.URL == "" {
 		t.Fatalf("ticket: %d %+v", code, ticket)
 	}

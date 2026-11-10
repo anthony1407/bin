@@ -3,9 +3,11 @@ package s3
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"bin/internal/auth"
 	"bin/internal/s3/s3err"
+	"bin/internal/storage"
 )
 
 // opActions maps each operation to the permission it needs.
@@ -85,7 +87,10 @@ func (h *Handler) authorize(r *http.Request, req Request, accessKey string) (con
 		if action == auth.ListBucket {
 			resource = r.URL.Query().Get("prefix")
 		}
-		if !policy.AllowsAnonymous(action, resource) {
+		// Deleted files wait in the trash to be restored or purged: no policy
+		// makes them public, whatever it covers. Listings that reach into it
+		// (a prefix of "" or ".") have its entries removed (see hideTrash).
+		if strings.HasPrefix(resource, storage.TrashPrefix) || !policy.AllowsAnonymous(action, resource) {
 			return ctx, s3err.ErrAccessDenied
 		}
 		return ctx, nil

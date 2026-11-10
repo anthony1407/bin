@@ -117,7 +117,18 @@ func (h *Handler) downloadZip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	keys := append([]string(nil), t.keys...)
+	// A file selected along with its folder goes in once.
+	var keys []string
+	seen := map[string]bool{}
+	add := func(k string) {
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	for _, k := range t.keys {
+		add(k)
+	}
 	for _, p := range t.prefixes {
 		objs, err := h.listUnder(ctx, t.bucket, p)
 		if err != nil {
@@ -125,7 +136,7 @@ func (h *Handler) downloadZip(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, o := range objs {
-			keys = append(keys, o.Key)
+			add(o.Key)
 		}
 	}
 

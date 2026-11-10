@@ -474,3 +474,35 @@ func TestVersionIDs(t *testing.T) {
 		t.Error("ValidVersionID accepts the wrong things")
 	}
 }
+
+// PurgeKey removes every version of exactly one key, and nothing of keys
+// that merely start with it.
+func TestPurgeKey(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, t.TempDir())
+	mustCreate(t, s, "ver")
+	if err := s.SetBucketVersioning(ctx, "ver", VersioningEnabled); err != nil {
+		t.Fatal(err)
+	}
+	put(t, s, "ver", "a.txt", "one", PutOptions{})
+	put(t, s, "ver", "a.txt", "two", PutOptions{})
+	s.DeleteObject(ctx, "ver", "a.txt") // a delete marker on top
+	put(t, s, "ver", "a.txt.bak", "kept", PutOptions{})
+
+	n, err := s.PurgeKey(ctx, "ver", "a.txt")
+	if err != nil || n != 3 {
+		t.Fatalf("purge: %d %v", n, err)
+	}
+	if _, err := s.StatVersion(ctx, "ver", "a.txt", ""); !errors.Is(err, ErrNoSuchKey) {
+		t.Errorf("a.txt still has a version: %v", err)
+	}
+	if _, data := readAll(t, s, "ver", "a.txt.bak"); data != "kept" {
+		t.Errorf("a.txt.bak: %q", data)
+	}
+	if usage, _ := s.BucketUsage(ctx); usage["ver"].Bytes != int64(len("kept")) {
+		t.Errorf("usage: %+v", usage["ver"])
+	}
+	if n, err := s.PurgeKey(ctx, "ver", "missing"); err != nil || n != 0 {
+		t.Errorf("missing key: %d %v", n, err)
+	}
+}

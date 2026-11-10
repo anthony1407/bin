@@ -80,6 +80,30 @@ func listParams(r *http.Request) (prefix, delimiter string, maxKeys int, encode 
 	return prefix, delimiter, maxKeys, encode, nil
 }
 
+// hideTrash removes the console's trash from anonymous listings: authorize
+// refuses prefixes inside it, but a listing of the whole bucket would still
+// show what was deleted. A page can come out short, as S3 pages may.
+func hideTrash(r *http.Request, res *storage.ListResult) {
+	if AccessKey(r.Context()) != "" {
+		return
+	}
+	inTrash := func(k string) bool { return strings.HasPrefix(k, storage.TrashPrefix) }
+	objs := res.Objects[:0]
+	for _, o := range res.Objects {
+		if !inTrash(o.Key) {
+			objs = append(objs, o)
+		}
+	}
+	res.Objects = objs
+	prefixes := res.CommonPrefixes[:0]
+	for _, p := range res.CommonPrefixes {
+		if !inTrash(p) {
+			prefixes = append(prefixes, p)
+		}
+	}
+	res.CommonPrefixes = prefixes
+}
+
 func (h *Handler) listObjectsV2(w http.ResponseWriter, r *http.Request, req Request) error {
 	prefix, delimiter, maxKeys, encode, err := listParams(r)
 	if err != nil {
@@ -101,6 +125,7 @@ func (h *Handler) listObjectsV2(w http.ResponseWriter, r *http.Request, req Requ
 	if err != nil {
 		return storageError(err)
 	}
+	hideTrash(r, &res)
 	var owner *ownerXML
 	if q.Get("fetch-owner") == "true" {
 		o := ownerXML(h.opts.Owner)
@@ -139,6 +164,7 @@ func (h *Handler) listObjectsV1(w http.ResponseWriter, r *http.Request, req Requ
 	if err != nil {
 		return storageError(err)
 	}
+	hideTrash(r, &res)
 	owner := ownerXML(h.opts.Owner)
 	out := listBucketResultV1{
 		Name:           req.Bucket,

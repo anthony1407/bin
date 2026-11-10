@@ -3,8 +3,10 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // upload sends a file to a dropzone the way the public page does: no session,
@@ -124,5 +126,50 @@ func TestCleanFileName(t *testing.T) {
 	}
 	if got := numberedName(".env", 1); got != ".env (1)" {
 		t.Errorf("numberedName = %q", got)
+	}
+}
+
+// A link stops accepting files once it received maxFiles of them.
+func TestDropzoneFileLimit(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.call("POST", "/api/v1/buckets", map[string]string{"name": "inbox"}, nil)
+	var dz dropzoneJSON
+	if code := e.call("POST", "/api/v1/dropzones", map[string]any{
+		"bucket": "inbox", "expiresIn": 3600, "maxBytes": 10, "maxFiles": 2,
+	}, &dz); code != 201 || dz.MaxFiles != 2 {
+		t.Fatalf("create: %d %+v", code, dz)
+	}
+	token := dz.URL[strings.Index(dz.URL, "#")+1:]
+	for i, want := range []int{201, 201, 403} {
+		if code, _ := e.dropzoneUpload(token, "f.txt", "x"); code != want {
+			t.Errorf("upload %d: %d, want %d", i+1, code, want)
+		}
+	}
+	var def dropzoneJSON
+	e.call("POST", "/api/v1/dropzones", map[string]any{"bucket": "inbox", "expiresIn": 3600, "maxBytes": 10}, &def)
+	if def.MaxFiles != defaultDropzoneFiles {
+		t.Errorf("default limit: %d", def.MaxFiles)
+	}
+	if code := e.call("POST", "/api/v1/dropzones", map[string]any{
+		"bucket": "inbox", "expiresIn": 3600, "maxBytes": 10, "maxFiles": maxDropzoneFiles + 1,
+	}, nil); code != 400 {
+		t.Errorf("limit above the maximum: %d", code)
+	}
+}
+
+// IPs whose failures left the window are forgotten once many are tracked.
+func TestLoginLimiterForgetsOldIPs(t *testing.T) {
+	now := time.Now()
+	l := newLoginLimiter()
+	l.now = func() time.Time { return now }
+	for i := range sweepAbove {
+		l.fail("10.0." + strconv.Itoa(i/256) + "." + strconv.Itoa(i%256))
+	}
+	now = now.Add(loginWindow + time.Second)
+	l.fail("192.0.2.1")
+	l.fail("192.0.2.2")
+	if len(l.fails) != 2 {
+		t.Errorf("%d IPs tracked after the sweep, want 2", len(l.fails))
 	}
 }

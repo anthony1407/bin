@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"bin/internal/server"
 	"bin/internal/storage"
@@ -82,16 +83,21 @@ func (h *Handler) relocate(ctx context.Context, bucket string, moves []storage.R
 	if !errors.Is(err, storage.ErrRenameVersioned) {
 		return n, err
 	}
-	ok, err := parallel(ctx, moves, func(ctx context.Context, m storage.Rename) error {
+	var moved atomic.Int64 // sources already gone are skipped, not counted
+	_, err = parallel(ctx, moves, func(ctx context.Context, m storage.Rename) error {
 		if m.From == m.To {
 			return nil
 		}
-		if err := h.moveObject(ctx, bucket, m.From, m.To); err != nil && !errors.Is(err, storage.ErrNoSuchKey) {
+		err := h.moveObject(ctx, bucket, m.From, m.To)
+		switch {
+		case err == nil:
+			moved.Add(1)
+		case !errors.Is(err, storage.ErrNoSuchKey):
 			return err
 		}
 		return nil
 	})
-	return countTrue(ok), err
+	return int(moved.Load()), err
 }
 
 type transferRequest struct {

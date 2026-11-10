@@ -310,7 +310,9 @@ func (h *Handler) createFolder(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteObjects deletes the listed keys and everything under the listed
-// prefixes (folders).
+// prefixes (folders). Deleting from the trash is for good, in every bucket:
+// there, a versioned bucket's delete markers would keep the data (and its
+// space) forever, while the history of the original key stays where it was.
 func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Keys     []string `json:"keys"`
@@ -322,7 +324,13 @@ func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	deleted := 0
 	for _, k := range in.Keys {
-		if err := h.opts.Store.DeleteObject(r.Context(), bucket, k); err != nil {
+		var err error
+		if strings.HasPrefix(k, trashPrefix) {
+			_, err = h.opts.Store.PurgeKey(r.Context(), bucket, k)
+		} else {
+			err = h.opts.Store.DeleteObject(r.Context(), bucket, k)
+		}
+		if err != nil {
 			h.storageError(w, r, err)
 			return
 		}
@@ -333,7 +341,11 @@ func (h *Handler) deleteObjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_prefix", "Deleting a whole bucket's content needs DELETE /buckets/{bucket}?force=true.")
 			return
 		}
-		n, err := h.opts.Store.DeletePrefix(r.Context(), bucket, p)
+		del := h.opts.Store.DeletePrefix
+		if strings.HasPrefix(p, trashPrefix) {
+			del = h.opts.Store.PurgePrefix
+		}
+		n, err := del(r.Context(), bucket, p)
 		if err != nil {
 			h.storageError(w, r, err)
 			return

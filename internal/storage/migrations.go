@@ -296,6 +296,10 @@ var migrations = []string{
 	// under a prefix) read from this index alone, without visiting the rows.
 	`CREATE INDEX objects_current_usage ON objects (bucket_id, key, size, modified_at)
 		WHERE is_latest = 1 AND delete_marker = 0;`,
+
+	// 15: how many files a dropzone link accepts, so a leaked link cannot
+	// fill the disk. Links made before the limit existed keep none (0).
+	`ALTER TABLE dropzones ADD COLUMN max_files INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

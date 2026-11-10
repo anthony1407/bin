@@ -27,6 +27,10 @@ const (
 	// maxNameAttempts bounds the "name (n).ext" variants tried when a file
 	// with the uploaded name already exists; uploads never overwrite.
 	maxNameAttempts = 100
+	// A link accepts defaultDropzoneFiles files unless created with another
+	// limit, up to maxDropzoneFiles: whoever holds it cannot fill the disk.
+	defaultDropzoneFiles = 100
+	maxDropzoneFiles     = 10000
 )
 
 type dropzoneJSON struct {
@@ -35,6 +39,7 @@ type dropzoneJSON struct {
 	Prefix    string    `json:"prefix"`
 	Note      string    `json:"note"`
 	MaxBytes  int64     `json:"maxBytes"`
+	MaxFiles  int       `json:"maxFiles"` // 0: no limit
 	CreatedAt time.Time `json:"createdAt"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	Expired   bool      `json:"expired"`
@@ -47,7 +52,7 @@ type dropzoneJSON struct {
 
 func (h *Handler) toDropzoneJSON(r *http.Request, d storage.Dropzone) dropzoneJSON {
 	j := dropzoneJSON{
-		ID: d.ID, Bucket: d.Bucket, Prefix: d.Prefix, Note: d.Note, MaxBytes: d.MaxBytes,
+		ID: d.ID, Bucket: d.Bucket, Prefix: d.Prefix, Note: d.Note, MaxBytes: d.MaxBytes, MaxFiles: d.MaxFiles,
 		CreatedAt: d.Created, ExpiresAt: d.Expires, Expired: !d.Expires.After(time.Now()),
 		Uploads: d.Uploads, UploadedBytes: d.UploadedBytes, LastUploadAt: optionalTime(d.LastUpload),
 	}
@@ -86,9 +91,13 @@ func (h *Handler) createDropzone(w http.ResponseWriter, r *http.Request) {
 		Note      string `json:"note"`
 		ExpiresIn int64  `json:"expiresIn"` // seconds
 		MaxBytes  int64  `json:"maxBytes"`  // per file
+		MaxFiles  int    `json:"maxFiles"`  // files the link accepts; 0: the default
 	}
 	if !readJSON(w, r, &in) {
 		return
+	}
+	if in.MaxFiles == 0 {
+		in.MaxFiles = defaultDropzoneFiles
 	}
 	setAuditBucket(r, in.Bucket)
 	prefix := strings.TrimLeft(strings.TrimSpace(in.Prefix), "/")
@@ -109,6 +118,9 @@ func (h *Handler) createDropzone(w http.ResponseWriter, r *http.Request) {
 	case in.MaxBytes < 1 || in.MaxBytes > maxSingleUpload:
 		writeError(w, http.StatusBadRequest, "invalid_max_bytes", "maxBytes must be between 1 byte and 5 GiB.")
 		return
+	case in.MaxFiles < 1 || in.MaxFiles > maxDropzoneFiles:
+		writeError(w, http.StatusBadRequest, "invalid_max_files", "maxFiles must be between 1 and 10000.")
+		return
 	}
 
 	token := randomToken()
@@ -120,6 +132,7 @@ func (h *Handler) createDropzone(w http.ResponseWriter, r *http.Request) {
 		Prefix:    prefix,
 		Note:      strings.TrimSpace(in.Note),
 		MaxBytes:  in.MaxBytes,
+		MaxFiles:  in.MaxFiles,
 		Expires:   time.Now().Add(expires),
 	}
 	setAuditResource(r, d.ID)
@@ -222,7 +235,16 @@ func (h *Handler) publicDropzone(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"note": d.Note, "maxBytes": d.MaxBytes, "expiresAt": d.Expires})
+	out := map[string]any{"note": d.Note, "maxBytes": d.MaxBytes, "expiresAt": d.Expires}
+	if d.MaxFiles > 0 {
+		n, err := h.opts.Store.DropzoneUploadCount(r.Context(), d.ID)
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		out["filesLeft"] = max(d.MaxFiles-n, 0)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // cleanFileName keeps the last path element of an uploaded name, without
@@ -273,6 +295,19 @@ func (h *Handler) publicDropzoneUpload(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > d.MaxBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "The file is larger than this link allows.")
 		return
+	}
+	// Uploads running at the same moment can each pass this check: the limit
+	// may be exceeded by those few, never by an unbounded number.
+	if d.MaxFiles > 0 {
+		n, err := h.opts.Store.DropzoneUploadCount(r.Context(), d.ID)
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		if n >= d.MaxFiles {
+			writeError(w, http.StatusForbidden, "file_limit_reached", "This upload link has received all the files it accepts.")
+			return
+		}
 	}
 
 	key := ""

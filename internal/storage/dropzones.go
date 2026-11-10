@@ -9,8 +9,8 @@ import (
 
 var ErrNoSuchDropzone = errors.New("no such dropzone")
 
-// Dropzone is a public upload link: whoever holds its token may upload files
-// of up to MaxBytes under Bucket/Prefix until Expires.
+// Dropzone is a public upload link: whoever holds its token may upload up to
+// MaxFiles files of up to MaxBytes each under Bucket/Prefix until Expires.
 type Dropzone struct {
 	ID        string
 	TokenHash string
@@ -19,6 +19,7 @@ type Dropzone struct {
 	Prefix    string
 	Note      string
 	MaxBytes  int64
+	MaxFiles  int // 0: no limit (links made before limits existed)
 	Created   time.Time
 	Expires   time.Time
 
@@ -37,12 +38,12 @@ type DropzoneUpload struct {
 	UserAgent string // uploader browser, as sent
 }
 
-const dropzoneColumns = `id, token_hash, token_enc, bucket, prefix, note, max_bytes, created_at, expires_at`
+const dropzoneColumns = `id, token_hash, token_enc, bucket, prefix, note, max_bytes, max_files, created_at, expires_at`
 
 func scanDropzone(scan func(...any) error) (Dropzone, error) {
 	var d Dropzone
 	var created, expires int64
-	err := scan(&d.ID, &d.TokenHash, &d.TokenEnc, &d.Bucket, &d.Prefix, &d.Note, &d.MaxBytes, &created, &expires)
+	err := scan(&d.ID, &d.TokenHash, &d.TokenEnc, &d.Bucket, &d.Prefix, &d.Note, &d.MaxBytes, &d.MaxFiles, &created, &expires)
 	d.Created, d.Expires = fromNanos(created), fromNanos(expires)
 	return d, err
 }
@@ -56,8 +57,8 @@ func (s *Store) CreateDropzone(ctx context.Context, d Dropzone) error {
 		} else if err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO dropzones (`+dropzoneColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			d.ID, d.TokenHash, d.TokenEnc, d.Bucket, d.Prefix, d.Note, d.MaxBytes, s.nowNanos(), d.Expires.UnixNano())
+		_, err := tx.ExecContext(ctx, `INSERT INTO dropzones (`+dropzoneColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			d.ID, d.TokenHash, d.TokenEnc, d.Bucket, d.Prefix, d.Note, d.MaxBytes, d.MaxFiles, s.nowNanos(), d.Expires.UnixNano())
 		return err
 	})
 }
@@ -66,7 +67,7 @@ func (s *Store) CreateDropzone(ctx context.Context, d Dropzone) error {
 // with a summary of what was uploaded through each.
 func (s *Store) ListDropzones(ctx context.Context) ([]Dropzone, error) {
 	rows, err := s.read.QueryContext(ctx, `SELECT d.id, d.token_hash, d.token_enc, d.bucket, d.prefix, d.note,
-		d.max_bytes, d.created_at, d.expires_at,
+		d.max_bytes, d.max_files, d.created_at, d.expires_at,
 		count(u.id), coalesce(sum(u.size), 0), coalesce(max(u.uploaded_at), 0)
 		FROM dropzones d LEFT JOIN dropzone_uploads u ON u.dropzone_id = d.id
 		GROUP BY d.id ORDER BY d.created_at DESC`)
@@ -78,7 +79,7 @@ func (s *Store) ListDropzones(ctx context.Context) ([]Dropzone, error) {
 	for rows.Next() {
 		var d Dropzone
 		var created, expires, last int64
-		if err := rows.Scan(&d.ID, &d.TokenHash, &d.TokenEnc, &d.Bucket, &d.Prefix, &d.Note, &d.MaxBytes,
+		if err := rows.Scan(&d.ID, &d.TokenHash, &d.TokenEnc, &d.Bucket, &d.Prefix, &d.Note, &d.MaxBytes, &d.MaxFiles,
 			&created, &expires, &d.Uploads, &d.UploadedBytes, &last); err != nil {
 			return nil, err
 		}
@@ -93,6 +94,13 @@ func (s *Store) RecordDropzoneUpload(ctx context.Context, id string, u DropzoneU
 	_, err := s.exec(ctx, `INSERT INTO dropzone_uploads (dropzone_id, key, size, uploaded_at, remote, user_agent)
 		VALUES (?, ?, ?, ?, ?, ?)`, id, u.Key, u.Size, s.nowNanos(), u.Remote, u.UserAgent)
 	return err
+}
+
+// DropzoneUploadCount returns how many files were uploaded through a dropzone.
+func (s *Store) DropzoneUploadCount(ctx context.Context, id string) (int, error) {
+	var n int
+	err := s.read.QueryRowContext(ctx, `SELECT count(*) FROM dropzone_uploads WHERE dropzone_id = ?`, id).Scan(&n)
+	return n, err
 }
 
 // DropzoneUploads returns up to limit uploads of a dropzone, newest first.

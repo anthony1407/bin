@@ -443,7 +443,7 @@ export const api = {
   cancelImport: (jobId: string) => request<void>("DELETE", `/import/jobs/${enc(jobId)}`),
 
   dropzones: () => request<{ dropzones: Dropzone[] }>("GET", "/dropzones").then((r) => r.dropzones),
-  createDropzone: (body: { bucket: string; prefix: string; note: string; expiresIn: number; maxBytes: number }) =>
+  createDropzone: (body: { bucket: string; prefix: string; note: string; expiresIn: number; maxBytes: number; maxFiles: number }) =>
     request<Dropzone>("POST", "/dropzones", body),
   deleteDropzone: (id: string) => request<void>("DELETE", `/dropzones/${enc(id)}`),
   dropzoneUploads: (id: string) =>
@@ -507,6 +507,8 @@ export interface Dropzone {
   prefix: string;
   note: string;
   maxBytes: number;
+  /** Files the link accepts; 0 for links made before limits existed (no limit). */
+  maxFiles: number;
   createdAt: string;
   expiresAt: string;
   expired: boolean;
@@ -535,6 +537,8 @@ export interface PublicDropzone {
   note: string;
   maxBytes: number;
   expiresAt: string;
+  /** Files the link still accepts; absent when it has no limit. */
+  filesLeft?: number;
 }
 
 /** What the replication form sends; secretKey empty keeps the stored one. */

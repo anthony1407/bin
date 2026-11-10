@@ -6,6 +6,10 @@ import (
 	"errors"
 )
 
+// TrashPrefix is where the console's trash keeps deleted objects in each
+// bucket, under their original path. It is never public (see package s3).
+const TrashPrefix = ".trash/"
+
 // ErrRenameVersioned is returned by RenameObjects for a bucket that has (or
 // once had) versioning: there, a move must leave the old key's history in
 // place, so callers copy and delete instead.
