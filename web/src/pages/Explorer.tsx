@@ -42,7 +42,6 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import JSZip from "jszip";
 import Editor, { DiffEditor } from "../components/CodeEditor";
 import { ApiError, api, downloadObject, uploadFile, type Bucket, type FolderInfo, type ObjectInfo, type ObjectVersion, type ShareLink } from "../api";
 import { baseName, bytes, count, dateTime, duration, relative, timeLeft } from "../lib/format";
@@ -1781,46 +1780,40 @@ export function ExplorerPage() {
     api.buckets().then(setAllBuckets).catch(() => {});
   }, []);
 
+  // The server streams the archive (folders with everything inside) and the
+  // browser saves it as it arrives: nothing is held in memory here.
   async function downloadSelectedZip() {
     setDownloadingZip(true);
     try {
-      const zip = new JSZip();
-      const keys = Array.from(selected);
-      let countLoaded = 0;
-      for (const k of keys) {
-        const url = api.downloadURL(bucket, k);
-        const res = await fetch(url);
-        if (!res.ok) continue;
-        const blob = await res.blob();
-        const fname = k.slice(prefix.length) || baseName(k);
-        zip.file(fname, blob);
-        countLoaded++;
-      }
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const href = URL.createObjectURL(zipBlob);
+      const items = [...selected];
+      const url = await api.zip(
+        bucket,
+        items.filter((k) => !k.endsWith("/")),
+        items.filter((k) => k.endsWith("/")),
+        prefix,
+      );
       const a = document.createElement("a");
-      a.href = href;
-      a.download = `${bucket}-selection-${Date.now()}.zip`;
+      a.href = url;
       document.body.append(a);
       a.click();
       a.remove();
-      setTimeout(() => URL.revokeObjectURL(href), 60000);
-      toast("ok", `Downloaded ${countLoaded} files as ZIP.`);
-    } catch (e: any) {
-      toast("error", e.message || "Failed to create ZIP.");
+      toast("ok", "ZIP download started.");
+    } catch (e) {
+      toast("error", errorText(e));
     } finally {
       setDownloadingZip(false);
     }
   }
 
-  // The server copies the data (folders with everything inside) and, for a
-  // move, sends the originals to the trash once their copy is in place.
+  // The server copies the data (folders with everything inside). A move within
+  // the bucket is a rename; to another bucket, the originals go to the trash
+  // once their copy is in place.
   async function executeTransfer() {
     setTransferBusy(true);
     const move = transferMode === "move";
     try {
       const items = [...selected];
-      const { copied } = await api.copyObjects(bucket, {
+      const { copied, trashed } = await api.copyObjects(bucket, {
         keys: items.filter((k) => !k.endsWith("/")),
         prefixes: items.filter((k) => k.endsWith("/")),
         targetBucket: transferTargetBucket,
@@ -1828,7 +1821,7 @@ export function ExplorerPage() {
         move,
       });
       const files = `${count(copied)} file${copied === 1 ? "" : "s"}`;
-      toast("ok", move ? `Moved ${files}. The originals are in the Trash.` : `Copied ${files}.`);
+      toast("ok", !move ? `Copied ${files}.` : trashed > 0 ? `Moved ${files}. The originals are in the Trash.` : `Moved ${files}.`);
       setTransferOpen(false);
       setSelected(new Set());
     } catch (e) {
@@ -1866,8 +1859,16 @@ export function ExplorerPage() {
         const folders = page.prefixes.filter(visible);
         setObjects((cur) => (after ? [...cur, ...files] : files));
         setPrefixes((cur) => (after ? [...cur, ...folders] : folders));
-        setFolderInfo((cur) => (after ? { ...cur, ...page.folders } : (page.folders ?? {})));
         setNext(page.truncated ? (page.nextAfter ?? null) : null);
+        // Folder totals cost a pass over each folder's content: the listing
+        // shows first, and they fill in when ready. Until then a fresh
+        // listing keeps the totals it had, so a refresh does not flicker.
+        if (folders.length > 0)
+          api
+            .folderUsage(bucket, folders)
+            .then((f) => current() && setFolderInfo((cur) => (after ? { ...cur, ...f } : f)))
+            .catch(() => {}); // totals are a nicety; the listing stands without them
+        else if (!after) setFolderInfo({});
       } catch (e) {
         if (current()) toast("error", errorText(e));
       } finally {
@@ -1939,17 +1940,42 @@ export function ExplorerPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Finished uploads refresh the listing once the batch is done, and at most
+  // every few seconds while a long batch runs, rather than once per file.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const uploadsRunning = useRef(0);
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  function uploadFinished(succeeded: boolean) {
+    uploadsRunning.current--;
+    if (uploadsRunning.current === 0) {
+      clearTimeout(reloadTimer.current);
+      reloadTimer.current = undefined;
+      loadRef.current();
+    } else if (succeeded && reloadTimer.current === undefined) {
+      reloadTimer.current = setTimeout(() => {
+        reloadTimer.current = undefined;
+        loadRef.current();
+      }, 2000);
+    }
+  }
+  useEffect(() => () => clearTimeout(reloadTimer.current), []);
+
   function upload(files: FileList | File[]) {
     for (const file of Array.from(files)) {
       const job: UploadJob = { id: Math.random(), name: file.name, size: file.size, sent: 0, state: "uploading", abort: new AbortController() };
       setJobs((j) => [...j, job]);
       const update = (patch: Partial<UploadJob>) => setJobs((all) => all.map((x) => (x.id === job.id ? { ...x, ...patch } : x)));
+      uploadsRunning.current++;
       uploadFile(bucket, prefix + file.name, file, (sent) => update({ sent }), job.abort.signal)
         .then(() => {
           update({ state: "done", sent: file.size });
-          load();
+          uploadFinished(true);
         })
-        .catch((e) => update({ state: job.abort.signal.aborted ? "cancelled" : "error", error: job.abort.signal.aborted ? undefined : errorText(e) }));
+        .catch((e) => {
+          update({ state: job.abort.signal.aborted ? "cancelled" : "error", error: job.abort.signal.aborted ? undefined : errorText(e) });
+          uploadFinished(false);
+        });
     }
   }
 
@@ -2966,7 +2992,7 @@ export function ExplorerPage() {
                     : "border-line bg-card text-muted hover:text-ink"
                 )}
               >
-                <FolderInput className="size-3.5" /> Move (Originals to Trash)
+                <FolderInput className="size-3.5" /> Move (Remove originals)
               </button>
             </div>
           </div>

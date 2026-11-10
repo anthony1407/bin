@@ -13,9 +13,9 @@ import (
 
 // The console's trash: deleting from the explorer moves objects under
 // .trash/ in the same bucket, keeping their path, so they can be restored.
-// The moves happen here, server side, rather than through the browser.
-// A trashed object's modification time is when it was trashed, which the
-// retention purge goes by.
+// The moves happen here, server side, rather than through the browser, as
+// renames when the bucket allows it (see relocate). A trashed object's
+// modification time is when it was trashed, which the retention purge goes by.
 
 const trashPrefix = ".trash/"
 
@@ -103,17 +103,17 @@ func (h *Handler) moveTrash(w http.ResponseWriter, r *http.Request, target func(
 		h.storageError(w, r, err)
 		return
 	}
-	moved := 0
+	moves := make([]storage.Rename, 0, len(keys))
 	for _, k := range keys {
 		to, _ := target(k)
-		if err := h.moveObject(r.Context(), bucket, k, to); err != nil {
-			server.Annotate(r.Context(), slog.Int("moved", moved))
-			h.storageError(w, r, err)
-			return
-		}
-		moved++
+		moves = append(moves, storage.Rename{From: k, To: to})
 	}
+	moved, err := h.relocate(r.Context(), bucket, moves)
 	server.Annotate(r.Context(), slog.Int("moved", moved))
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]int{"moved": moved})
 }
 

@@ -132,8 +132,32 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	if prefixes == nil {
 		prefixes = []string{}
 	}
-	// Folders show what they hold: object count, total size and last change.
-	usage, err := h.opts.Store.PrefixUsage(r.Context(), bucket, prefixes)
+	// Folder totals are not part of the listing: they cost a pass over each
+	// folder's content, so the console asks for them separately (folderUsage)
+	// and shows the listing without waiting.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"objects": h.withShares(r, bucket, out), "prefixes": prefixes,
+		"truncated": res.IsTruncated, "nextAfter": res.NextMarker,
+	})
+}
+
+// maxUsagePrefixes bounds how many folders one folderUsage request sums.
+const maxUsagePrefixes = 1000
+
+// folderUsage returns what each folder holds: object count, total size and
+// last change of the current objects under it, nested ones included.
+func (h *Handler) folderUsage(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Prefixes []string `json:"prefixes"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if len(in.Prefixes) > maxUsagePrefixes {
+		writeError(w, http.StatusBadRequest, "too_many_prefixes", "Ask for at most 1000 folders at a time.")
+		return
+	}
+	usage, err := h.opts.Store.PrefixUsage(r.Context(), r.PathValue("bucket"), in.Prefixes)
 	if err != nil {
 		h.storageError(w, r, err)
 		return
@@ -142,10 +166,7 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request) {
 	for p, u := range usage {
 		folders[p] = folderJSON{Objects: u.Objects, Size: u.Bytes, LastModified: optionalTime(u.Modified)}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"objects": h.withShares(r, bucket, out), "prefixes": prefixes, "folders": folders,
-		"truncated": res.IsTruncated, "nextAfter": res.NextMarker,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"folders": folders})
 }
 
 // statObject returns an object's metadata: its current version, or the one

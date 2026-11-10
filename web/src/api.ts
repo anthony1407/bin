@@ -130,9 +130,7 @@ export interface FolderInfo {
 
 export interface ObjectPage {
   objects: ObjectInfo[];
-  prefixes: string[];
-  folders?: Record<string, FolderInfo>; // absent in search results
-
+  prefixes: string[]; // their totals come from api.folderUsage
   truncated: boolean;
   nextAfter?: string;
 }
@@ -313,7 +311,15 @@ export const api = {
   copyObjects: (
     bucket: string,
     req: { keys: string[]; prefixes: string[]; targetBucket: string; targetPrefix: string; move: boolean },
-  ) => request<{ copied: number }>("POST", `/buckets/${enc(bucket)}/copy`, req),
+  ) => request<{ copied: number; trashed: number }>("POST", `/buckets/${enc(bucket)}/copy`, req),
+  /** What each folder holds, nested content included. Slower than a listing: asked for after it. */
+  folderUsage: (bucket: string, prefixes: string[]) =>
+    request<{ folders: Record<string, FolderInfo> }>("POST", `/buckets/${enc(bucket)}/folders/usage`, { prefixes }).then(
+      (r) => r.folders,
+    ),
+  /** Registers a selection for download as one ZIP; the returned URL streams it. */
+  zip: (bucket: string, keys: string[], prefixes: string[], base: string) =>
+    request<{ url: string }>("POST", `/buckets/${enc(bucket)}/zip`, { keys, prefixes, base }).then((r) => r.url),
   setTrashRetention: (bucket: string, days: number) =>
     request<Bucket>("PUT", `/buckets/${enc(bucket)}/trash/retention`, { days }),
   createFolder: (bucket: string, prefix: string) => request<ObjectInfo>("POST", `/buckets/${enc(bucket)}/folders`, { prefix }),

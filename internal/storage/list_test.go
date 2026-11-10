@@ -50,6 +50,31 @@ func TestPrefixUsage(t *testing.T) {
 	}
 }
 
+// Folder totals must come from the covering index alone: visiting every row
+// under a big folder on each listing is what made listings slow.
+func TestPrefixUsageUsesCoveringIndex(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	rows, err := s.read.Query(`EXPLAIN QUERY PLAN SELECT COUNT(*), COALESCE(SUM(size), 0), COALESCE(MAX(modified_at), 0) FROM objects
+		WHERE bucket_id = ? AND is_latest = 1 AND delete_marker = 0 AND key >= ? AND key < ?`, 1, "a/", "a/"+maxRune)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	joined := strings.Join(plan, "; ")
+	if !strings.Contains(joined, "COVERING INDEX objects_current_usage") {
+		t.Errorf("plan: %s", joined)
+	}
+}
+
 func TestListBasics(t *testing.T) {
 	ctx := context.Background()
 	s := openTest(t, t.TempDir())

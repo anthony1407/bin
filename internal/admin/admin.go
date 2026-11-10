@@ -67,6 +67,7 @@ type Handler struct {
 	imports    *importJobs
 	oidcStates *oidcStates
 	repl       *replicator
+	zips       *zipTickets
 }
 
 // NewHandler returns the console HTTP handler.
@@ -75,7 +76,7 @@ func NewHandler(opts Options) http.Handler {
 		opts.SessionTTL = 12 * time.Hour
 	}
 	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs(),
-		oidcStates: newOIDCStates(), repl: newReplicator()}
+		oidcStates: newOIDCStates(), repl: newReplicator(), zips: newZipTickets()}
 	if opts.RunReplication {
 		go h.runReplicationScheduler()
 		go h.runTrashPurge()
@@ -116,10 +117,13 @@ func NewHandler(opts Options) http.Handler {
 	private("POST /api/v1/buckets/{bucket}/trash/restore", h.restoreObjects)
 	private("PUT /api/v1/buckets/{bucket}/trash/retention", h.putTrashRetention)
 	private("POST /api/v1/buckets/{bucket}/copy", h.copyObjects)
+	private("POST /api/v1/buckets/{bucket}/zip", h.createZip)
+	private("GET /api/v1/zip/{id}", h.downloadZip)
 	private("GET /api/v1/buckets/{bucket}/object", h.statObject)
 	private("GET /api/v1/buckets/{bucket}/download", h.download)
 	private("PUT /api/v1/buckets/{bucket}/upload", h.upload)
 	private("POST /api/v1/buckets/{bucket}/folders", h.createFolder)
+	private("POST /api/v1/buckets/{bucket}/folders/usage", h.folderUsage)
 	private("POST /api/v1/buckets/{bucket}/share", h.share)
 	private("GET /api/v1/buckets/{bucket}/shares", h.listShares)
 	private("DELETE /api/v1/shares/{id}", h.revokeShare)

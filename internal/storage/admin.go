@@ -290,10 +290,17 @@ func (s *Store) SearchObjects(ctx context.Context, bucket, prefix, term string, 
 	if err != nil {
 		return nil, err
 	}
+	// The upper bound ends the scan at the end of the folder instead of the
+	// end of the bucket (as PrefixUsage, keys continuing the prefix with
+	// U+10FFFF fall outside it).
+	bound, args := "", []any{bid, prefix}
+	if prefix != "" {
+		bound, args = "AND key < ?", append(args, prefix+maxRune)
+	}
 	rows, err := s.read.QueryContext(ctx, `SELECT key, size, etag, modified_at FROM objects
 		WHERE bucket_id = ? AND is_latest = 1 AND delete_marker = 0
-		  AND key >= ? AND substr(key, 1, ?) = ? AND instr(lower(key), lower(?)) > 0
-		ORDER BY key LIMIT ?`, bid, prefix, len(prefix), prefix, term, limit)
+		  AND key >= ? `+bound+` AND substr(key, 1, ?) = ? AND instr(lower(key), lower(?)) > 0
+		ORDER BY key LIMIT ?`, append(args, len(prefix), prefix, term, limit)...)
 	if err != nil {
 		return nil, err
 	}

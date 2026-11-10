@@ -291,6 +291,11 @@ var migrations = []string{
 		created_at  INTEGER NOT NULL,
 		last_run_at INTEGER NOT NULL DEFAULT 0
 	) WITHOUT ROWID;`,
+
+	// 14: folder totals (count, size, last change of the current objects
+	// under a prefix) read from this index alone, without visiting the rows.
+	`CREATE INDEX objects_current_usage ON objects (bucket_id, key, size, modified_at)
+		WHERE is_latest = 1 AND delete_marker = 0;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

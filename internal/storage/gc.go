@@ -35,14 +35,19 @@ func (s *Store) collect(ctx context.Context, blobs ...string) {
 			continue // not queued (still live) or transient error
 		}
 		s.mu.Lock()
+		removed := false
 		if s.inUse[b] == 0 { // re-check: a reader may have arrived meanwhile
-			if s.removeBlob(b) == nil {
-				s.write.ExecContext(ctx, `DELETE FROM gc_blobs WHERE blob = ?`, b)
-			}
+			removed = s.removeBlob(b) == nil
 		} else {
 			s.deferred[b] = true
 		}
 		s.mu.Unlock()
+		// Dequeue outside the lock: the write may wait for a commit in
+		// progress, and readers must not wait with it. A reader arriving now
+		// finds the blob gone and looks the object up again.
+		if removed {
+			s.write.ExecContext(ctx, `DELETE FROM gc_blobs WHERE blob = ?`, b)
+		}
 	}
 }
 
