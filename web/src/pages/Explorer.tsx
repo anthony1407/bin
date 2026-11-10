@@ -1345,11 +1345,19 @@ function Detail({
     }
   }
 
+  // Like the listing's Delete, this moves the file to the trash; only what is
+  // already in the trash is deleted for good.
+  const inTrash = objectKey.startsWith(TRASH);
   async function remove() {
     setDeleting(true);
     try {
-      await api.deleteObjects(bucket, [objectKey], []);
-      toast("ok", `${baseName(objectKey)} deleted.`);
+      if (inTrash) {
+        await api.deleteObjects(bucket, [objectKey], []);
+        toast("ok", `${baseName(objectKey)} permanently deleted.`);
+      } else {
+        await api.trashObjects(bucket, [objectKey], []);
+        toast("ok", `${baseName(objectKey)} moved to trash.`);
+      }
       onDeleted();
     } catch (e) {
       toast("error", errorText(e));
@@ -1595,14 +1603,19 @@ function Detail({
                 Cancel
               </Button>
               <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={remove}>
-                {deleting ? "Deleting…" : "Delete"}
+                {inTrash ? (deleting ? "Deleting…" : "Delete permanently") : deleting ? "Moving to trash…" : "Move to Trash"}
               </Button>
             </>
           }
         >
           <p className="text-sm">
-            Delete <span className="font-mono">{objectKey}</span>?{" "}
-            {info?.versionId ? "Its versions are kept: you can undo this from the Versions tab or Show deleted." : "This cannot be undone."}
+            {inTrash ? "Permanently delete" : "Move"} <span className="font-mono">{objectKey}</span>
+            {inTrash ? "?" : " to trash?"}{" "}
+            {inTrash
+              ? info?.versionId
+                ? "Its versions are kept: you can undo this from the Versions tab or Show deleted."
+                : "It is already in the trash and cannot be restored."
+              : "It can be restored from the Trash."}
           </p>
         </Modal>
       </aside>
