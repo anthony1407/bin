@@ -349,10 +349,16 @@ so on.
 
 | Method and path | Query | Response |
 |---|---|---|
-| `GET /api/v1/audit` | `source` (`console`/`s3`), `bucket`, `q` (search actor, action, bucket, resource), `failed=true`, `before` (entry id), `limit` (1..500, default 100) | `{"entries": [entry], "nextBefore"?}` newest first; pass `nextBefore` as `before` for the next page |
+| `GET /api/v1/audit` | `source` (`console`/`s3`), `bucket`, `actor` (exactly), `q` (search actor, action, bucket, resource), `failed=true`, `before` (entry id), `limit` (1..500, default 100) | `{"entries": [entry], "nextBefore"?}` newest first; pass `nextBefore` as `before` for the next page |
+| `GET /api/v1/access-keys/{key}/activity` | | One user's activity: `{"buckets":[{"name","createdAt","objects","size","owned"}],"uploads","uploadBytes","downloads","downloadBytes","lastActivity","recent":[entry],"retentionDays","downloadsRecorded"}`. Buckets are the ones the key created (current contents); the rest comes from the audit log. |
 
 An entry is
-`{"id","at","source","actor","action","bucket","resource","status","error","remote","requestId"}`.
+`{"id","at","source","actor","action","bucket","resource","status","error","remote","requestId","size"}`;
+`size` is the bytes an upload stored or a download sent.
+
+With `auditDownloads` on (`PUT /settings`, off by default), downloads are
+recorded too: S3 `GetObject`, console `Download` (not inline previews) and
+`DownloadZip`, each with its size.
 
 Recorded: console sign-ins (the typed access key only when it is root's) and
 every console change; S3 operations that change data (CreateBucket,

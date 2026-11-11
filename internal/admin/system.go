@@ -122,6 +122,8 @@ type settingsJSON struct {
 	// quota each gets at creation (0: none).
 	UserBucketLimit      int64 `json:"userBucketLimit"`
 	UserBucketQuotaBytes int64 `json:"userBucketQuotaBytes"`
+	// AuditDownloads also records downloads (S3 and console), with their size.
+	AuditDownloads bool `json:"auditDownloads"`
 }
 
 // maxAuditRetentionDays bounds the audit retention setting (ten years).
@@ -152,6 +154,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		ShareMaxExpiry: int64(max / time.Second), AuditRetentionDays: days,
 		PublicURL: h.opts.PublicURL, Region: h.opts.Region,
 		UserBucketLimit: limit, UserBucketQuotaBytes: quota,
+		AuditDownloads: h.opts.Audit.DownloadsOn(r.Context()),
 	})
 }
 
@@ -162,9 +165,17 @@ func (h *Handler) putSettings(w http.ResponseWriter, r *http.Request) {
 		AuditRetentionDays   *int   `json:"auditRetentionDays"`
 		UserBucketLimit      *int64 `json:"userBucketLimit"`
 		UserBucketQuotaBytes *int64 `json:"userBucketQuotaBytes"`
+		AuditDownloads       *bool  `json:"auditDownloads"`
 	}
 	if !readJSON(w, r, &in) {
 		return
+	}
+	if v := in.AuditDownloads; v != nil {
+		if err := h.opts.Store.SetSetting(r.Context(), audit.DownloadsSetting, strconv.FormatBool(*v)); err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		h.opts.Log.Info("settings updated", "audit_downloads", *v)
 	}
 	if v := in.UserBucketLimit; v != nil && (*v < 0 || *v > maxUserBucketLimit) {
 		writeError(w, http.StatusBadRequest, "invalid_user_bucket_limit", "Each user may own 0 (no limit) to 1000 buckets.")

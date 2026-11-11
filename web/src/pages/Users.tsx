@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  Activity,
   Check,
   Copy,
   Download,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import { api, type AccessKey, type Bucket, type Group } from "../api";
 import { SessionsList } from "./Account";
+import { UserActivityModal } from "./UserActivity";
 import { Button, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 
 function downloadFile(filename: string, content: string) {
@@ -158,6 +160,9 @@ export function UsersPage() {
     { type: "single"; user: AccessKey } | { type: "bulk"; count: number } | null
   >(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Activity of one user (admins see what they created, uploaded and downloaded).
+  const [activityUser, setActivityUser] = useState<AccessKey | null>(null);
 
   // Edit User State
   const [editingUser, setEditingUser] = useState<AccessKey | null>(null);
@@ -723,6 +728,9 @@ export function UsersPage() {
                     </td>
                     <td className="py-3 pr-4 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <IconButton label="Activity" onClick={() => setActivityUser(u)} className="hover:text-accent">
+                          <Activity className="size-4" />
+                        </IconButton>
                         <IconButton
                           label="Edit User"
                           onClick={() => startEdit(u)}
@@ -746,6 +754,8 @@ export function UsersPage() {
           </table>
         )}
       </div>
+
+      <UserActivityModal user={activityUser} onClose={() => setActivityUser(null)} />
 
       {/* Secret Key Modal when user is created */}
       {createdUser && (

@@ -141,13 +141,19 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	sw := &statusRecorder{ResponseWriter: w}
 	w = sw
 	actor := unauthenticated
+	extra := &auditExtra{}
+	r = r.WithContext(context.WithValue(r.Context(), auditExtraKey{}, extra))
 	var err error
 	defer func() {
 		status := sw.status
 		if status == 0 {
 			status = http.StatusOK
 		}
-		h.record(r, req, actor, status, err)
+		size := extra.size
+		if req.Op == OpGetObject {
+			size = sw.written // what the client actually received
+		}
+		h.record(r, req, actor, status, err, size)
 	}()
 
 	auth, err := h.opts.Auth.Verify(r)

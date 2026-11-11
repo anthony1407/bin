@@ -152,6 +152,7 @@ func NewHandler(opts Options) http.Handler {
 	private("PUT /api/v1/access-keys/{key}/password", h.putKeyPassword)
 	private("DELETE /api/v1/access-keys/{key}/password", h.deleteKeyPassword)
 	private("DELETE /api/v1/access-keys/{key}/totp", h.deleteKeyTOTP)
+	private("GET /api/v1/access-keys/{key}/activity", h.keyActivity)
 
 	private("GET /api/v1/groups", h.listGroups)
 	private("POST /api/v1/groups", h.createGroup)

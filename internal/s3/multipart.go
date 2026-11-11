@@ -233,6 +233,7 @@ func (h *Handler) completeMultipartUpload(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return storageError(err)
 	}
+	auditSize(r.Context(), info.Size)
 	setChecksumHeaders(w, info)
 	setVersionHeader(w, info.VersionID, false)
 	return writeXML(w, http.StatusOK, completeMultipartUploadResult{

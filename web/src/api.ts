@@ -214,10 +214,28 @@ export interface AuditEntry {
   error?: string;
   remote?: string;
   requestId?: string;
+  /** Bytes an upload stored or a download sent. */
+  size?: number;
+}
+
+/** What one user did, for admins (from the buckets and the audit log). */
+export interface KeyActivity {
+  buckets: { name: string; createdAt: string; objects: number; size: number; owned: boolean }[];
+  uploads: number;
+  uploadBytes: number;
+  downloads: number;
+  downloadBytes: number;
+  lastActivity: string | null;
+  recent: AuditEntry[];
+  /** The audit retention the numbers depend on (0: forever). */
+  retentionDays: number;
+  downloadsRecorded: boolean;
 }
 
 export interface AuditFilter {
   source?: "" | "console" | "s3";
+  /** Exactly this actor (one user's actions). */
+  actor?: string;
   q?: string;
   failed?: boolean;
   before?: number;
@@ -233,6 +251,8 @@ export interface Settings {
   userBucketLimit: number;
   /** Quota each user-created bucket gets at creation (0: none). */
   userBucketQuotaBytes: number;
+  /** Downloads are recorded in the audit log too. */
+  auditDownloads: boolean;
 }
 
 /** A live console session. */
@@ -419,6 +439,7 @@ export const api = {
   audit: (f: AuditFilter) => {
     const q = new URLSearchParams();
     if (f.source) q.set("source", f.source);
+    if (f.actor) q.set("actor", f.actor);
     if (f.q) q.set("q", f.q);
     if (f.failed) q.set("failed", "true");
     if (f.before) q.set("before", String(f.before));
@@ -431,6 +452,9 @@ export const api = {
   saveAuditRetention: (auditRetentionDays: number) => request<Settings>("PUT", "/settings", { auditRetentionDays }),
   saveUserBucketLimits: (userBucketLimit: number, userBucketQuotaBytes: number) =>
     request<Settings>("PUT", "/settings", { userBucketLimit, userBucketQuotaBytes }),
+  saveAuditDownloads: (auditDownloads: boolean) => request<Settings>("PUT", "/settings", { auditDownloads }),
+  /** A user's buckets, transfer totals and latest actions (admins). */
+  keyActivity: (key: string) => request<KeyActivity>("GET", `/access-keys/${enc(key)}/activity`),
   /** A user's own sessions; an admin's: everyone's, or one key's. */
   sessions: (accessKey?: string) =>
     request<{ sessions: SessionInfo[] }>("GET", `/sessions${accessKey ? `?accessKey=${enc(accessKey)}` : ""}`).then(

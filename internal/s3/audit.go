@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -24,10 +25,25 @@ var auditedOps = map[Op]bool{
 // unauthenticated is the actor of requests whose signature did not verify.
 const unauthenticated = "(unauthenticated)"
 
-// statusRecorder remembers the status code written to the client.
+// auditExtra carries what a handler learns for the audit entry of its
+// request: the size of the object it stored.
+type auditExtra struct{ size int64 }
+
+type auditExtraKey struct{}
+
+// auditSize records the bytes a write stored, for its audit entry.
+func auditSize(ctx context.Context, n int64) {
+	if x, ok := ctx.Value(auditExtraKey{}).(*auditExtra); ok {
+		x.size = n
+	}
+}
+
+// statusRecorder remembers the status code written to the client, and how
+// many body bytes (a download's size).
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status  int
+	written int64
 }
 
 func (w *statusRecorder) WriteHeader(code int) {
@@ -41,7 +57,9 @@ func (w *statusRecorder) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(p)
+	n, err := w.ResponseWriter.Write(p)
+	w.written += int64(n)
+	return n, err
 }
 
 // ReadFrom passes zero-copy body writes through; see server.ReadFrom.
@@ -49,15 +67,21 @@ func (w *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return server.ReadFrom(w.ResponseWriter, r)
+	n, err := server.ReadFrom(w.ResponseWriter, r)
+	w.written += n
+	return n, err
 }
 
 // Unwrap lets http.ResponseController reach Flush and friends.
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// record adds the request to the audit log if it is worth keeping.
-func (h *Handler) record(r *http.Request, req Request, actor string, status int, err error) {
-	if h.opts.Audit == nil || !(auditedOps[req.Op] || status == http.StatusForbidden) {
+// record adds the request to the audit log if it is worth keeping: writes,
+// refusals, and downloads when the setting asks for them. size is the bytes
+// the request stored or sent.
+func (h *Handler) record(r *http.Request, req Request, actor string, status int, err error, size int64) {
+	download := req.Op == OpGetObject && status < 400
+	if h.opts.Audit == nil || !(auditedOps[req.Op] || status == http.StatusForbidden ||
+		(download && h.opts.Audit.DownloadsOn(r.Context()))) {
 		return
 	}
 	e := storage.AuditEntry{
@@ -69,6 +93,9 @@ func (h *Handler) record(r *http.Request, req Request, actor string, status int,
 		Status:    status,
 		Remote:    remoteIP(r),
 		RequestID: server.RequestID(r.Context()),
+	}
+	if status < 400 {
+		e.Size = size
 	}
 	if e.Action == "" {
 		e.Action = r.Method

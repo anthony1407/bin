@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { useSearchParams } from "react-router";
+import { Download, RefreshCw, Search, ShieldCheck, X } from "lucide-react";
 import { api, type AccessKey, type AuditEntry, type AuditFilter } from "../api";
-import { dateTime, relative } from "../lib/format";
+import { bytes, dateTime, relative } from "../lib/format";
 import { Badge, Button, EmptyState, IconButton, Input, PageHeader, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
 
@@ -14,7 +15,7 @@ function csvField(v: string | number | undefined): string {
 }
 
 function exportCsv(entries: AuditEntry[]) {
-  const cols: (keyof AuditEntry)[] = ["at", "source", "actor", "action", "bucket", "resource", "status", "error", "remote", "requestId"];
+  const cols: (keyof AuditEntry)[] = ["at", "source", "actor", "action", "bucket", "resource", "size", "status", "error", "remote", "requestId"];
   const lines = [cols.join(","), ...entries.map((e) => cols.map((c) => csvField(e[c])).join(","))];
   const href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/csv" }));
   const a = document.createElement("a");
@@ -36,12 +37,15 @@ export function AuditPage() {
   const [query, setQuery] = useState(""); // the search actually applied
   const [keys, setKeys] = useState<AccessKey[]>([]);
   const toast = useToast();
+  // ?actor= shows one user's actions (linked from a user's activity).
+  const [params, setParams] = useSearchParams();
+  const actor = params.get("actor") ?? "";
 
   const load = useCallback(
     async (before?: number) => {
       setLoading(true);
       try {
-        const page = await api.audit({ source, failed, q: query, before, limit: PAGE });
+        const page = await api.audit({ source, actor, failed, q: query, before, limit: PAGE });
         setEntries((prev) => (before && prev ? [...prev, ...page.entries] : page.entries));
         setNext(page.nextBefore);
       } catch (e) {
@@ -50,7 +54,7 @@ export function AuditPage() {
         setLoading(false);
       }
     },
-    [source, failed, query, toast],
+    [source, actor, failed, query, toast],
   );
 
   useEffect(() => {
@@ -72,7 +76,7 @@ export function AuditPage() {
     <>
       <PageHeader
         title="Audit log"
-        subtitle="Who changed what, from the console and the S3 API. Sign-ins, changes and refused requests are recorded; reads are not."
+        subtitle="Who changed what, from the console and the S3 API. Sign-ins, changes (with the size of uploads) and refused requests are recorded; downloads only when turned on in Configuration → Audit & Logging."
         actions={
           <>
             <Button icon={<Download className="size-4" />} disabled={!entries?.length} onClick={() => entries && exportCsv(entries)}>
@@ -119,6 +123,16 @@ export function AuditPage() {
           />
           Failures only
         </label>
+        {actor && (
+          <button
+            type="button"
+            onClick={() => setParams({})}
+            className="flex items-center gap-1.5 rounded-full border border-accent bg-accent-soft px-3 py-1 text-xs text-accent-ink"
+            title="Show everyone again"
+          >
+            Only {actorLabel(actor) ?? actor} <X className="size-3" />
+          </button>
+        )}
       </div>
 
       {entries === null ? (
@@ -128,9 +142,9 @@ export function AuditPage() {
       ) : entries.length === 0 ? (
         <div className="rounded-card border border-dashed border-line-strong bg-surface">
           <EmptyState
-            title={query || source || failed ? "Nothing matches" : "Nothing recorded yet"}
+            title={query || source || failed || actor ? "Nothing matches" : "Nothing recorded yet"}
             body={
-              query || source || failed
+              query || source || failed || actor
                 ? "Try another search or clear the filters."
                 : "Sign-ins, bucket and object changes and refused requests will appear here."
             }
@@ -177,6 +191,7 @@ export function AuditPage() {
                         {e.resource && <span className="text-muted">{e.resource}</span>}
                         {!e.bucket && !e.resource && <span className="text-faint">—</span>}
                       </div>
+                      {e.size ? <div className="font-mono text-[11px] text-faint">{bytes(e.size)}</div> : null}
                     </td>
                     <td className="py-2.5 pr-3 whitespace-nowrap">
                       <Badge tone={ok ? "ok" : e.status === 403 || e.status === 401 ? "warn" : "danger"}>{e.status}</Badge>

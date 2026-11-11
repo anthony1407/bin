@@ -28,6 +28,11 @@ const RetentionSetting = "audit_retention_days"
 // DefaultRetentionDays applies until the setting is changed.
 const DefaultRetentionDays = 30
 
+// DownloadsSetting, "true", also records downloads (S3 GetObject, console
+// downloads and ZIPs), with their size. Off by default: on busy servers reads
+// far outnumber writes and the log grows accordingly.
+const DownloadsSetting = "audit_downloads"
+
 const (
 	queueSize     = 4096
 	batchSize     = 256
@@ -46,6 +51,31 @@ type Recorder struct {
 
 	mu      sync.Mutex
 	dropped int64
+
+	// The downloads setting, read once per store epoch (any write may have
+	// changed it) instead of on every download.
+	dlMu    sync.Mutex
+	dlEpoch uint64
+	dlOn    bool
+	dlRead  bool
+}
+
+// DownloadsOn reports whether downloads are recorded too.
+func (r *Recorder) DownloadsOn(ctx context.Context) bool {
+	if r == nil {
+		return false
+	}
+	epoch := r.store.Epoch()
+	r.dlMu.Lock()
+	defer r.dlMu.Unlock()
+	if !r.dlRead || r.dlEpoch != epoch {
+		v, ok, err := r.store.Setting(ctx, DownloadsSetting)
+		if err != nil {
+			return r.dlOn // keep the last known value through a transient error
+		}
+		r.dlOn, r.dlEpoch, r.dlRead = ok && v == "true", epoch, true
+	}
+	return r.dlOn
 }
 
 // New starts a recorder writing to store.

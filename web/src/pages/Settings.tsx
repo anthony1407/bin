@@ -402,8 +402,21 @@ function AuditSection({ info, settings, onSaved }: { info: Info; settings: Setti
     ? RETENTION_OPTIONS
     : [...RETENTION_OPTIONS, { value: retentionDays, label: `${retentionDays} Days` }];
 
-  // Only the audit retention is a runtime setting; the log options come from
-  // the BIN_LOG_* environment at startup.
+  const [savingDownloads, setSavingDownloads] = useState(false);
+  async function saveDownloads(on: boolean) {
+    setSavingDownloads(true);
+    try {
+      onSaved(await api.saveAuditDownloads(on));
+      toast("ok", on ? "Downloads are recorded from now on." : "Downloads are no longer recorded.");
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setSavingDownloads(false);
+    }
+  }
+
+  // The audit retention and download recording are runtime settings; the log
+  // options come from the BIN_LOG_* environment at startup.
   async function saveAudit() {
     setSaving(true);
     try {
@@ -454,6 +467,23 @@ function AuditSection({ info, settings, onSaved }: { info: Info; settings: Setti
           Save Retention
         </Button>
       </div>
+
+      <label className="flex cursor-pointer items-start gap-3 border-t border-line pt-5">
+        <input
+          type="checkbox"
+          checked={settings.auditDownloads}
+          disabled={savingDownloads}
+          onChange={(e) => saveDownloads(e.target.checked)}
+          className="mt-0.5 size-4 accent-[var(--accent)]"
+        />
+        <span>
+          <span className="block text-sm font-medium text-ink">Also record downloads</span>
+          <span className="block text-xs text-muted">
+            Each download (S3, console and ZIPs) with who, what and its size, shown in each user's activity. Previews in the
+            explorer are not counted. On busy servers this makes the log much larger.
+          </span>
+        </span>
+      </label>
 
       <div className="rounded-lg border border-line bg-sunken/40 p-4 text-xs space-y-2">
         <div className="font-semibold text-ink flex items-center gap-1.5">

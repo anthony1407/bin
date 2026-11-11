@@ -73,11 +73,27 @@ var auditedRoutes = map[string]string{
 	"POST /api/v1/replication/rules/{id}/run":             "RunReplication",
 }
 
+// downloadRoutes are recorded only while the downloads setting is on (see
+// audit.DownloadsSetting), and only real downloads: inline previews (the
+// explorer's thumbnails and viewers) would flood the log.
+var downloadRoutes = map[string]string{
+	"GET /api/v1/buckets/{bucket}/download": "Download",
+	"GET /api/v1/zip/{id}":                  "DownloadZip",
+}
+
 // auditInfo lets a handler fill in what the route alone does not tell.
 type auditInfo struct {
 	actor    string
 	bucket   string
 	resource string
+	size     int64
+}
+
+// setAuditSize records how many bytes an upload stored.
+func setAuditSize(r *http.Request, n int64) {
+	if ai := auditInfoFrom(r); ai != nil {
+		ai.size = n
+	}
 }
 
 type auditKey struct{}
@@ -113,10 +129,15 @@ func setAuditResource(r *http.Request, resource string) {
 // session user is known.
 func (h *Handler) audited(pattern string, next http.HandlerFunc) http.HandlerFunc {
 	action, ok := auditedRoutes[pattern]
-	if !ok || h.opts.Audit == nil {
+	dlAction, download := downloadRoutes[pattern]
+	if (!ok && !download) || h.opts.Audit == nil {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		if download && (r.URL.Query().Get("inline") == "1" || !h.opts.Audit.DownloadsOn(r.Context())) {
+			next(w, r)
+			return
+		}
 		ai := &auditInfo{}
 		if sess, ok := r.Context().Value(sessionKey{}).(storage.Session); ok {
 			ai.actor = sess.User
@@ -124,6 +145,9 @@ func (h *Handler) audited(pattern string, next http.HandlerFunc) http.HandlerFun
 		r = r.WithContext(context.WithValue(r.Context(), auditKey{}, ai))
 		sw := &statusWriter{ResponseWriter: w}
 		next(sw, r)
+		if download {
+			action, ai.size = dlAction, sw.written
+		}
 
 		e := storage.AuditEntry{
 			Source:    audit.Console,
@@ -145,15 +169,20 @@ func (h *Handler) audited(pattern string, next http.HandlerFunc) http.HandlerFun
 		if e.Resource == "" {
 			e.Resource = r.URL.Query().Get("key")
 		}
+		if e.Status < 400 {
+			e.Size = ai.size
+		}
 		h.opts.Audit.Record(e)
 	}
 }
 
-// statusWriter remembers the status code and, through writeError, the error code.
+// statusWriter remembers the status code, through writeError the error code,
+// and how many body bytes went out (a download's size).
 type statusWriter struct {
 	http.ResponseWriter
 	status  int
 	errCode string
+	written int64
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -167,7 +196,9 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(p)
+	n, err := w.ResponseWriter.Write(p)
+	w.written += int64(n)
+	return n, err
 }
 
 // ReadFrom passes zero-copy body writes through; see server.ReadFrom.
@@ -175,7 +206,9 @@ func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return server.ReadFrom(w.ResponseWriter, r)
+	n, err := server.ReadFrom(w.ResponseWriter, r)
+	w.written += n
+	return n, err
 }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -201,6 +234,7 @@ type auditJSON struct {
 	Error     string    `json:"error,omitempty"`
 	Remote    string    `json:"remote,omitempty"`
 	RequestID string    `json:"requestId,omitempty"`
+	Size      int64     `json:"size,omitempty"` // bytes an upload stored or a download sent
 }
 
 const maxAuditPage = 500
@@ -212,6 +246,7 @@ func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
 	f := storage.AuditFilter{
 		Source: q.Get("source"),
 		Bucket: q.Get("bucket"),
+		Actor:  q.Get("actor"),
 		Search: q.Get("q"),
 		Failed: q.Get("failed") == "true",
 		Limit:  100,
@@ -252,6 +287,7 @@ func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
 		list = append(list, auditJSON{
 			ID: e.ID, At: e.At, Source: e.Source, Actor: e.Actor, Action: e.Action, Bucket: e.Bucket,
 			Resource: e.Resource, Status: e.Status, Error: e.Error, Remote: e.Remote, RequestID: e.RequestID,
+			Size: e.Size,
 		})
 	}
 	out["entries"] = list

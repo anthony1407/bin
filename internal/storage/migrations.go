@@ -320,6 +320,11 @@ var migrations = []string{
 	ALTER TABLE sessions ADD COLUMN user_agent TEXT NOT NULL DEFAULT '';
 	ALTER TABLE access_keys ADD COLUMN totp_secret_enc TEXT NOT NULL DEFAULT '';   -- '' = no second factor
 	ALTER TABLE access_keys ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;`,
+
+	// 18: how many bytes each audited upload (or download) moved, and an index
+	// to show one user's activity without scanning the whole log.
+	`ALTER TABLE audit_log ADD COLUMN size INTEGER NOT NULL DEFAULT 0;   -- bytes; 0 when not a transfer
+	CREATE INDEX audit_log_actor ON audit_log (actor, id);`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

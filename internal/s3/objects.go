@@ -185,6 +185,7 @@ func (h *Handler) putObject(w http.ResponseWriter, r *http.Request, req Request)
 		IfMatch:     r.Header.Get("If-Match"),
 		IfNoneMatch: r.Header.Get("If-None-Match"),
 	})
+	auditSize(r.Context(), info.Size)
 	if err != nil {
 		return storageError(err)
 	}
@@ -489,6 +490,7 @@ func (h *Handler) copyObject(w http.ResponseWriter, r *http.Request, req Request
 	}
 
 	info, err := h.opts.Store.CopyObject(r.Context(), srcBucket, srcKey, req.Bucket, req.Key, opts)
+	auditSize(r.Context(), info.Size)
 	if err != nil {
 		if errors.Is(err, storage.ErrCorrupt) {
 			h.opts.Log.Error("corrupt copy source: SHA-256 mismatch", "id", server.RequestID(r.Context()),

@@ -329,6 +329,7 @@ func (h *Handler) publicDropzoneUpload(w http.ResponseWriter, r *http.Request) {
 
 	info, err := h.opts.Store.PutObject(r.Context(), d.Bucket, key, r.Body, r.ContentLength,
 		storage.PutOptions{ContentType: contentType(r, key), IfNoneMatch: "*"})
+	setAuditSize(r, info.Size)
 	switch {
 	case errors.Is(err, storage.ErrPrecondition):
 		writeError(w, http.StatusConflict, "name_taken", "A file with this name was uploaded at the same moment; try again.")

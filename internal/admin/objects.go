@@ -270,6 +270,7 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := h.opts.Store.PutObject(r.Context(), r.PathValue("bucket"), key, r.Body, r.ContentLength,
 		storage.PutOptions{ContentType: contentType(r, key)})
+	setAuditSize(r, info.Size)
 	if err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) {
 			err = storage.ErrIncompleteBody
@@ -631,6 +632,7 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
+	setAuditSize(r, info.Size)
 	writeJSON(w, http.StatusOK, toObjectJSON(info))
 }
 
