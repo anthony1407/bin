@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -174,6 +175,96 @@ func TestReplicationPull(t *testing.T) {
 	}
 	if code := e.call("GET", "/api/v1/buckets/inbox/object?key=partner%2Fy.txt", nil, nil); code != 200 {
 		t.Errorf("locally edited y.txt should stay: %d", code)
+	}
+}
+
+// The console's trash never travels: pushing leaves deleted files out (and
+// a trashed file counts as deleted), pulling skips the remote's trash.
+func TestReplicationSkipsTrash(t *testing.T) {
+	remote, rc := newRemote(t)
+	ctx := context.Background()
+	rc.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String("backup")})
+	rc.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String("other-bin")})
+	for k, v := range map[string]string{"x.txt": "ex", ".trash/gone.txt": "deleted over there"} {
+		rc.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("other-bin"), Key: aws.String(k), Body: strings.NewReader(v)})
+	}
+
+	e := newEnv(t)
+	e.login()
+	e.call("POST", "/api/v1/buckets", map[string]string{"name": "photos"}, nil)
+	e.call("PUT", "/api/v1/buckets/photos/upload?key=a.txt", "keep", nil)
+	e.call("PUT", "/api/v1/buckets/photos/upload?key=b.txt", "to delete", nil)
+	e.call("POST", "/api/v1/buckets/photos/trash", map[string]any{"keys": []string{"b.txt"}}, nil)
+
+	var push replicationRuleJSON
+	e.call("POST", "/api/v1/replication/rules", map[string]any{
+		"name": "offsite", "direction": "push", "bucket": "photos", "endpoint": remote.URL,
+		"accessKey": remoteAK, "secretKey": remoteSK, "remoteBucket": "backup", "intervalSeconds": 300,
+		"mirrorDeletes": true, "enabled": false,
+	}, &push)
+	if r := e.runRule(push.ID); r.LastStatus != "ok" || r.LastCopied != 1 {
+		t.Fatalf("push: %+v", r)
+	}
+	if got := remoteKeys(t, rc, "backup"); len(got) != 1 || got["a.txt"] != "keep" {
+		t.Errorf("remote after push: %v", got)
+	}
+	// Trashing a pushed file is a delete for the remote.
+	e.call("POST", "/api/v1/buckets/photos/trash", map[string]any{"keys": []string{"a.txt"}}, nil)
+	if r := e.runRule(push.ID); r.LastStatus != "ok" || r.LastCopied != 0 || r.LastDeleted != 1 {
+		t.Fatalf("push after trashing: %+v", r)
+	}
+	if got := remoteKeys(t, rc, "backup"); len(got) != 0 {
+		t.Errorf("remote after trashing: %v", got)
+	}
+
+	var pull replicationRuleJSON
+	e.call("POST", "/api/v1/replication/rules", map[string]any{
+		"name": "from other bin", "direction": "pull", "bucket": "photos", "endpoint": remote.URL,
+		"accessKey": remoteAK, "secretKey": remoteSK, "remoteBucket": "other-bin", "intervalSeconds": 300,
+		"mirrorDeletes": true, "enabled": false,
+	}, &pull)
+	for run := 1; run <= 2; run++ { // the second run must not fetch anything again
+		want := 1
+		if run == 2 {
+			want = 0
+		}
+		if r := e.runRule(pull.ID); r.LastStatus != "ok" || r.LastCopied != want {
+			t.Fatalf("pull run %d: %+v", run, r)
+		}
+	}
+	if code := e.call("GET", "/api/v1/buckets/photos/object?key=.trash%2Fgone.txt", nil, nil); code != 404 {
+		t.Errorf("the remote's trash was pulled: %d", code)
+	}
+}
+
+// Runs copy several objects at once; every one is counted and stored.
+func TestReplicationManyObjects(t *testing.T) {
+	remote, rc := newRemote(t)
+	ctx := context.Background()
+	rc.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String("backup")})
+	e := newEnv(t)
+	e.login()
+	e.call("POST", "/api/v1/buckets", map[string]string{"name": "photos"}, nil)
+	const n = 60
+	for i := range n {
+		e.call("PUT", "/api/v1/buckets/photos/upload?key=f"+strconv.Itoa(i)+".txt", "data "+strconv.Itoa(i), nil)
+	}
+	var rule replicationRuleJSON
+	e.call("POST", "/api/v1/replication/rules", map[string]any{
+		"name": "bulk", "direction": "push", "bucket": "photos", "endpoint": remote.URL,
+		"accessKey": remoteAK, "secretKey": remoteSK, "remoteBucket": "backup", "intervalSeconds": 300, "enabled": false,
+	}, &rule)
+	if r := e.runRule(rule.ID); r.LastStatus != "ok" || r.LastCopied != n || r.LastFailed != 0 {
+		t.Fatalf("push: %+v", r)
+	}
+	got := remoteKeys(t, rc, "backup")
+	for i := range n {
+		if k := "f" + strconv.Itoa(i) + ".txt"; got[k] != "data "+strconv.Itoa(i) {
+			t.Errorf("%s on the remote: %q", k, got[k])
+		}
+	}
+	if r := e.runRule(rule.ID); r.LastCopied != 0 {
+		t.Errorf("second run copied again: %+v", r)
 	}
 }
 

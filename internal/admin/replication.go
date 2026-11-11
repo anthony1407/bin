@@ -191,9 +191,37 @@ func remoteListing(ctx context.Context, client *minio.Client, bucket, prefix str
 	return out, nil
 }
 
+// The console's trash (.trash/ in each bucket) is never replicated, in either
+// direction: deleted files must not reach a remote (which may be public), and
+// another bin's trash is not content. A pull that brought it in would have it
+// purged here and fetched again on every run.
+func inTrash(key string) bool { return strings.HasPrefix(key, storage.TrashPrefix) }
+
+// runTally counts a run's outcome reported by several workers at once.
+// Copies to and from a remote are bound by its latency, not by bandwidth, so
+// a run copies transferWorkers objects at a time (see parallel).
+type runTally struct {
+	mu  sync.Mutex
+	run *storage.ReplicationRun
+}
+
+func (t *runTally) copied(bytes int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.run.Copied++
+	t.run.Bytes += bytes
+}
+
+func (t *runTally) failed() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.run.Failed++
+}
+
 // push sends local objects that are new or changed since the last copy.
 func (h *Handler) push(ctx context.Context, client *minio.Client, rule storage.ReplicationRule,
 	state map[string]storage.ReplicatedObject, remote map[string]string, run *storage.ReplicationRun) error {
+	tally := &runTally{run: run}
 	seen := map[string]bool{}
 	after := ""
 	for {
@@ -201,9 +229,10 @@ func (h *Handler) push(ctx context.Context, client *minio.Client, rule storage.R
 		if err != nil {
 			return err
 		}
+		var todo []storage.ObjectInfo
 		for _, o := range page.Objects {
-			if err := ctx.Err(); err != nil {
-				return err
+			if inTrash(o.Key) {
+				continue // not seen: copies pushed before this rule skipped the trash count as deleted below
 			}
 			rel := strings.TrimPrefix(o.Key, rule.Prefix)
 			seen[rel] = true
@@ -211,17 +240,28 @@ func (h *Handler) push(ctx context.Context, client *minio.Client, rule storage.R
 			if copied && last.LocalETag == o.ETag && remote[rel] == last.RemoteETag {
 				continue // unchanged on both sides since the last copy
 			}
+			todo = append(todo, o)
+		}
+		// A failed object is counted and the run goes on; only a cancelled
+		// run or a lost state write stops it.
+		if _, err := parallel(ctx, todo, func(ctx context.Context, o storage.ObjectInfo) error {
+			rel := strings.TrimPrefix(o.Key, rule.Prefix)
 			etag, n, err := h.pushObject(ctx, client, rule, o.Key, rule.RemotePrefix+rel)
 			if err != nil {
-				run.Failed++
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				tally.failed()
 				h.opts.Log.Warn("replication: object not pushed", "rule", rule.Name, "key", o.Key, "err", err)
-				continue
+				return nil
 			}
 			if err := h.opts.Store.SetReplicatedObject(ctx, rule.ID, rel, storage.ReplicatedObject{LocalETag: o.ETag, RemoteETag: etag}); err != nil {
 				return err
 			}
-			run.Copied++
-			run.Bytes += n
+			tally.copied(n)
+			return nil
+		}); err != nil {
+			return err
 		}
 		if !page.IsTruncated {
 			break
@@ -276,28 +316,44 @@ func (h *Handler) pushObject(ctx context.Context, client *minio.Client, rule sto
 // pull fetches remote objects that are new or changed since the last copy.
 func (h *Handler) pull(ctx context.Context, client *minio.Client, rule storage.ReplicationRule,
 	state map[string]storage.ReplicatedObject, remote map[string]string, run *storage.ReplicationRun) error {
-	for rel, remoteETag := range remote {
-		if err := ctx.Err(); err != nil {
-			return err
+	// Neither the remote's trash nor anything that would land in ours is
+	// pulled. Left out of the listing, copies pulled before count as gone
+	// from the remote, so mirror deletes clear them below.
+	for rel := range remote {
+		if inTrash(rule.RemotePrefix+rel) || inTrash(rule.Prefix+rel) {
+			delete(remote, rel)
 		}
+	}
+	rels := make([]string, 0, len(remote))
+	for rel := range remote {
+		rels = append(rels, rel)
+	}
+	tally := &runTally{run: run}
+	if _, err := parallel(ctx, rels, func(ctx context.Context, rel string) error {
+		remoteETag := remote[rel] // read only while workers run
 		localKey := rule.Prefix + rel
 		last, copied := state[rel]
 		if copied && last.RemoteETag == remoteETag {
 			if cur, err := h.opts.Store.StatObject(ctx, rule.Bucket, localKey); err == nil && cur.ETag == last.LocalETag {
-				continue // unchanged on both sides since the last copy
+				return nil // unchanged on both sides since the last copy
 			}
 		}
 		info, etag, err := h.copyFromRemote(ctx, client, rule.RemoteBucket, rule.RemotePrefix+rel, rule.Bucket, localKey)
 		if err != nil {
-			run.Failed++
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			tally.failed()
 			h.opts.Log.Warn("replication: object not pulled", "rule", rule.Name, "key", rel, "err", err)
-			continue
+			return nil
 		}
 		if err := h.opts.Store.SetReplicatedObject(ctx, rule.ID, rel, storage.ReplicatedObject{LocalETag: info.ETag, RemoteETag: strings.Trim(etag, `"`)}); err != nil {
 			return err
 		}
-		run.Copied++
-		run.Bytes += info.Size
+		tally.copied(info.Size)
+		return nil
+	}); err != nil {
+		return err
 	}
 	if !rule.MirrorDeletes {
 		return nil

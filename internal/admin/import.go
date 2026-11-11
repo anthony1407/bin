@@ -477,36 +477,68 @@ func (h *Handler) runImportJob(ctx context.Context, client *minio.Client, id, bu
 	h.imports.update(id, func(j *importJob) { j.State = "running" })
 	h.opts.Log.Info("import job started", "job", id, "bucket", bucket)
 
+	// Copies are bound by the remote's latency rather than bandwidth: several
+	// run at once, fed by the listing as it arrives.
+	work := make(chan minio.ObjectInfo)
+	var wg sync.WaitGroup
+	for range transferWorkers {
+		wg.Go(func() {
+			for obj := range work {
+				h.importOne(ctx, client, id, bucket, update, obj)
+			}
+		})
+	}
 	var listErr error
+list:
 	for obj := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
 		if obj.Err != nil {
 			listErr = obj.Err
 			break
 		}
-		if update && h.unchangedHere(ctx, bucket, obj) {
-			h.imports.update(id, func(j *importJob) { j.Unchanged++ })
+		// Another bin's trash holds what was deleted there: it is not content
+		// to import, and a saved import run again would fetch it every time.
+		if inTrash(obj.Key) {
 			continue
 		}
-		n, err := h.importObject(ctx, client, bucket, obj)
-		if ctx.Err() != nil {
-			break
+		select {
+		case work <- obj:
+		case <-ctx.Done():
+			break list
 		}
-		if err != nil {
-			h.opts.Log.Warn("import: object not copied", "job", id, "bucket", bucket, "key", obj.Key, "err", err)
-		}
-		h.imports.update(id, func(j *importJob) {
-			if err != nil {
-				j.Failed++
-			} else {
-				j.Copied++
-				j.Bytes += n
-			}
-		})
 	}
+	close(work)
+	wg.Wait()
 	if ctx.Err() != nil {
 		listErr = ctx.Err()
 	}
 	h.finishImportJob(id, bucket, listErr)
+}
+
+// importOne copies one listed object unless its copy is already here, and
+// counts the outcome on the job. A cancelled job counts nothing more.
+func (h *Handler) importOne(ctx context.Context, client *minio.Client, id, bucket string, update bool, obj minio.ObjectInfo) {
+	if ctx.Err() != nil {
+		return
+	}
+	if update && h.unchangedHere(ctx, bucket, obj) {
+		h.imports.update(id, func(j *importJob) { j.Unchanged++ })
+		return
+	}
+	n, err := h.importObject(ctx, client, bucket, obj)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		h.opts.Log.Warn("import: object not copied", "job", id, "bucket", bucket, "key", obj.Key, "err", err)
+	}
+	h.imports.update(id, func(j *importJob) {
+		if err != nil {
+			j.Failed++
+		} else {
+			j.Copied++
+			j.Bytes += n
+		}
+	})
 }
 
 // unchangedHere reports whether a remote object already has its copy here:

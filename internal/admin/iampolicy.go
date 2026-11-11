@@ -90,7 +90,10 @@ func scopeFromIAM(doc []byte) (auth.Scope, string, bool) {
 		return auth.Scope{}, "the policy document could not be read", false
 	}
 	all, write, read := false, map[string]bool{}, map[string]bool{}
-	allWrite, readsObjects, any := false, false, false
+	allWrite, any := false, false
+	// Which buckets the policy lets read objects in: both bin access levels
+	// do, so a bucket it only lets list, inspect or write would gain that.
+	allObjRead, objRead := false, map[string]bool{}
 	for _, st := range d.Statement {
 		if !strings.EqualFold(st.Effect, "Allow") {
 			return auth.Scope{}, "it uses Deny, which bin cannot express", false
@@ -118,7 +121,7 @@ func scopeFromIAM(doc []byte) (auth.Scope, string, bool) {
 		if hasCondition(st.Condition) {
 			return auth.Scope{}, "it has conditions, which bin cannot express", false
 		}
-		writes := false
+		writes, readsObjects := false, false
 		for _, a := range actions {
 			if !isReadAction(a) {
 				writes = true
@@ -146,15 +149,38 @@ func scopeFromIAM(doc []byte) (auth.Scope, string, bool) {
 			default:
 				read[bucket] = true
 			}
+			if readsObjects {
+				if isAll {
+					allObjRead = true
+				} else {
+					objRead[bucket] = true
+				}
+			}
 		}
 	}
 	if !any {
 		return auth.Scope{}, "it grants no access to buckets", false
 	}
-	hasWrite := allWrite || len(write) > 0
-	if hasWrite && !readsObjects {
+	// Checked per bucket: reading objects in one bucket says nothing about
+	// another.
+	readsIn := func(b string) bool { return allObjRead || objRead[b] }
+	if allWrite && !allObjRead {
 		return auth.Scope{}, "it is write-only, which bin cannot express", false
 	}
+	for _, b := range sortedKeys(write) {
+		if !readsIn(b) {
+			return auth.Scope{}, "it is write-only on " + b + ", which bin cannot express", false
+		}
+	}
+	if all && !allObjRead {
+		return auth.Scope{}, "it lets list or inspect every bucket without reading its files, which bin cannot express", false
+	}
+	for _, b := range sortedKeys(read) {
+		if !readsIn(b) {
+			return auth.Scope{}, "it lets list or inspect " + b + " without reading its files, which bin cannot express", false
+		}
+	}
+	hasWrite := allWrite || len(write) > 0
 	if !hasWrite {
 		if all {
 			return auth.Scope{ReadOnly: true}, "", true
@@ -175,6 +201,56 @@ func scopeFromIAM(doc []byte) (auth.Scope, string, bool) {
 		}
 	}
 	return auth.Scope{Buckets: sortedKeys(write)}, "", true
+}
+
+// policyDenies reports whether a policy document takes access away (or
+// cannot be read, so might). Such a policy restricts what a user's other
+// policies grant: dropping it as untranslatable would leave them granting
+// more than MinIO did.
+func policyDenies(doc []byte) bool {
+	d, ok := parseIAMDocument(doc)
+	if !ok {
+		return true
+	}
+	for _, st := range d.Statement {
+		if !strings.EqualFold(st.Effect, "Allow") {
+			return true
+		}
+	}
+	return false
+}
+
+// listPrefixes reads the condition of an anonymous ListBucket statement:
+// the prefixes it may list, when the condition only limits s3:prefix with
+// StringEquals or StringLike (as MinIO's "mc anonymous set" writes it).
+func listPrefixes(raw json.RawMessage) ([]string, bool) {
+	var cond map[string]map[string]stringList
+	if json.Unmarshal(raw, &cond) != nil || len(cond) != 1 {
+		return nil, false
+	}
+	for op, keys := range cond {
+		like := strings.EqualFold(op, "StringLike")
+		if (!like && !strings.EqualFold(op, "StringEquals")) || len(keys) != 1 {
+			return nil, false
+		}
+		for k, values := range keys {
+			if !strings.EqualFold(k, "s3:prefix") {
+				return nil, false
+			}
+			var out []string
+			for _, v := range values {
+				if like && strings.HasSuffix(v, "*") {
+					v = strings.TrimSuffix(v, "*")
+				}
+				if strings.ContainsAny(v, "*?") {
+					return nil, false
+				}
+				out = append(out, v)
+			}
+			return out, true
+		}
+	}
+	return nil, false
 }
 
 // splitS3Resource splits "arn:aws:s3:::bucket/rest". isAll is set for "*"
@@ -239,6 +315,10 @@ func anonymousPolicy(bucket, doc string) (auth.Policy, []string, bool) {
 	type grant struct{ read, write, del bool }
 	grants := map[string]*grant{} // prefix, or "=key" for one object
 	var notes []string
+	// In bin, anonymous read of a prefix also lists it. A policy that lets
+	// anyone download files by name, but not list them, cannot be imported:
+	// everything in it would become discoverable.
+	listAll, listable := false, map[string]bool{}
 	for _, st := range d.Statement {
 		if !isAnonymousPrincipal(st.Principal) {
 			notes = append(notes, "rules for specific users were not imported")
@@ -247,13 +327,33 @@ func anonymousPolicy(bucket, doc string) (auth.Policy, []string, bool) {
 		if !strings.EqualFold(st.Effect, "Allow") {
 			return auth.Policy{}, []string{"the bucket policy uses Deny, which bin cannot express"}, false
 		}
+		lists := false
 		var objectActions []string
 		for _, a := range st.Action {
 			la := strings.ToLower(a)
+			switch la {
+			case "*", "s3:*", "s3:list*", "s3:listbucket":
+				lists = true
+			}
 			if la == "s3:getbucketlocation" || strings.HasPrefix(la, "s3:listbucket") {
 				continue
 			}
 			objectActions = append(objectActions, la)
+		}
+		if lists && len(st.NotResource) == 0 {
+			for _, r := range st.Resource {
+				b, rest, isAll, ok := splitS3Resource(r)
+				if !ok || rest != "" || (!isAll && b != bucket) {
+					continue // ListBucket applies to the bucket itself
+				}
+				if !hasCondition(st.Condition) {
+					listAll = true
+				} else if prefixes, ok := listPrefixes(st.Condition); ok {
+					for _, p := range prefixes {
+						listable[p] = true
+					}
+				}
+			}
 		}
 		if len(objectActions) == 0 {
 			continue
@@ -305,6 +405,14 @@ func anonymousPolicy(bucket, doc string) (auth.Policy, []string, bool) {
 		rule := auth.Rule{Prefix: key}
 		if strings.HasPrefix(key, "=") {
 			rule = auth.Rule{Prefix: key[1:], Exact: true}
+		}
+		if g.read && !rule.Exact && !listAll && !listable[rule.Prefix] {
+			where := "under " + rule.Prefix
+			if rule.Prefix == "" {
+				where = "in the bucket"
+			}
+			return auth.Policy{}, []string{"anyone could list the files " + where +
+				", which the bucket policy only lets download by name"}, false
 		}
 		switch {
 		case g.read && g.write && g.del:

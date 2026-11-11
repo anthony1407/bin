@@ -47,6 +47,16 @@ func TestScopeFromIAM(t *testing.T) {
 		{"mixed levels", `{"Statement":[
 			{"Effect":"Allow","Action":["s3:*"],"Resource":["arn:aws:s3:::a/*"]},
 			{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::b/*"]}]}`, auth.Scope{}, false},
+		// Granting more is never allowed: bin's levels both read objects.
+		{"list only", `{"Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::a"]}]}`, auth.Scope{}, false},
+		{"bucket metadata only", `{"Statement":[{"Effect":"Allow","Action":["s3:GetBucketPolicy"],"Resource":["arn:aws:s3:::*"]}]}`, auth.Scope{}, false},
+		{"write-only on one bucket, full on another", `{"Statement":[
+			{"Effect":"Allow","Action":["s3:PutObject"],"Resource":["arn:aws:s3:::drop/*"]},
+			{"Effect":"Allow","Action":["s3:*"],"Resource":["arn:aws:s3:::docs/*"]}]}`, auth.Scope{}, false},
+		{"list and read in separate statements", `{"Statement":[
+			{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::a"]},
+			{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::a/*"]}]}`,
+			auth.Scope{Buckets: []string{"a"}, ReadOnly: true}, true},
 	}
 	for _, c := range cases {
 		got, reason, ok := scopeFromIAM([]byte(c.doc))
@@ -78,6 +88,25 @@ func TestAnonymousPolicy(t *testing.T) {
 	}
 	if _, _, ok := anonymousPolicy("b", `{"Statement":[{"Effect":"Allow","Principal":"*","Action":["s3:GetObject","s3:PutObject"],"Resource":["arn:aws:s3:::b/*"]}]}`); ok {
 		t.Error("read+write without delete was accepted")
+	}
+	// Download by name only: in bin, anyone could then list (and find) every file.
+	byName := `{"Statement":[{"Effect":"Allow","Principal":"*","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::b/*"]}]}`
+	if p, notes, ok := anonymousPolicy("b", byName); ok || len(notes) == 0 {
+		t.Errorf("download by name only was imported: %+v %v", p, ok)
+	}
+	// Listing allowed for another prefix than the one readable: still refused.
+	otherPrefix := `{"Statement":[
+		{"Effect":"Allow","Principal":"*","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::b"],"Condition":{"StringLike":{"s3:prefix":["pub/a*"]}}},
+		{"Effect":"Allow","Principal":"*","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::b/pub/*"]}]}`
+	if _, _, ok := anonymousPolicy("b", otherPrefix); ok {
+		t.Error("read wider than the listing condition was imported")
+	}
+	// The same with StringLike on the right prefix is fine.
+	like := `{"Statement":[
+		{"Effect":"Allow","Principal":"*","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::b"],"Condition":{"StringLike":{"s3:prefix":["pub/*"]}}},
+		{"Effect":"Allow","Principal":"*","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::b/pub/*"]}]}`
+	if p, _, ok := anonymousPolicy("b", like); !ok || !reflect.DeepEqual(p.Rules, []auth.Rule{{Prefix: "pub/", Access: auth.ReadOnly}}) {
+		t.Errorf("StringLike listing: %+v %v", p, ok)
 	}
 }
 
@@ -123,15 +152,19 @@ func fakeMinIO(t *testing.T, secret string) *httptest.Server {
 		"photos-ro": json.RawMessage(`{"Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::photos","arn:aws:s3:::photos/*"]}]}`),
 		"docs-rw":   json.RawMessage(`{"Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":["arn:aws:s3:::docs/*"]}]}`),
 		"folder":    json.RawMessage(`{"Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":["arn:aws:s3:::docs/home/*"]}]}`),
+		"no-delete": json.RawMessage(`{"Statement":[{"Effect":"Deny","Action":["s3:DeleteObject"],"Resource":["arn:aws:s3:::docs/*"]}]}`),
 	}
 	users := map[string]minioUser{
 		"alice": {PolicyName: "photos-ro", Status: "enabled"},
 		"bob":   {Status: "enabled", MemberOf: []string{"editors"}},
 		"carol": {PolicyName: "folder", Status: "enabled"},
 		"dave":  {PolicyName: "photos-ro,docs-rw", Status: "disabled"},
+		"erin":  {PolicyName: "readwrite,no-delete", Status: "enabled"}, // a Deny narrows readwrite
+		"frank": {Status: "enabled", MemberOf: []string{"locked"}},      // through a group
 	}
 	groups := map[string]minioGroup{
 		"editors": {Members: []string{"bob"}, Policy: "docs-rw", Status: "enabled"},
+		"locked":  {Members: []string{"frank"}, Policy: "docs-rw,no-delete", Status: "enabled"},
 	}
 	accounts := map[string][]minioServiceAccount{
 		"alice": {{AccessKey: "alice-app", ParentUser: "alice", AccountStatus: "on", ImpliedPolicy: true}},
@@ -148,7 +181,7 @@ func fakeMinIO(t *testing.T, secret string) *httptest.Server {
 	}
 	mux.HandleFunc("GET /minio/admin/v4/list-canned-policies", func(w http.ResponseWriter, r *http.Request) { reply(w, policies, false) })
 	mux.HandleFunc("GET /minio/admin/v4/list-users", func(w http.ResponseWriter, r *http.Request) { reply(w, users, true) })
-	mux.HandleFunc("GET /minio/admin/v4/groups", func(w http.ResponseWriter, r *http.Request) { reply(w, []string{"editors"}, false) })
+	mux.HandleFunc("GET /minio/admin/v4/groups", func(w http.ResponseWriter, r *http.Request) { reply(w, []string{"editors", "locked"}, false) })
 	mux.HandleFunc("GET /minio/admin/v4/group", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, groups[r.URL.Query().Get("group")], false)
 	})
@@ -220,6 +253,8 @@ func TestImportIAM(t *testing.T) {
 	check("carol", false)                                      // its only policy is untranslatable
 	check("alice-app", true, "policy-photos-ro")               // implied: its user's access
 	check("bob-ci", true)                                      // own scope: docs, read-only
+	check("erin", false)                                       // Deny: no access rather than readwrite
+	check("frank", false)                                      // Deny through its group
 
 	var groups struct{ Groups []groupJSON }
 	e.call("GET", "/api/v1/groups", nil, &groups)
@@ -251,6 +286,12 @@ func TestImportIAM(t *testing.T) {
 	}
 	if !skipped["policy:folder"] {
 		t.Errorf("the folder policy was not reported: %+v", out.IAM.Skipped)
+	}
+	if !skipped["group:locked"] {
+		t.Errorf("the group with a Deny policy was not reported: %+v", out.IAM.Skipped)
+	}
+	if _, ok := got["policy-readwrite"]; ok {
+		t.Error("erin's readwrite became a group without its Deny")
 	}
 
 	// A second run finds everything in place and changes nothing.

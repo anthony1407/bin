@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -124,6 +125,49 @@ func (e *env) waitImport(id string) importJob {
 }
 
 // Importing a bucket again copies only what is new or changed on the remote.
+// Objects are copied several at a time, each counted once; another bin's
+// trash stays behind, on the first import and on every later one.
+func TestImportManyObjectsSkipsTrash(t *testing.T) {
+	remote, rc := newRemote(t)
+	ctx := context.Background()
+	rc.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String("bulk")})
+	const n = 40
+	for i := range n {
+		rc.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("bulk"), Key: aws.String(fmt.Sprintf("f%02d.txt", i)),
+			Body: strings.NewReader(fmt.Sprint("data ", i))})
+	}
+	rc.PutObject(ctx, &awss3.PutObjectInput{Bucket: aws.String("bulk"), Key: aws.String(".trash/deleted.txt"), Body: strings.NewReader("gone")})
+
+	e := newEnv(t)
+	e.login()
+	start := func() importJob {
+		t.Helper()
+		var out struct{ Jobs []importJob }
+		if code := e.call("POST", "/api/v1/import/start", map[string]any{
+			"endpoint": remote.URL, "accessKey": remoteAK, "secretKey": remoteSK, "region": "us-east-1", "buckets": []string{"bulk"},
+		}, &out); code != 200 || len(out.Jobs) != 1 {
+			t.Fatalf("start: %d %+v", code, out)
+		}
+		return e.waitImport(out.Jobs[0].ID)
+	}
+	if j := start(); j.State != "done" || j.Copied != n || j.Failed != 0 {
+		t.Fatalf("first import: %+v", j)
+	}
+	for i := range n {
+		var obj objectJSON
+		e.call("GET", fmt.Sprintf("/api/v1/buckets/bulk/object?key=f%02d.txt", i), nil, &obj)
+		if obj.Size != int64(len(fmt.Sprint("data ", i))) {
+			t.Errorf("f%02d.txt: %+v", i, obj)
+		}
+	}
+	if code := e.call("GET", "/api/v1/buckets/bulk/object?key=.trash%2Fdeleted.txt", nil, nil); code != 404 {
+		t.Errorf("the remote's trash was imported: %d", code)
+	}
+	if j := start(); j.Copied != 0 || j.Unchanged != n {
+		t.Errorf("second import: %+v", j)
+	}
+}
+
 func TestImportAgainCopiesNewObjects(t *testing.T) {
 	remote, rc := newRemote(t)
 	ctx := context.Background()

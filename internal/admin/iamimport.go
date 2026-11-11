@@ -252,6 +252,7 @@ func (h *Handler) importIAM(ctx context.Context, iam *remoteIAM) (iamImportResul
 		scope        auth.Scope
 		reason, note string
 		ok           bool
+		denies       bool // takes access away from the holder's other policies
 	}
 	policies := map[string]translated{}
 	policyScope := func(name string) translated {
@@ -261,8 +262,11 @@ func (h *Handler) importIAM(ctx context.Context, iam *remoteIAM) (iamImportResul
 		var t translated
 		if doc, exists := iam.Policies[name]; !exists {
 			t.reason = "the policy does not exist on the remote server"
-		} else if t.scope, t.reason, t.ok = scopeFromIAM(doc); t.ok {
-			t.scope, t.reason, t.note, t.ok = localize(t.scope)
+		} else {
+			t.denies = policyDenies(doc)
+			if t.scope, t.reason, t.ok = scopeFromIAM(doc); t.ok {
+				t.scope, t.reason, t.note, t.ok = localize(t.scope)
+			}
 		}
 		policies[name] = t
 		return t
@@ -315,15 +319,28 @@ func (h *Handler) importIAM(ctx context.Context, iam *remoteIAM) (iamImportResul
 
 	// MinIO group -> the bin groups its members join.
 	memberGroups := map[string][]string{}
+	// MinIO group -> a policy of it that denies: its members' access cannot
+	// be imported without dropping that restriction.
+	groupDenies := map[string]string{}
 	for _, gname := range sortedNames(iam.Groups) {
 		g := iam.Groups[gname]
 		pols := splitPolicies(g.Policy)
+		if g.Status != "disabled" {
+			for _, p := range pols {
+				if policyScope(p).denies {
+					groupDenies[gname] = p
+				}
+			}
+		}
 		switch {
 		case g.Status == "disabled":
 			skip("group", gname, "it is disabled on the remote server, so its members do not get its access")
 			continue
 		case len(pols) == 0:
 			skip("group", gname, "it has no policy, so it grants nothing")
+			continue
+		case groupDenies[gname] != "":
+			skip("group", gname, "its policy "+groupDenies[gname]+" uses Deny, which bin cannot express; its members were created without access")
 			continue
 		case len(pols) == 1 && groupName.MatchString(gname):
 			t := policyScope(pols[0])
@@ -359,7 +376,9 @@ func (h *Handler) importIAM(ctx context.Context, iam *remoteIAM) (iamImportResul
 			// Without groups a key has its own scope, and an empty one is full
 			// access: never hand that out by accident.
 			enabled = false
-			note = "No access bin can grant: it was created disabled. Add it to a group before enabling it."
+			if note == "" {
+				note = "No access bin can grant: it was created disabled. Add it to a group before enabling it."
+			}
 		}
 		_, secret := auth.NewCredentials()
 		k := storage.AccessKey{
@@ -406,8 +425,29 @@ func (h *Handler) importIAM(ctx context.Context, iam *remoteIAM) (iamImportResul
 		}
 	}
 	userGroups := map[string][]string{}
+	restricted := map[string]bool{} // users whose access includes a Deny
 	for _, name := range sortedNames(iam.Users) {
 		u := iam.Users[name]
+		// A Deny anywhere in a user's policies (its own or its groups')
+		// narrows the rest: importing the rest alone would grant more.
+		denying := ""
+		for _, p := range splitPolicies(u.PolicyName) {
+			if policyScope(p).denies {
+				denying = "policy " + p
+			}
+		}
+		for _, g := range append(slices.Clone(u.MemberOf), members[name]...) {
+			if p := groupDenies[g]; p != "" {
+				denying = "policy " + p + " of its group " + g
+			}
+		}
+		if denying != "" {
+			restricted[name] = true
+			createKey("user", name, name, "", false, nil, nil, nil,
+				"Its "+denying+" uses Deny, which bin cannot express, and its other policies alone would grant more: "+
+					"it was created disabled and without access. Add it to a group before enabling it.")
+			continue
+		}
 		var groups []string
 		for _, p := range splitPolicies(u.PolicyName) {
 			if bg := policyGroup(p); bg != "" {
@@ -434,6 +474,10 @@ func (h *Handler) importIAM(ctx context.Context, iam *remoteIAM) (iamImportResul
 		}
 		if !isUser && !rootParent {
 			skip("accessKey", sa.AccessKey, "its user "+sa.ParentUser+" is not a built-in MinIO user")
+			continue
+		}
+		if restricted[sa.ParentUser] {
+			skip("accessKey", sa.AccessKey, "its user "+sa.ParentUser+" has a Deny policy, so its access could not be imported")
 			continue
 		}
 		if sa.ImpliedPolicy {
