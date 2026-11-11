@@ -20,6 +20,7 @@ import { ReplicationPage } from "./pages/Replication";
 import { GroupsPage } from "./pages/Groups";
 import { AuditPage } from "./pages/Audit";
 import { LDAPPage, OpenIDPage } from "./pages/IdentityProviders";
+import { AccountPage } from "./pages/Account";
 
 function Routed() {
   const { session, loading } = useAuth();
@@ -45,6 +46,21 @@ function Routed() {
   if (location.pathname === "/login") {
     const next = new URLSearchParams(location.search).get("next");
     return <Navigate to={next && next.startsWith("/") && !next.startsWith("//") ? next : "/buckets"} replace />;
+  }
+  // Users (an access key's user) get their buckets and their account; the
+  // server refuses them everything else anyway.
+  if (session.role === "user") {
+    return (
+      <Layout>
+        <Routes>
+          <Route path="/buckets" element={<BucketsPage />} />
+          <Route path="/buckets/:bucket" element={<ExplorerPage />} />
+          <Route path="/connect" element={<ConnectSDKPage />} />
+          <Route path="/account" element={<AccountPage />} />
+          <Route path="*" element={<Navigate to="/buckets" replace />} />
+        </Routes>
+      </Layout>
+    );
   }
   return (
     <Layout>

@@ -23,6 +23,10 @@ type bucketJSON struct {
 	Versioning string            `json:"versioning"` // "", "Enabled" or "Suspended"
 	CORS       []cors.Rule       `json:"cors"`
 	TrashDays  int               `json:"trashDays"` // 0: the trash keeps files until emptied
+	CreatedBy  string            `json:"createdBy"` // who created it; "" when not recorded
+	// Access is what the session may do with the bucket's files: "write"
+	// (admins, read-write users) or "read".
+	Access string `json:"access"`
 }
 
 func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage) bucketJSON {
@@ -35,10 +39,14 @@ func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage)
 	if rules == nil {
 		rules = []cors.Rule{}
 	}
+	access := "read"
+	if may(r, b.Name, true) {
+		access = "write"
+	}
 	return bucketJSON{
 		Name: b.Name, CreatedAt: b.CreatedAt, Objects: u.Objects, Size: u.Bytes,
 		QuotaBytes: b.QuotaBytes, Policy: policy, Tags: tags, Versioning: b.Versioning, CORS: rules,
-		TrashDays: b.TrashDays,
+		TrashDays: b.TrashDays, CreatedBy: b.CreatedBy, Access: access,
 	}
 }
 
@@ -53,8 +61,12 @@ func (h *Handler) listBuckets(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
+	grants, user := userGrants(r)
 	out := make([]bucketJSON, 0, len(buckets))
 	for _, b := range buckets {
+		if user && !grants.AllowsBucket(b.Name) {
+			continue // users see the buckets they may use, nothing of the others
+		}
 		out = append(out, h.bucketJSON(r, b, usage[b.Name]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"buckets": out})
@@ -69,17 +81,33 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setAuditBucket(r, in.Name)
+	sess := sessionOf(r)
+	owner := ""
+	if _, user := userGrants(r); user {
+		// Users create buckets only when an admin allowed it, never public
+		// ones (anonymous access is an admin setting), and own what they create.
+		k, err := h.opts.Store.GetAccessKey(r.Context(), sess.AccessKey)
+		if err != nil || !k.CanCreateBuckets {
+			writeError(w, http.StatusForbidden, "access_denied", "Your account may not create buckets. Ask an administrator.")
+			return
+		}
+		if in.Policy != nil && in.Policy.Mode != "private" {
+			writeError(w, http.StatusForbidden, "access_denied", "Only an administrator can make a bucket public.")
+			return
+		}
+		owner = sess.AccessKey
+	}
 	if in.Policy != nil {
 		if err := in.Policy.Validate(); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
 			return
 		}
 	}
-	if err := h.opts.Store.CreateBucket(r.Context(), in.Name); err != nil {
+	if err := h.opts.Store.CreateBucketBy(r.Context(), in.Name, sess.User, owner); err != nil {
 		h.storageError(w, r, err)
 		return
 	}
-	h.opts.Log.Info("bucket created from the console", "bucket", in.Name)
+	h.opts.Log.Info("bucket created from the console", "bucket", in.Name, "by", sess.User)
 	if in.Policy != nil && in.Policy.Mode != "private" {
 		if err := h.opts.Store.SetBucketPolicy(r.Context(), in.Name, in.Policy.String()); err != nil {
 			h.storageError(w, r, err)

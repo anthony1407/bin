@@ -90,13 +90,20 @@ func (s *Store) ShareSummaries(ctx context.Context, bucket string) (map[string]S
 	return out, rows.Err()
 }
 
-// RevokeShareLink stops one link; the S3 API refuses it from then on.
-func (s *Store) RevokeShareLink(ctx context.Context, id string) (ShareLink, error) {
+// GetShareLink returns one recorded link, revoked or not.
+func (s *Store) GetShareLink(ctx context.Context, id string) (ShareLink, error) {
 	row := s.read.QueryRowContext(ctx, `SELECT `+shareLinkColumns+` FROM share_links WHERE id = ?`, id)
 	l, err := scanShareLink(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ShareLink{}, ErrNoSuchShareLink
-	} else if err != nil {
+	}
+	return l, err
+}
+
+// RevokeShareLink stops one link; the S3 API refuses it from then on.
+func (s *Store) RevokeShareLink(ctx context.Context, id string) (ShareLink, error) {
+	l, err := s.GetShareLink(ctx, id)
+	if err != nil {
 		return ShareLink{}, err
 	}
 	if _, err := s.exec(ctx, `UPDATE share_links SET revoked_at = ? WHERE id = ? AND revoked_at = 0`,

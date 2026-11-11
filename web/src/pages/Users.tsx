@@ -56,6 +56,9 @@ function fallbackCopy(text: string): boolean {
   }
 }
 
+/** Console passwords: the server refuses shorter ones. */
+const MIN_PASSWORD = 10;
+
 function CopyButton({ text, label = "Copy to clipboard" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -162,11 +165,16 @@ export function UsersPage() {
   const [editReadOnly, setEditReadOnly] = useState(false);
   const [editBuckets, setEditBuckets] = useState<string[]>([]);
   const [editEnabled, setEditEnabled] = useState(true);
+  const [editCanCreate, setEditCanCreate] = useState(false);
+  const [editPassword, setEditPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
   const [updatingUser, setUpdatingUser] = useState(false);
 
   // Create User Form State
   const [username, setUsername] = useState("");
   const [usernameError, setUsernameError] = useState("");
+  const [consolePassword, setConsolePassword] = useState("");
+  const [canCreateBuckets, setCanCreateBuckets] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
   const [assignedBuckets, setAssignedBuckets] = useState<string[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
@@ -203,12 +211,18 @@ export function UsersPage() {
     setReadOnly(false);
     setAssignedBuckets([]);
     setAssignedGroups([]);
+    setConsolePassword("");
+    setCanCreateBuckets(false);
   }
 
   async function handleSaveUser() {
     const trimmedUser = username.trim();
     if (!trimmedUser) {
       setUsernameError("User name is required.");
+      return;
+    }
+    if (consolePassword && [...consolePassword].length < MIN_PASSWORD) {
+      toast("error", `The console password needs at least ${MIN_PASSWORD} characters.`);
       return;
     }
     setUsernameError("");
@@ -220,6 +234,8 @@ export function UsersPage() {
         readOnly,
         buckets: assignedBuckets,
         groups: assignedGroups,
+        password: consolePassword || undefined,
+        canCreateBuckets,
       });
       setCreatedUser(res);
       toast("ok", `User ${trimmedUser} created successfully.`);
@@ -278,6 +294,45 @@ export function UsersPage() {
     setEditReadOnly(u.readOnly);
     setEditBuckets(u.buckets);
     setEditEnabled(u.enabled);
+    setEditCanCreate(u.canCreateBuckets);
+    setEditPassword("");
+  }
+
+  // Console passwords change at once, apart from "Save Changes": they end the
+  // user's sessions, which should not wait for the rest of the form.
+  async function setUserPassword() {
+    if (!editingUser) return;
+    if ([...editPassword].length < MIN_PASSWORD) {
+      toast("error", `Use at least ${MIN_PASSWORD} characters.`);
+      return;
+    }
+    setPasswordBusy(true);
+    try {
+      await api.setKeyPassword(editingUser.accessKey, editPassword);
+      setEditPassword("");
+      setEditingUser({ ...editingUser, consolePassword: true });
+      toast("ok", "Console password set. The user's open sessions were signed out.");
+      load();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
+  async function clearUserPassword() {
+    if (!editingUser) return;
+    setPasswordBusy(true);
+    try {
+      await api.clearKeyPassword(editingUser.accessKey);
+      setEditingUser({ ...editingUser, consolePassword: false });
+      toast("ok", "Console password removed. The user can no longer sign in to the console; their apps keep working.");
+      load();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setPasswordBusy(false);
+    }
   }
 
   async function handleUpdateUser() {
@@ -293,6 +348,7 @@ export function UsersPage() {
         readOnly: editReadOnly,
         buckets: editBuckets,
         enabled: editEnabled,
+        canCreateBuckets: editCanCreate,
       });
       toast("ok", `User ${editName || editingUser.accessKey} updated.`);
       setEditingUser(null);
@@ -407,6 +463,31 @@ export function UsersPage() {
                     )}
                   </>
                 )}
+              </div>
+
+              {/* Console sign-in */}
+              <div className="space-y-3 border-t border-line pt-4">
+                <span className="block text-sm font-medium text-ink">Console sign-in</span>
+                <Field
+                  label="Console password (optional)"
+                  hint={`At least ${MIN_PASSWORD} characters. Leave empty and the user sets it on the sign-in page with their secret key.`}
+                >
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={consolePassword}
+                    onChange={(e) => setConsolePassword(e.target.value)}
+                  />
+                </Field>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={canCreateBuckets}
+                    onChange={(e) => setCanCreateBuckets(e.target.checked)}
+                    className="size-4 accent-[var(--accent)]"
+                  />
+                  May create buckets (they become theirs, read and write)
+                </label>
               </div>
 
               {/* Actions */}
@@ -580,6 +661,11 @@ export function UsersPage() {
                       <div className="flex items-center gap-2">
                         <User className="size-4 text-accent/70" />
                         <span>{u.name || "Untitled"}</span>
+                        {u.consolePassword && (
+                          <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent-ink" title="Can sign in to the console">
+                            console
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="py-3 pr-3 font-mono text-xs text-muted">
@@ -751,6 +837,45 @@ export function UsersPage() {
                   This user is in groups, so its access comes from them; these settings apply again if it leaves every group.
                 </p>
               )}
+            </div>
+
+            <div className="space-y-2 border-t border-line pt-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-medium text-ink">Console sign-in</div>
+                  <div className="text-[11px] text-muted">
+                    {editingUser.consolePassword
+                      ? "Has a console password. Setting or removing it signs the user out."
+                      : "No console password: the user can set one on the sign-in page with their secret key."}
+                  </div>
+                </div>
+                {editingUser.consolePassword && (
+                  <Button variant="ghost" busy={passwordBusy} onClick={clearUserPassword}>
+                    Remove
+                  </Button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={editingUser.consolePassword ? "New password" : "Password"}
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                />
+                <Button busy={passwordBusy} disabled={!editPassword} onClick={setUserPassword}>
+                  {editingUser.consolePassword ? "Change" : "Set"}
+                </Button>
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs">
+                <input
+                  type="checkbox"
+                  checked={editCanCreate}
+                  onChange={(e) => setEditCanCreate(e.target.checked)}
+                  className="size-3.5 accent-[var(--accent)]"
+                />
+                May create buckets (saved with the changes)
+              </label>
             </div>
 
             <div className="flex items-center justify-between border-t border-line pt-3">

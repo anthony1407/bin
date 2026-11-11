@@ -202,7 +202,12 @@ func TestClaimHasValue(t *testing.T) {
 			t.Errorf("claimHasValue(%v) = %v", tc.claim, got)
 		}
 	}
-	for in, want := range map[string]string{"/buckets": "/buckets", "//evil.com": "/buckets", "https://evil.com": "/buckets", `/\evil.com`: "/buckets", "": "/buckets"} {
+	for in, want := range map[string]string{
+		"/buckets": "/buckets", "/buckets/photos?prefix=a%2F": "/buckets/photos?prefix=a%2F",
+		"//evil.com": "/buckets", "https://evil.com": "/buckets", `/\evil.com`: "/buckets", "": "/buckets",
+		// Browsers drop tabs and newlines: these would become //evil.com.
+		"/\t/evil.com": "/buckets", "/\n/evil.com": "/buckets", "/\r/evil.com": "/buckets", `/a\..\/evil.com`: "/buckets",
+	} {
 		if got := safeNext(in); got != want {
 			t.Errorf("safeNext(%q) = %q", in, got)
 		}

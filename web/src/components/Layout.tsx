@@ -26,11 +26,12 @@ import {
   Terminal,
   UploadCloud,
   User,
+  UserCog,
   Users,
   X,
   Zap,
 } from "lucide-react";
-import { useAuth } from "../auth";
+import { useAuth, useIsAdmin } from "../auth";
 import { api, type Bucket } from "../api";
 import { BinMark, IconButton, cx } from "./ui";
 
@@ -134,6 +135,7 @@ function CommandPalette({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const navigate = useNavigate();
   const { toggle: toggleTheme } = useTheme();
+  const isAdmin = useIsAdmin();
 
   useEffect(() => {
     if (open) {
@@ -143,7 +145,12 @@ function CommandPalette({
     }
   }, [open]);
 
-  const navItems: PaletteItem[] = [
+  const userNavItems: PaletteItem[] = [
+    { label: "Object Browser", to: "/buckets", icon: FolderSearch, section: "Navigation" },
+    { label: "Connect SDK", to: "/connect", icon: Code2, section: "Navigation" },
+    { label: "My Account", to: "/account", icon: UserCog, section: "Navigation" },
+  ];
+  const adminNavItems: PaletteItem[] = [
     { label: "Object Browser", to: "/buckets", icon: FolderSearch, section: "Navigation" },
     { label: "Access Keys", to: "/access-keys", icon: Contact, section: "Navigation" },
     { label: "Upload Dropzones", to: "/dropzone", icon: UploadCloud, section: "Navigation" },
@@ -168,26 +175,20 @@ function CommandPalette({
     badge: `${b.objects} objs`,
   }));
 
-  const actionItems: PaletteItem[] = [
-    {
-      label: "Create New User",
-      to: "/identity/users",
-      icon: User,
-      section: "Actions",
-    },
-    {
-      label: "New Access Key",
-      to: "/access-keys",
-      icon: Key,
-      section: "Actions",
-    },
-    {
-      label: "Toggle Theme (Dark / Light)",
-      action: () => toggleTheme(),
-      icon: Sun,
-      section: "Actions",
-    },
-  ];
+  const themeItem: PaletteItem = {
+    label: "Toggle Theme (Dark / Light)",
+    action: () => toggleTheme(),
+    icon: Sun,
+    section: "Actions",
+  };
+  const actionItems: PaletteItem[] = isAdmin
+    ? [
+        { label: "Create New User", to: "/identity/users", icon: User, section: "Actions" },
+        { label: "New Access Key", to: "/access-keys", icon: Key, section: "Actions" },
+        themeItem,
+      ]
+    : [themeItem];
+  const navItems = isAdmin ? adminNavItems : userNavItems;
 
   const allItems: PaletteItem[] = [...bucketItems, ...navItems, ...actionItems];
 
@@ -321,6 +322,8 @@ function SidebarContent({
 }) {
   const [identityOpen, setIdentityOpen] = useState<boolean>(true);
   const [monitoringOpen, setMonitoringOpen] = useState<boolean>(true);
+  // Users see their buckets and their account; administration is for admins.
+  const isAdmin = useIsAdmin();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -400,20 +403,24 @@ function SidebarContent({
                 collapsed={collapsed}
                 onNavigate={onNavigate}
               />
-              <NavItem
-                to="/access-keys"
-                label="Access Keys"
-                icon={Contact}
-                collapsed={collapsed}
-                onNavigate={onNavigate}
-              />
-              <NavItem
-                to="/dropzone"
-                label="Upload Dropzones"
-                icon={UploadCloud}
-                collapsed={collapsed}
-                onNavigate={onNavigate}
-              />
+              {isAdmin && (
+                <>
+                  <NavItem
+                    to="/access-keys"
+                    label="Access Keys"
+                    icon={Contact}
+                    collapsed={collapsed}
+                    onNavigate={onNavigate}
+                  />
+                  <NavItem
+                    to="/dropzone"
+                    label="Upload Dropzones"
+                    icon={UploadCloud}
+                    collapsed={collapsed}
+                    onNavigate={onNavigate}
+                  />
+                </>
+              )}
               <NavItem
                 to="/connect"
                 label="Connect SDK"
@@ -421,10 +428,14 @@ function SidebarContent({
                 collapsed={collapsed}
                 onNavigate={onNavigate}
               />
+              {!isAdmin && (
+                <NavItem to="/account" label="My Account" icon={UserCog} collapsed={collapsed} onNavigate={onNavigate} />
+              )}
             </div>
           </div>
 
           {/* Administrator Section */}
+          {isAdmin && (
           <div className="space-y-1">
             {!collapsed && (
               <div className="px-2.5 text-[10px] font-bold uppercase tracking-wider text-faint">
@@ -564,6 +575,7 @@ function SidebarContent({
               />
             </div>
           </div>
+          )}
         </nav>
       </div>
 
@@ -593,7 +605,7 @@ function Footer({ collapsed }: { collapsed: boolean }) {
   return (
     <div className="flex shrink-0 items-center justify-between border-t border-line pt-3 px-1">
       <div className="min-w-0">
-        <div className="label-strip text-[9.5px]">signed in as</div>
+        <div className="label-strip text-[9.5px]">signed in as {session?.role === "user" ? "user" : "admin"}</div>
         <div className="truncate font-mono text-xs text-ink font-semibold">{session?.user}</div>
       </div>
       <div className="flex items-center">

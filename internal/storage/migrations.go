@@ -300,6 +300,17 @@ var migrations = []string{
 	// 15: how many files a dropzone link accepts, so a leaked link cannot
 	// fill the disk. Links made before the limit existed keep none (0).
 	`ALTER TABLE dropzones ADD COLUMN max_files INTEGER NOT NULL DEFAULT 0;`,
+
+	// 16: console sign-in for users. A key with a password (argon2id, PHC
+	// string) may sign in to the console, scoped to its buckets; its sessions
+	// name it. Buckets remember who created them, and the key that created one
+	// owns it (read-write access) until the key is deleted.
+	`ALTER TABLE access_keys ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';      -- '' = no console sign-in
+	ALTER TABLE access_keys ADD COLUMN can_create_buckets INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sessions ADD COLUMN access_key TEXT NOT NULL DEFAULT '';           -- '' = an admin session
+	ALTER TABLE buckets ADD COLUMN created_by TEXT NOT NULL DEFAULT '';            -- for the record; '' = unknown
+	ALTER TABLE buckets ADD COLUMN owner_key TEXT NOT NULL DEFAULT '';             -- '' = no owner key
+	CREATE INDEX buckets_owner_key ON buckets (owner_key) WHERE owner_key != '';`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

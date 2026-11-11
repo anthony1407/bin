@@ -2,16 +2,38 @@
 
 The console listener (default `:9001`) serves the web panel and a JSON API
 under `/api/v1`. The API is separate from the S3 API and uses its own
-authentication: a session cookie obtained by signing in with the root
-credentials.
+authentication: a session cookie obtained by signing in.
+
+Sessions are of two kinds. **Admin** sessions (root, LDAP, OpenID) may use
+every endpoint. **User** sessions belong to an access key whose user signed
+in with its console password: they reach only the endpoints marked *users*
+below, on the buckets the key may use (its scope or its groups', plus the
+buckets it created), with the same read/write limits as through S3. Any other
+endpoint answers them `403 access_denied`; so does a bucket outside their
+access, existing or not.
 
 ## Authentication
 
 | Step | Request | Notes |
 |---|---|---|
-| Sign in | `POST /api/v1/login` `{"accessKey","secretKey"}` | Root credentials only. Sets the `bin_session` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS) and returns `{"user","csrfToken","expiresAt"}`. |
+| Sign in | `POST /api/v1/login` `{"accessKey","secretKey"}` | Root's credentials, or an access key and its user's **console password** in `secretKey` (never the S3 secret key). Sets the `bin_session` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS) and returns `{"user","csrfToken","expiresAt","role","canCreateBuckets"}`; `role` is `admin` or `user`. |
+| Activate console access | `POST /api/v1/login/activate` `{"accessKey","secretKey","password"}` | A user proves the key with its S3 secret key and chooses a console password (10–256 characters); signs them in. Replaces an existing password (self-service reset). Ends the key's other console sessions. Not for root or internal keys. |
+| Change own password | `POST /api/v1/account/password` `{"currentPassword","password"}` | User sessions only. `204`; the key's other sessions end, this one stays. |
 | Current session | `GET /api/v1/session` | Returns the same body; use it to recover the CSRF token after a page reload. |
 | Sign out | `POST /api/v1/logout` | Ends the session. |
+
+A user session ends at once when its key is disabled, expires, is deleted or
+loses its console password. Console passwords are stored as argon2id hashes,
+apart from the S3 secret key: changing one never touches the other.
+
+Open to users (*users*): session, logout, own password, `GET /info` (only
+`version`, `region`, `s3Endpoint`, `shareMaxExpirySeconds`), `GET /buckets`
+(only their buckets; each with `access`: `read` or `write`), `POST /buckets`
+(only if `canCreateBuckets`; never public; the creator owns the bucket),
+`GET /buckets/{bucket}`, and the object, version, trash, copy (write access to
+the target, and to the source for a move), ZIP, share, folder and multipart
+endpoints of their buckets. Bucket settings (policy, quota, versioning, CORS,
+tags, trash retention, delete) stay admin-only.
 
 Rules for every other endpoint:
 
@@ -129,12 +151,18 @@ over a week ago are forgotten.
 | Method and path | Body | Response |
 |---|---|---|
 | `GET /api/v1/access-keys` | | `{"accessKeys": [key]}` (never secrets) |
-| `POST /api/v1/access-keys` | `{"name", "expiresAt"?, "buckets"?: [...], "readOnly"?, "groups"?: [...]}` | `201` key **with `secretKey`**, shown only this once |
-| `PATCH /api/v1/access-keys/{key}` | any of `name`, `enabled`, `expiresAt`, `noExpiry`, `buckets`, `readOnly`, `groups` (replaces the key's groups) | key |
-| `DELETE /api/v1/access-keys/{key}` | | `204` |
+| `POST /api/v1/access-keys` | `{"name", "expiresAt"?, "buckets"?: [...], "readOnly"?, "groups"?: [...], "password"?, "canCreateBuckets"?}` | `201` key **with `secretKey`**, shown only this once |
+| `PATCH /api/v1/access-keys/{key}` | any of `name`, `enabled`, `expiresAt`, `noExpiry`, `buckets`, `readOnly`, `groups` (replaces the key's groups), `canCreateBuckets` | key |
+| `DELETE /api/v1/access-keys/{key}` | | `204`; its console sessions end, and it stops owning the buckets it created |
+| `PUT /api/v1/access-keys/{key}/password` | `{"password"}` | `204`: sets the user's console password; their sessions end |
+| `DELETE /api/v1/access-keys/{key}/password` | | `204`: the user can no longer sign in to the console; S3 access unchanged |
 
 A key is
-`{"accessKey","name","enabled","createdAt","expiresAt","lastUsedAt","expired","buckets","readOnly","groups"}`.
+`{"accessKey","name","enabled","createdAt","expiresAt","lastUsedAt","expired","buckets","readOnly","groups","consolePassword","canCreateBuckets"}`
+(`consolePassword` says whether one is set; it is never sent back).
+Buckets record who created them (`createdBy` in bucket bodies); a key that
+creates a bucket (console or S3, root excepted) owns it: read-write access to
+it, whatever its scope, until the key is deleted.
 An empty `buckets` list means every bucket. Secrets are stored encrypted with
 the master key (`BIN_MASTER_KEY`, or `.bin/master.key` in the data directory).
 

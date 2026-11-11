@@ -9,6 +9,8 @@ interface AuthState {
   signIn: (accessKey: string, secretKey: string, to: string) => Promise<void>;
   /** Signs in with directory credentials and then shows the panel at `to`. */
   signInLDAP: (username: string, password: string, to: string) => Promise<void>;
+  /** Turns on a user's console access (access key + secret key once), signs in, shows `to`. */
+  activate: (accessKey: string, secretKey: string, password: string, to: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -63,16 +65,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (username: string, password: string, to: string) => finish(api.loginLDAP(username, password), to),
     [finish],
   );
+  const activate = useCallback(
+    (accessKey: string, secretKey: string, password: string, to: string) =>
+      finish(api.activateConsole(accessKey, secretKey, password), to),
+    [finish],
+  );
   const signOut = useCallback(async () => {
     await api.logout().catch(() => {});
     setSession(null);
   }, []);
 
-  return <AuthContext.Provider value={{ session, loading, signIn, signInLDAP, signOut }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ session, loading, signIn, signInLDAP, activate, signOut }}>{children}</AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth outside AuthProvider");
   return ctx;
+}
+
+/** Whether the signed-in session is an administrator (root, LDAP, OpenID). */
+export function useIsAdmin() {
+  return useAuth().session?.role !== "user";
 }

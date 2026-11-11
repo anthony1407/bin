@@ -85,3 +85,29 @@ func TestRenameObjectsBatches(t *testing.T) {
 		t.Errorf("moved/: %+v %v", u, err)
 	}
 }
+
+// A bucket keeps who created it; its owner key loses it when deleted, so a
+// key created later under the same name does not inherit it.
+func TestBucketOwnerCleared(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, t.TempDir())
+	if err := s.CreateAccessKey(ctx, AccessKey{AccessKey: "ana", SecretEnc: "x", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBucketBy(ctx, "anas", "ana", "ana"); err != nil {
+		t.Fatal(err)
+	}
+	if owned, _ := s.BucketsOwnedBy(ctx, "ana"); len(owned) != 1 || owned[0] != "anas" {
+		t.Fatalf("owned: %v", owned)
+	}
+	if err := s.DeleteAccessKey(ctx, "ana"); err != nil {
+		t.Fatal(err)
+	}
+	s.CreateAccessKey(ctx, AccessKey{AccessKey: "ana", SecretEnc: "y", Enabled: true})
+	if owned, _ := s.BucketsOwnedBy(ctx, "ana"); len(owned) != 0 {
+		t.Errorf("a new key with the same name inherited: %v", owned)
+	}
+	if b, _ := s.GetBucket(ctx, "anas"); b.CreatedBy != "ana" || b.OwnerKey != "" {
+		t.Errorf("bucket after the key was deleted: %+v", b)
+	}
+}

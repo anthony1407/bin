@@ -84,58 +84,67 @@ func NewHandler(opts Options) http.Handler {
 
 	mux := http.NewServeMux()
 	public := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, h.audited(pattern, fn)) }
+	// private routes are for admins only (see access.go); user routes are
+	// also open to user sessions with what n needs on the path's bucket.
 	private := func(pattern string, fn http.HandlerFunc) {
-		mux.Handle(pattern, h.requireSession(h.audited(pattern, fn)))
+		mux.Handle(pattern, h.requireSession(h.audited(pattern, adminOnly(fn))))
+	}
+	user := func(pattern string, n need, fn http.HandlerFunc) {
+		mux.Handle(pattern, h.requireSession(h.audited(pattern, forUsers(n, fn))))
 	}
 
 	public("GET /api/v1/health", h.health)
 	public("POST /api/v1/login", h.login)
+	public("POST /api/v1/login/activate", h.activateConsole)
 	public("GET /api/v1/login/providers", h.loginProviders)
 	public("POST /api/v1/login/ldap", h.loginLDAP)
 	public("GET /api/v1/login/openid", h.loginOpenID)
 	public("GET "+oauthCallbackPath, h.oauthCallback)
-	private("POST /api/v1/logout", h.logout)
-	private("GET /api/v1/session", h.session)
-	private("GET /api/v1/info", h.info)
+	user("POST /api/v1/logout", needSession, h.logout)
+	user("GET /api/v1/session", needSession, h.session)
+	user("POST /api/v1/account/password", needSession, h.changeOwnPassword)
+	user("GET /api/v1/info", needSession, h.info) // users get the S3 endpoint only
 
-	private("GET /api/v1/buckets", h.listBuckets)
-	private("POST /api/v1/buckets", h.createBucket)
-	private("GET /api/v1/buckets/{bucket}", h.getBucket)
+	user("GET /api/v1/buckets", needSession, h.listBuckets)   // users: their buckets
+	user("POST /api/v1/buckets", needSession, h.createBucket) // users: if allowed to
+	user("GET /api/v1/buckets/{bucket}", needRead, h.getBucket)
 	private("DELETE /api/v1/buckets/{bucket}", h.deleteBucket)
 	private("PUT /api/v1/buckets/{bucket}/tags", h.putTags)
 	private("PUT /api/v1/buckets/{bucket}/quota", h.putQuota)
 	private("PUT /api/v1/buckets/{bucket}/policy", h.putPolicy)
 	private("PUT /api/v1/buckets/{bucket}/versioning", h.putVersioning)
 	private("PUT /api/v1/buckets/{bucket}/cors", h.putCORS)
-	private("GET /api/v1/buckets/{bucket}/versions", h.listVersions)
-	private("DELETE /api/v1/buckets/{bucket}/versions", h.deleteVersion)
-	private("POST /api/v1/buckets/{bucket}/versions/restore", h.restoreVersion)
+	user("GET /api/v1/buckets/{bucket}/versions", needRead, h.listVersions)
+	user("DELETE /api/v1/buckets/{bucket}/versions", needWrite, h.deleteVersion)
+	user("POST /api/v1/buckets/{bucket}/versions/restore", needWrite, h.restoreVersion)
 
-	private("GET /api/v1/buckets/{bucket}/objects", h.listObjects)
-	private("DELETE /api/v1/buckets/{bucket}/objects", h.deleteObjects)
-	private("POST /api/v1/buckets/{bucket}/trash", h.trashObjects)
-	private("POST /api/v1/buckets/{bucket}/trash/restore", h.restoreObjects)
+	user("GET /api/v1/buckets/{bucket}/objects", needRead, h.listObjects)
+	user("DELETE /api/v1/buckets/{bucket}/objects", needWrite, h.deleteObjects)
+	user("POST /api/v1/buckets/{bucket}/trash", needWrite, h.trashObjects)
+	user("POST /api/v1/buckets/{bucket}/trash/restore", needWrite, h.restoreObjects)
 	private("PUT /api/v1/buckets/{bucket}/trash/retention", h.putTrashRetention)
-	private("POST /api/v1/buckets/{bucket}/copy", h.copyObjects)
-	private("POST /api/v1/buckets/{bucket}/zip", h.createZip)
-	private("GET /api/v1/zip/{id}", h.downloadZip)
-	private("GET /api/v1/buckets/{bucket}/object", h.statObject)
-	private("GET /api/v1/buckets/{bucket}/download", h.download)
-	private("PUT /api/v1/buckets/{bucket}/upload", h.upload)
-	private("POST /api/v1/buckets/{bucket}/folders", h.createFolder)
-	private("POST /api/v1/buckets/{bucket}/folders/usage", h.folderUsage)
-	private("POST /api/v1/buckets/{bucket}/share", h.share)
-	private("GET /api/v1/buckets/{bucket}/shares", h.listShares)
-	private("DELETE /api/v1/shares/{id}", h.revokeShare)
-	private("POST /api/v1/buckets/{bucket}/uploads", h.createUpload)
-	private("PUT /api/v1/buckets/{bucket}/uploads/{id}/parts/{n}", h.uploadPart)
-	private("POST /api/v1/buckets/{bucket}/uploads/{id}/complete", h.completeUpload)
-	private("DELETE /api/v1/buckets/{bucket}/uploads/{id}", h.abortUpload)
+	user("POST /api/v1/buckets/{bucket}/copy", needRead, h.copyObjects) // checks the target, and the source for a move
+	user("POST /api/v1/buckets/{bucket}/zip", needRead, h.createZip)
+	user("GET /api/v1/zip/{id}", needSession, h.downloadZip) // the ticket belongs to its session's user
+	user("GET /api/v1/buckets/{bucket}/object", needRead, h.statObject)
+	user("GET /api/v1/buckets/{bucket}/download", needRead, h.download)
+	user("PUT /api/v1/buckets/{bucket}/upload", needWrite, h.upload)
+	user("POST /api/v1/buckets/{bucket}/folders", needWrite, h.createFolder)
+	user("POST /api/v1/buckets/{bucket}/folders/usage", needRead, h.folderUsage)
+	user("POST /api/v1/buckets/{bucket}/share", needRead, h.share)
+	user("GET /api/v1/buckets/{bucket}/shares", needRead, h.listShares)
+	user("DELETE /api/v1/shares/{id}", needSession, h.revokeShare) // checks the link's bucket
+	user("POST /api/v1/buckets/{bucket}/uploads", needWrite, h.createUpload)
+	user("PUT /api/v1/buckets/{bucket}/uploads/{id}/parts/{n}", needWrite, h.uploadPart)
+	user("POST /api/v1/buckets/{bucket}/uploads/{id}/complete", needWrite, h.completeUpload)
+	user("DELETE /api/v1/buckets/{bucket}/uploads/{id}", needWrite, h.abortUpload)
 
 	private("GET /api/v1/access-keys", h.listKeys)
 	private("POST /api/v1/access-keys", h.createKey)
 	private("PATCH /api/v1/access-keys/{key}", h.updateKey)
 	private("DELETE /api/v1/access-keys/{key}", h.deleteKey)
+	private("PUT /api/v1/access-keys/{key}/password", h.putKeyPassword)
+	private("DELETE /api/v1/access-keys/{key}/password", h.deleteKeyPassword)
 
 	private("GET /api/v1/groups", h.listGroups)
 	private("POST /api/v1/groups", h.createGroup)

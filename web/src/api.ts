@@ -45,6 +45,10 @@ export interface Session {
   user: string;
   csrfToken: string;
   expiresAt: string;
+  /** "admin" (root, LDAP, OpenID) or "user" (an access key's user, limited to its buckets). */
+  role: "admin" | "user";
+  /** Users may create buckets only when an admin allowed it; admins always may. */
+  canCreateBuckets: boolean;
 }
 
 export type Access = "readonly" | "writeonly" | "readwrite";
@@ -83,6 +87,10 @@ export interface Bucket {
   cors: CORSRule[];
   /** Days deleted files stay in the trash; 0 keeps them until it is emptied. */
   trashDays: number;
+  /** Who created it (an access key, "ldap:x", "openid:x"); "" when not recorded. */
+  createdBy: string;
+  /** What this session may do with its files. */
+  access: "read" | "write";
 }
 
 export interface ObjectInfo {
@@ -155,6 +163,8 @@ export interface Info {
   objects: number;
   bytes: number;
   disk: { total?: number; free?: number };
+  /** The longest share link the settings allow; also given to users. */
+  shareMaxExpirySeconds: number;
 }
 
 export interface AccessKey {
@@ -170,6 +180,10 @@ export interface AccessKey {
   readOnly: boolean;
   /** When non-empty, these groups decide the key's access instead of buckets/readOnly. */
   groups: string[];
+  /** Whether the key's user may sign in to the console (the password is never sent). */
+  consolePassword: boolean;
+  /** Whether the key's user may create buckets from the console. */
+  canCreateBuckets: boolean;
 }
 
 export interface Group {
@@ -229,6 +243,12 @@ const enc = encodeURIComponent;
 export const api = {
   async login(accessKey: string, secretKey: string) {
     const s = await request<Session>("POST", "/login", { accessKey, secretKey });
+    csrfToken = s.csrfToken;
+    return s;
+  },
+  /** A user proves their access key and secret key once, chooses a console password, and is signed in. */
+  async activateConsole(accessKey: string, secretKey: string, password: string) {
+    const s = await request<Session>("POST", "/login/activate", { accessKey, secretKey, password });
     csrfToken = s.csrfToken;
     return s;
   },
@@ -332,13 +352,38 @@ export const api = {
     `/api/v1/buckets/${enc(bucket)}/download?key=${enc(key)}${inline ? "&inline=1" : ""}${versionId ? `&versionId=${enc(versionId)}` : ""}`,
 
   accessKeys: () => request<{ accessKeys: AccessKey[] }>("GET", "/access-keys").then((r) => r.accessKeys),
-  createAccessKey: (body: { name: string; expiresAt?: string; buckets?: string[]; readOnly?: boolean; groups?: string[] }) =>
-    request<AccessKey>("POST", "/access-keys", body),
+  createAccessKey: (body: {
+    name: string;
+    expiresAt?: string;
+    buckets?: string[];
+    readOnly?: boolean;
+    groups?: string[];
+    /** Optional console password, so the user can sign in right away. */
+    password?: string;
+    canCreateBuckets?: boolean;
+  }) => request<AccessKey>("POST", "/access-keys", body),
   updateAccessKey: (
     key: string,
-    body: Partial<{ name: string; enabled: boolean; expiresAt: string; noExpiry: boolean; buckets: string[]; readOnly: boolean; groups: string[] }>,
+    body: Partial<{
+      name: string;
+      enabled: boolean;
+      expiresAt: string;
+      noExpiry: boolean;
+      buckets: string[];
+      readOnly: boolean;
+      groups: string[];
+      canCreateBuckets: boolean;
+    }>,
   ) => request<AccessKey>("PATCH", `/access-keys/${enc(key)}`, body),
   deleteAccessKey: (key: string) => request<void>("DELETE", `/access-keys/${enc(key)}`),
+  /** Sets a user's console password (admins); their S3 secret key is not touched. */
+  setKeyPassword: (key: string, password: string) =>
+    request<void>("PUT", `/access-keys/${enc(key)}/password`, { password }),
+  /** Removes a user's console password (admins): they can no longer sign in to the console. */
+  clearKeyPassword: (key: string) => request<void>("DELETE", `/access-keys/${enc(key)}/password`),
+  /** A signed-in user changes their own console password. */
+  changeOwnPassword: (currentPassword: string, password: string) =>
+    request<void>("POST", "/account/password", { currentPassword, password }),
 
   groups: () => request<{ groups: Group[] }>("GET", "/groups").then((r) => r.groups),
   createGroup: (body: { name: string; description?: string; buckets?: string[]; readOnly?: boolean; members?: string[] }) =>

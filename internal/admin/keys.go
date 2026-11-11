@@ -22,6 +22,10 @@ type keyJSON struct {
 	// Groups the key belongs to; when there are any, they decide its access
 	// and Buckets/ReadOnly are not used.
 	Groups []string `json:"groups"`
+	// ConsolePassword says whether the key's user may sign in to the console
+	// (the password itself is never sent back).
+	ConsolePassword  bool `json:"consolePassword"`
+	CanCreateBuckets bool `json:"canCreateBuckets"`
 }
 
 // keyGroups maps each access key to the groups it belongs to.
@@ -66,7 +70,7 @@ func toKeyJSON(k storage.AccessKey) keyJSON {
 		AccessKey: k.AccessKey, Name: k.Name, Enabled: k.Enabled, CreatedAt: k.Created,
 		ExpiresAt: optionalTime(k.Expires), LastUsed: optionalTime(k.LastUsed),
 		Expired: !k.Expires.IsZero() && time.Now().After(k.Expires), Buckets: buckets, ReadOnly: scope.ReadOnly,
-		Groups: []string{},
+		Groups: []string{}, ConsolePassword: k.PasswordHash != "", CanCreateBuckets: k.CanCreateBuckets,
 	}
 }
 
@@ -112,6 +116,9 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		Buckets   []string   `json:"buckets"`
 		ReadOnly  bool       `json:"readOnly"`
 		Groups    []string   `json:"groups"`
+		// Optional: lets the user sign in to the console right away.
+		Password         string `json:"password"`
+		CanCreateBuckets bool   `json:"canCreateBuckets"`
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -119,6 +126,14 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if in.ExpiresAt != nil && !in.ExpiresAt.After(time.Now()) {
 		writeError(w, http.StatusBadRequest, "invalid_expiry", "The expiry date must be in the future.")
 		return
+	}
+	passwordHash := ""
+	if in.Password != "" {
+		var err error
+		if passwordHash, err = auth.HashPassword(in.Password); err != nil {
+			writePasswordError(w, err)
+			return
+		}
 	}
 	if !h.validateBuckets(w, r, in.Buckets) {
 		return
@@ -134,6 +149,9 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		Name:      in.Name,
 		Enabled:   true,
 		Scope:     auth.Scope{Buckets: in.Buckets, ReadOnly: in.ReadOnly}.String(),
+
+		PasswordHash:     passwordHash,
+		CanCreateBuckets: in.CanCreateBuckets,
 	}
 	if in.ExpiresAt != nil {
 		k.Expires = *in.ExpiresAt
@@ -175,6 +193,8 @@ func (h *Handler) updateKey(w http.ResponseWriter, r *http.Request) {
 		Buckets   *[]string  `json:"buckets"`
 		ReadOnly  *bool      `json:"readOnly"`
 		Groups    *[]string  `json:"groups"` // replaces the key's groups
+
+		CanCreateBuckets *bool `json:"canCreateBuckets"`
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -208,6 +228,9 @@ func (h *Handler) updateKey(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.ReadOnly != nil {
 			scope.ReadOnly = *in.ReadOnly
+		}
+		if in.CanCreateBuckets != nil {
+			k.CanCreateBuckets = *in.CanCreateBuckets
 		}
 		k.Scope = scope.String()
 		return nil

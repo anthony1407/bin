@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import Editor, { DiffEditor } from "../components/CodeEditor";
 import { ApiError, api, downloadObject, uploadFile, type Bucket, type FolderInfo, type ObjectInfo, type ObjectVersion, type ShareLink } from "../api";
+import { useIsAdmin } from "../auth";
 import { baseName, bytes, count, dateTime, duration, relative, timeLeft } from "../lib/format";
 import { BinMark, Button, EmptyState, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 import { Select } from "../components/Select";
@@ -266,10 +267,15 @@ function ShareModal({
     setLinks(null);
     setCustomError("");
     reloadLinks().catch((e) => toast("error", errorText(e)));
-    api.settings().then((s) => {
-      setMax(s.shareMaxExpirySeconds);
-      setExpires((e) => (e === "custom" ? e : Math.min(e, s.shareMaxExpirySeconds)));
-    });
+    // From /info, which users may read too (the settings are for admins).
+    api
+      .info()
+      .then((s) => {
+        if (!s.shareMaxExpirySeconds) return;
+        setMax(s.shareMaxExpirySeconds);
+        setExpires((e) => (e === "custom" ? e : Math.min(e, s.shareMaxExpirySeconds)));
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [object]);
 
@@ -1313,6 +1319,7 @@ function Detail({
   onDiff,
   onVersionsChanged,
   publicAccess,
+  canWrite = true,
 }: {
   bucket: string;
   objectKey: string;
@@ -1322,8 +1329,10 @@ function Detail({
   onDiff?: (files: DiffFile[]) => void;
   /** A version was restored or removed: the listing may have changed. */
   onVersionsChanged?: () => void;
-  /** Omitted until the bucket policy is known. */
+  /** Omitted until the bucket policy is known, and for users (anonymous access is an admin setting). */
   publicAccess?: { reason: PublicReason; s3Endpoint: string; busy: boolean; onChange: (on: boolean) => void };
+  /** False in a bucket the session may only read: no delete. */
+  canWrite?: boolean;
 }) {
   const [info, setInfo] = useState<ObjectInfo | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -1481,9 +1490,11 @@ function Detail({
                     <Button icon={<Share2 className="size-4" />} disabled={deleting} onClick={() => onShare(info)}>
                       Share
                     </Button>
-                    <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={() => setConfirm(true)}>
-                      Delete
-                    </Button>
+                    {canWrite && (
+                      <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleting} onClick={() => setConfirm(true)}>
+                        Delete
+                      </Button>
+                    )}
                   </div>
                   {publicAccess && <PublicAccess bucket={bucket} objectKey={objectKey} {...publicAccess} />}
                   {/* Quick info summary */}
@@ -1775,6 +1786,11 @@ export function ExplorerPage() {
   const searchInput = useRef<HTMLInputElement>(null);
   const inTrashRef = useRef(false); // nothing is uploaded into the trash (set below)
   const toast = useToast();
+  // Users see no bucket settings and cannot change anonymous access; in a
+  // bucket they may only read, nothing that writes is offered. The server
+  // refuses all of it anyway.
+  const isAdmin = useIsAdmin();
+  const canWrite = isAdmin || meta?.access === "write";
 
   useEffect(() => {
     api.buckets().then(setAllBuckets).catch(() => {});
@@ -2035,7 +2051,8 @@ export function ExplorerPage() {
   }, [prefix]);
   // Inside the trash: deleting is for good, and selections can be restored.
   const trashView = prefix.startsWith(TRASH);
-  inTrashRef.current = trashView;
+  // Nothing is uploaded into the trash, nor into a bucket the session may only read.
+  inTrashRef.current = trashView || !canWrite;
 
   const parentPrefix = useMemo(() => {
     if (!prefix) return null;
@@ -2256,10 +2273,12 @@ export function ExplorerPage() {
               Deleted files
             </Button>
           )}
-          <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="contents">
-            <Button icon={<Settings2 className="size-4" />}>Settings</Button>
-          </Link>
-          {!trashView && (
+          {isAdmin && (
+            <Link to={`/buckets/${encodeURIComponent(bucket)}/settings`} className="contents">
+              <Button icon={<Settings2 className="size-4" />}>Settings</Button>
+            </Link>
+          )}
+          {!trashView && canWrite && (
             <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
               Upload
             </Button>
@@ -2325,7 +2344,7 @@ export function ExplorerPage() {
         </div>
 
         {/* Create new path button */}
-        {!trashView && (
+        {!trashView && canWrite && (
           <Button icon={<FolderPlus className="size-4" />} onClick={() => setFolderOpen(true)} className="shrink-0">
             Create new path
           </Button>
@@ -2400,20 +2419,22 @@ export function ExplorerPage() {
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs text-muted">
-              Keep deleted files
-              <select
-                value={meta?.trashDays ?? 0}
-                onChange={(e) => setTrashRetention(Number(e.target.value))}
-                className="h-9 rounded-md border border-line-strong bg-surface px-2 text-sm text-ink"
-              >
-                {[...new Set([0, 7, 30, 90, 365, meta?.trashDays ?? 0])].sort((a, b) => (a || 1e9) - (b || 1e9)).map((d) => (
-                  <option key={d} value={d}>{d === 0 ? "until emptied" : `${d} days`}</option>
-                ))}
-              </select>
-            </label>
+            {isAdmin && (
+              <label className="flex items-center gap-2 text-xs text-muted">
+                Keep deleted files
+                <select
+                  value={meta?.trashDays ?? 0}
+                  onChange={(e) => setTrashRetention(Number(e.target.value))}
+                  className="h-9 rounded-md border border-line-strong bg-surface px-2 text-sm text-ink"
+                >
+                  {[...new Set([0, 7, 30, 90, 365, meta?.trashDays ?? 0])].sort((a, b) => (a || 1e9) - (b || 1e9)).map((d) => (
+                    <option key={d} value={d}>{d === 0 ? "until emptied" : `${d} days`}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <Button onClick={() => goTo("")}>Close</Button>
-            {!empty && (
+            {!empty && canWrite && (
               <Button variant="danger" icon={<Trash2 className="size-4" />} onClick={() => setConfirmEmptyTrash(true)}>
                 Empty Trash
               </Button>
@@ -2453,14 +2474,16 @@ export function ExplorerPage() {
                     <span className="text-muted" title={dateTime(o.lastModified)}>
                       deleted {relative(o.lastModified)}
                     </span>
-                    <button
-                      type="button"
-                      disabled={undeleting !== null}
-                      onClick={() => undelete(o)}
-                      className="flex items-center gap-1 font-medium text-accent hover:underline"
-                    >
-                      <Undo2 className="size-3" /> {undeleting === o.key ? "Restoring…" : "Restore"}
-                    </button>
+                    {canWrite && (
+                      <button
+                        type="button"
+                        disabled={undeleting !== null}
+                        onClick={() => undelete(o)}
+                        className="flex items-center gap-1 font-medium text-accent hover:underline"
+                      >
+                        <Undo2 className="size-3" /> {undeleting === o.key ? "Restoring…" : "Restore"}
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -2475,15 +2498,19 @@ export function ExplorerPage() {
           <span className="font-medium text-accent-ink">{count(selected.size)} selected</span>
           {trashView ? (
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="primary" icon={<Undo2 className="size-4" />} busy={restoring} onClick={restoreSelected}>
-                {restoring ? "Restoring…" : "Restore"}
-              </Button>
+              {canWrite && (
+                <Button variant="primary" icon={<Undo2 className="size-4" />} busy={restoring} onClick={restoreSelected}>
+                  {restoring ? "Restoring…" : "Restore"}
+                </Button>
+              )}
               <Button variant="ghost" onClick={() => setSelected(new Set())}>
                 Clear
               </Button>
-              <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={() => setConfirmDelete(true)}>
-                Delete permanently
-              </Button>
+              {canWrite && (
+                <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={() => setConfirmDelete(true)}>
+                  Delete permanently
+                </Button>
+              )}
             </div>
           ) : (
           <div className="flex flex-wrap items-center gap-2">
@@ -2511,7 +2538,7 @@ export function ExplorerPage() {
                 Share URL
               </Button>
             )}
-            {meta?.policy.mode !== "public" && (() => {
+            {isAdmin && meta?.policy.mode !== "public" && (() => {
               const keys = [...selected];
               const anyPrivate = keys.some((k) => !isPublicKey(k));
               return (
@@ -2548,9 +2575,11 @@ export function ExplorerPage() {
             <Button variant="ghost" onClick={() => setSelected(new Set())}>
               Clear
             </Button>
-            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={() => setConfirmDelete(true)}>
-              Delete
-            </Button>
+            {canWrite && (
+              <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deletingSelected} onClick={() => setConfirmDelete(true)}>
+                Delete
+              </Button>
+            )}
           </div>
           )}
         </div>
@@ -2564,10 +2593,11 @@ export function ExplorerPage() {
             body={
               search ? `No object under this folder contains “${search}”.`
               : trashView ? "Deleted files show up here, where they can be restored."
-              : "Drop files anywhere on this page, or use the Upload button."
+              : canWrite ? "Drop files anywhere on this page, or use the Upload button."
+              : "Your account may read this bucket, not add to it."
             }
             action={
-              !search && !trashView && (
+              !search && !trashView && canWrite && (
                 <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
                   Upload files
                 </Button>
@@ -2603,7 +2633,7 @@ export function ExplorerPage() {
                         <span title="Public"><Globe className="size-3.5 text-warn" /></span>
                       </div>
                     )}
-                    {meta?.policy.mode !== "public" && (
+                    {isAdmin && meta?.policy.mode !== "public" && (
                       <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
@@ -2755,7 +2785,7 @@ export function ExplorerPage() {
                         ) : (
                           <span className="text-faint">-</span>
                         )}
-                        {meta?.policy.mode !== "public" && (
+                        {isAdmin && meta?.policy.mode !== "public" && (
                           <IconButton
                             label={folderPublic ? "Make private" : "Make public"}
                             onClick={(e) => { e.stopPropagation(); setPublic(p, !folderPublic); }}
@@ -2861,8 +2891,9 @@ export function ExplorerPage() {
           onClose={() => setDetail(null)}
           onShare={setSharing}
           onDiff={setDiffFiles}
+          canWrite={canWrite}
           publicAccess={
-            meta
+            meta && isAdmin
               ? {
                   reason: publicReason(meta.policy, detail),
                   s3Endpoint,

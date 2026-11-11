@@ -536,6 +536,18 @@ func (h *Handler) listShares(w http.ResponseWriter, r *http.Request) {
 
 // revokeShare stops one share link at once; the others keep working.
 func (h *Handler) revokeShare(w http.ResponseWriter, r *http.Request) {
+	if _, user := userGrants(r); user {
+		// Users revoke links of the buckets they can read, like they make them.
+		l, err := h.opts.Store.GetShareLink(r.Context(), r.PathValue("id"))
+		if err != nil && !errors.Is(err, storage.ErrNoSuchShareLink) {
+			h.storageError(w, r, err)
+			return
+		}
+		if err != nil || !may(r, l.Bucket, false) {
+			denyUser(w)
+			return
+		}
+	}
 	l, err := h.opts.Store.RevokeShareLink(r.Context(), r.PathValue("id"))
 	if err != nil {
 		h.storageError(w, r, err)

@@ -211,7 +211,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 			fmt.Errorf("user %s: claim %q does not contain %q", user, c.ClaimName, c.AdminValue))
 		return
 	}
-	if _, err := h.startSession(w, r, user); err != nil {
+	if _, err := h.startSession(w, r, user, ""); err != nil {
 		h.oidcFailed(w, r, "The session could not be created.", err)
 		return
 	}
@@ -235,9 +235,21 @@ func redirectLoginError(w http.ResponseWriter, r *http.Request, message string) 
 }
 
 // safeNext keeps only local paths, so the sign-in cannot redirect elsewhere.
+// Browsers drop tabs and newlines from URLs and read "\" as "/", so
+// "/\t/evil.example" or "/\evil.example" would leave the site as
+// "//evil.example": any control character or backslash is refused outright.
 func safeNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
-		return "/buckets"
+	const fallback = "/buckets"
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		return fallback
+	}
+	for _, c := range next {
+		if c < 0x20 || c == 0x7f || c == '\\' {
+			return fallback
+		}
+	}
+	if u, err := url.Parse(next); err != nil || u.Scheme != "" || u.Host != "" || u.User != nil {
+		return fallback
 	}
 	return next
 }

@@ -60,7 +60,13 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request, req Reque
 		return s3err.ErrIllegalLocationConstraint.WithMessage(
 			"The " + lc + " location constraint is incompatible for the region specific endpoint this request was sent to.")
 	}
-	if err := h.opts.Store.CreateBucket(r.Context(), req.Bucket); err != nil {
+	// The bucket records its creator; a stored access key (not root) also
+	// owns it, which keeps its access to it whatever its scope says later.
+	creator, owner := AccessKey(r.Context()), ""
+	if creator != "" && (h.opts.Keys == nil || creator != h.opts.Keys.RootAccessKey) {
+		owner = creator
+	}
+	if err := h.opts.Store.CreateBucketBy(r.Context(), req.Bucket, creator, owner); err != nil {
 		return storageError(err)
 	}
 	w.Header().Set("Location", "/"+req.Bucket)

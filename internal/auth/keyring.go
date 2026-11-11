@@ -138,20 +138,33 @@ func (k *Keyring) loadGrants(ctx context.Context, accessKey string) (Grants, err
 	if err != nil {
 		return nil, err
 	}
+	var grants Grants
 	if len(groups) == 0 {
 		own, err := ParseScope(key.Scope)
-		return Grants{own}, err
-	}
-	grants := Grants{}
-	for _, g := range groups {
-		if !g.Enabled {
-			continue
-		}
-		sc, err := ParseScope(g.Scope)
 		if err != nil {
 			return nil, err
 		}
-		grants = append(grants, sc)
+		grants = Grants{own}
+	} else {
+		grants = Grants{}
+		for _, g := range groups {
+			if !g.Enabled {
+				continue
+			}
+			sc, err := ParseScope(g.Scope)
+			if err != nil {
+				return nil, err
+			}
+			grants = append(grants, sc)
+		}
+	}
+	// The buckets a key created are its own: read-write, whatever its scope.
+	owned, err := k.Store.BucketsOwnedBy(ctx, accessKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(owned) > 0 {
+		grants = append(grants, Scope{Buckets: owned})
 	}
 	return grants, nil
 }

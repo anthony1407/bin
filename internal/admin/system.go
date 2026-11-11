@@ -17,6 +17,21 @@ import (
 // --- server information ------------------------------------------------------------
 
 func (h *Handler) info(w http.ResponseWriter, r *http.Request) {
+	// The longest share link anyone may create: the share dialog needs it,
+	// for users too, who cannot read the settings.
+	shareMax, err := h.shareMaxExpiry(r)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	if _, user := userGrants(r); user {
+		// Users get what their pages need, nothing about the server or other buckets.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"version": buildinfo.Version, "region": h.opts.Region, "s3Endpoint": h.s3BaseURL(r),
+			"shareMaxExpirySeconds": int64(shareMax / time.Second),
+		})
+		return
+	}
 	usage, err := h.opts.Store.BucketUsage(r.Context())
 	if err != nil {
 		h.storageError(w, r, err)
@@ -50,6 +65,8 @@ func (h *Handler) info(w http.ResponseWriter, r *http.Request) {
 		"objects":     objects,
 		"bytes":       bytes,
 		"disk":        disk,
+
+		"shareMaxExpirySeconds": int64(shareMax / time.Second),
 	})
 }
 

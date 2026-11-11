@@ -5,18 +5,24 @@ import { useAuth } from "../auth";
 import { api, ApiError, type LoginProviders } from "../api";
 import { BinLogo, BinMark, Button, Field, Input, cx } from "../components/ui";
 
-type Mode = "root" | "ldap";
+// "key": root or an access key's user with their console password.
+// "activate": a user proves access key + secret key once and picks a password.
+type Mode = "key" | "ldap" | "activate";
+
+const MIN_PASSWORD = 10;
 
 export function LoginPage() {
-  const { signIn, signInLDAP } = useAuth();
+  const { signIn, signInLDAP, activate } = useAuth();
   const location = useLocation();
   const params = new URLSearchParams(location.search);
   const nextParam = params.get("next");
   const next = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/buckets";
   const [providers, setProviders] = useState<LoginProviders>({ openid: null, ldap: false });
-  const [mode, setMode] = useState<Mode>("root");
+  const [mode, setMode] = useState<Mode>("key");
   const [accessKey, setAccessKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   // An OpenID sign-in that failed comes back here with the reason.
@@ -29,17 +35,40 @@ export function LoginPage() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
+    if (mode === "activate") {
+      if ([...newPassword].length < MIN_PASSWORD) {
+        setError(`Choose a password of at least ${MIN_PASSWORD} characters.`);
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        setError("The two passwords do not match.");
+        return;
+      }
+    }
     setBusy(true);
     setError("");
     try {
-      await (mode === "ldap" ? signInLDAP(accessKey, secretKey, next) : signIn(accessKey, secretKey, next));
+      if (mode === "ldap") await signInLDAP(accessKey, secretKey, next);
+      else if (mode === "activate") await activate(accessKey, secretKey, newPassword, next);
+      else await signIn(accessKey, secretKey, next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Cannot reach the server.");
       setBusy(false);
     }
   }
 
+  function switchMode(m: Mode) {
+    setMode(m);
+    setError("");
+    setSecretKey("");
+    setNewPassword("");
+    setConfirmPassword("");
+  }
+
   const ldap = mode === "ldap";
+  const activating = mode === "activate";
+  // What the second field holds: a console password, or the S3 secret key while activating.
+  const secretLabel = activating ? "Secret key" : "Password";
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1.1fr_1fr]">
@@ -71,45 +100,46 @@ export function LoginPage() {
       <section className="flex items-center justify-center px-5 py-12">
         <div className="w-full max-w-sm">
           <BinLogo className="mb-10 h-9 w-auto lg:hidden" />
-          <h2 className="text-2xl font-semibold tracking-tight">Sign in</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">{activating ? "Set your console password" : "Sign in"}</h2>
           <p className="mt-1.5 text-sm text-muted">
-            {ldap ? "Use your directory username and password." : "Use the root credentials this server was started with."}
+            {ldap
+              ? "Use your directory username and password."
+              : activating
+                ? "Prove your account once with your access key and secret key, then choose the password you will sign in with. Your secret key stays the same for your apps."
+                : "Use your access key and console password. Root uses the credentials this server was started with."}
           </p>
 
-          {providers.ldap && (
+          {providers.ldap && !activating && (
             <div className="mt-6 grid grid-cols-2 rounded-md border border-line p-0.5 text-sm" role="tablist">
-              {(["root", "ldap"] as const).map((m) => (
+              {(["key", "ldap"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
                   role="tab"
                   aria-selected={mode === m}
-                  onClick={() => {
-                    setMode(m);
-                    setError("");
-                  }}
+                  onClick={() => switchMode(m)}
                   className={cx(
                     "rounded px-3 py-1.5 font-medium transition-colors",
                     mode === m ? "bg-accent-soft text-accent-ink" : "text-muted hover:text-ink",
                   )}
                 >
-                  {m === "root" ? "Root credentials" : "LDAP"}
+                  {m === "key" ? "Access key" : "LDAP"}
                 </button>
               ))}
             </div>
           )}
 
-          <form onSubmit={submit} className={cx("space-y-5", providers.ldap ? "mt-6" : "mt-8")}>
+          <form onSubmit={submit} className={cx("space-y-5", providers.ldap && !activating ? "mt-6" : "mt-8")}>
             <Field label={ldap ? "Username" : "Access key"}>
               <Input mono={!ldap} autoFocus autoComplete="username" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} readOnly={busy} required />
             </Field>
-            <Field label={ldap ? "Password" : "Secret key"}>
+            <Field label={secretLabel}>
               <div className="relative">
                 <Input
-                  mono={!ldap}
+                  mono={activating}
                   readOnly={busy}
                   type={show ? "text" : "password"}
-                  autoComplete="current-password"
+                  autoComplete={activating ? "off" : "current-password"}
                   value={secretKey}
                   onChange={(e) => setSecretKey(e.target.value)}
                   required
@@ -119,19 +149,53 @@ export function LoginPage() {
                   type="button"
                   onClick={() => setShow(!show)}
                   className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-faint hover:text-ink"
-                  aria-label={show ? `Hide ${ldap ? "password" : "secret key"}` : `Show ${ldap ? "password" : "secret key"}`}
+                  aria-label={`${show ? "Hide" : "Show"} ${secretLabel.toLowerCase()}`}
                 >
                   {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                 </button>
               </div>
             </Field>
+            {activating && (
+              <>
+                <Field label="New console password" hint={`At least ${MIN_PASSWORD} characters.`}>
+                  <Input
+                    type={show ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    readOnly={busy}
+                    required
+                  />
+                </Field>
+                <Field label="Repeat the new password">
+                  <Input
+                    type={show ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    readOnly={busy}
+                    required
+                  />
+                </Field>
+              </>
+            )}
             {error && <div className="rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
             <Button type="submit" variant="primary" busy={busy} className="w-full disabled:opacity-90" icon={<ArrowRight className="size-4" />}>
-              {busy ? "Signing in…" : "Sign in"}
+              {busy ? (activating ? "Saving…" : "Signing in…") : activating ? "Save password and sign in" : "Sign in"}
             </Button>
           </form>
 
-          {providers.openid && (
+          {!ldap && (
+            <button
+              type="button"
+              onClick={() => switchMode(activating ? "key" : "activate")}
+              className="mt-4 w-full text-center text-sm text-accent hover:underline"
+            >
+              {activating ? "Back to sign in" : "First time, or forgot your password? Set it with your secret key"}
+            </button>
+          )}
+
+          {providers.openid && !activating && (
             <>
               <div className="my-6 flex items-center gap-3 text-xs text-faint">
                 <span className="h-px flex-1 bg-line" />

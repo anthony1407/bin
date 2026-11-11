@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"bin/internal/auth"
 	"bin/internal/server"
 	"bin/internal/storage"
 )
@@ -44,10 +45,15 @@ type sessionResponse struct {
 	User      string    `json:"user"`
 	CSRFToken string    `json:"csrfToken"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	// Role is "admin" (root, LDAP, OpenID) or "user" (an access key's user,
+	// limited to its buckets).
+	Role string `json:"role"`
+	// CanCreateBuckets says whether a user may create buckets; admins may.
+	CanCreateBuckets bool `json:"canCreateBuckets"`
 }
 
-// login checks the root credentials and starts a session. Only root can sign
-// in to the console in v1; access keys are for S3 clients.
+// login checks root's credentials, or an access key and its user's console
+// password, and starts a session.
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		writeError(w, http.StatusForbidden, "bad_origin", "Cross-origin request refused.")
@@ -64,21 +70,62 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	akOK := subtle.ConstantTimeCompare([]byte(in.AccessKey), []byte(h.opts.Keys.RootAccessKey)) == 1
-	skOK := subtle.ConstantTimeCompare([]byte(in.SecretKey), []byte(h.opts.Keys.RootSecretKey)) == 1
-	// An unknown access key is not recorded: people paste secrets into the wrong field.
-	if akOK {
-		setAuditActor(r, in.AccessKey)
-	} else {
-		setAuditActor(r, "(unknown)")
+	if !akOK {
+		h.userLogin(w, r, ip, in.AccessKey, in.SecretKey)
+		return
 	}
-	if !akOK || !skOK {
-		h.limiter.fail(ip)
-		server.Annotate(r.Context(), slog.String("login", "failed"))
-		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Wrong access key or secret key.")
+	skOK := subtle.ConstantTimeCompare([]byte(in.SecretKey), []byte(h.opts.Keys.RootSecretKey)) == 1
+	setAuditActor(r, in.AccessKey)
+	if !skOK {
+		h.loginFailed(w, r, ip)
 		return
 	}
 	h.limiter.reset(ip)
-	sess, err := h.startSession(w, r, in.AccessKey)
+	sess, err := h.startSession(w, r, in.AccessKey, "")
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (h *Handler) loginFailed(w http.ResponseWriter, r *http.Request, ip string) {
+	h.limiter.fail(ip)
+	server.Annotate(r.Context(), slog.String("login", "failed"))
+	writeError(w, http.StatusUnauthorized, "invalid_credentials", "Wrong access key or password.")
+}
+
+// consoleKey returns a stored access key whose user may sign in to the
+// console: enabled, unexpired, not managed by bin itself.
+func (h *Handler) consoleKey(ctx context.Context, accessKey string) (storage.AccessKey, bool) {
+	if accessKey == "" || accessKey == h.opts.Keys.RootAccessKey {
+		return storage.AccessKey{}, false
+	}
+	k, err := h.opts.Store.GetAccessKey(ctx, accessKey)
+	if err != nil || !k.Enabled || k.Internal || (!k.Expires.IsZero() && time.Now().After(k.Expires)) {
+		return storage.AccessKey{}, false
+	}
+	return k, true
+}
+
+// userLogin signs in an access key's user with its console password.
+func (h *Handler) userLogin(w http.ResponseWriter, r *http.Request, ip, accessKey, password string) {
+	k, ok := h.consoleKey(r.Context(), accessKey)
+	if !ok || k.PasswordHash == "" {
+		// An unknown key is not recorded: people paste secrets into the wrong
+		// field. The wait matches a real check, so keys are not told apart.
+		auth.DummyPasswordCheck(password)
+		setAuditActor(r, "(unknown)")
+		h.loginFailed(w, r, ip)
+		return
+	}
+	setAuditActor(r, k.AccessKey)
+	if !auth.CheckPassword(k.PasswordHash, password) {
+		h.loginFailed(w, r, ip)
+		return
+	}
+	h.limiter.reset(ip)
+	sess, err := h.startSession(w, r, k.AccessKey, k.AccessKey)
 	if err != nil {
 		h.storageError(w, r, err)
 		return
@@ -87,12 +134,13 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 }
 
 // startSession creates a console session for user and sets its cookie. Every
-// sign-in method (root, OpenID, LDAP) ends here; all sessions are admins.
-func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user string) (sessionResponse, error) {
+// sign-in method ends here. accessKey is set for a user's session (limited to
+// that key's access) and empty for admins (root, OpenID, LDAP).
+func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user, accessKey string) (sessionResponse, error) {
 	token, csrf := randomToken(), randomToken()
 	expires := time.Now().Add(h.opts.SessionTTL)
 	if err := h.opts.Store.CreateSession(r.Context(), storage.Session{
-		TokenHash: hashToken(token), CSRF: csrf, User: user, Expires: expires,
+		TokenHash: hashToken(token), CSRF: csrf, User: user, AccessKey: accessKey, Expires: expires,
 	}); err != nil {
 		return sessionResponse{}, err
 	}
@@ -106,7 +154,19 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user stri
 		SameSite: http.SameSiteStrictMode,
 	})
 	server.Annotate(r.Context(), slog.String("login", "ok"), slog.String("user", user))
-	return sessionResponse{User: user, CSRFToken: csrf, ExpiresAt: expires}, nil
+	return h.sessionJSON(r.Context(), storage.Session{User: user, CSRF: csrf, AccessKey: accessKey, Expires: expires}), nil
+}
+
+// sessionJSON describes a session to the console, with what it may do.
+func (h *Handler) sessionJSON(ctx context.Context, s storage.Session) sessionResponse {
+	out := sessionResponse{User: s.User, CSRFToken: s.CSRF, ExpiresAt: s.Expires, Role: "admin", CanCreateBuckets: true}
+	if s.AccessKey != "" {
+		out.Role, out.CanCreateBuckets = "user", false
+		if k, err := h.opts.Store.GetAccessKey(ctx, s.AccessKey); err == nil {
+			out.CanCreateBuckets = k.CanCreateBuckets
+		}
+	}
+	return out
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
@@ -119,8 +179,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
-	s := r.Context().Value(sessionKey{}).(storage.Session)
-	writeJSON(w, http.StatusOK, sessionResponse{User: s.User, CSRFToken: s.CSRF, ExpiresAt: s.Expires})
+	writeJSON(w, http.StatusOK, h.sessionJSON(r.Context(), sessionOf(r)))
 }
 
 // requireSession rejects requests without a live session and, for requests
@@ -151,8 +210,18 @@ func (h *Handler) requireSession(next http.Handler) http.Handler {
 				return
 			}
 		}
+		ctx := context.WithValue(r.Context(), sessionKey{}, sess)
+		if sess.AccessKey != "" {
+			grants, ok := h.userSession(r.Context(), sess)
+			if !ok {
+				h.opts.Store.DeleteSession(r.Context(), sess.TokenHash)
+				writeError(w, http.StatusUnauthorized, "session_expired", "Your session has ended. Sign in again.")
+				return
+			}
+			ctx = context.WithValue(ctx, grantsCtxKey{}, grants)
+		}
 		server.Annotate(r.Context(), slog.String("user", sess.User))
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), sessionKey{}, sess)))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

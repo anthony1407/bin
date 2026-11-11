@@ -17,6 +17,10 @@ import (
 // parts) and diagnostics (speed tests) are left out.
 var auditedRoutes = map[string]string{
 	"POST /api/v1/login":                                  "Login",
+	"POST /api/v1/login/activate":                         "ActivateConsoleAccess",
+	"POST /api/v1/account/password":                       "ChangeOwnPassword",
+	"PUT /api/v1/access-keys/{key}/password":              "SetConsolePassword",
+	"DELETE /api/v1/access-keys/{key}/password":           "RemoveConsolePassword",
 	"POST /api/v1/logout":                                 "Logout",
 	"POST /api/v1/buckets":                                "CreateBucket",
 	"DELETE /api/v1/buckets/{bucket}":                     "DeleteBucket",

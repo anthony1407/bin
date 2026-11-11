@@ -18,14 +18,16 @@ type Bucket struct {
 	Policy     string // access policy JSON (package auth); "": private
 	CORS       string // CORS rules JSON (package cors); "": none
 	TrashDays  int    // days files stay in the console's trash; 0: until emptied
+	CreatedBy  string // who created it (an access key, "ldap:x", "openid:x"); "": unknown
+	OwnerKey   string // the access key that created it and may use it; "": none
 }
 
-const bucketColumns = `name, created_at, versioning, quota_bytes, policy, cors, trash_days`
+const bucketColumns = `name, created_at, versioning, quota_bytes, policy, cors, trash_days, created_by, owner_key`
 
 func scanBucket(scan func(...any) error) (Bucket, error) {
 	var b Bucket
 	var created int64
-	err := scan(&b.Name, &created, &b.Versioning, &b.QuotaBytes, &b.Policy, &b.CORS, &b.TrashDays)
+	err := scan(&b.Name, &created, &b.Versioning, &b.QuotaBytes, &b.Policy, &b.CORS, &b.TrashDays, &b.CreatedBy, &b.OwnerKey)
 	b.CreatedAt = fromNanos(created)
 	return b, err
 }
@@ -64,8 +66,15 @@ func ValidBucketName(name string) bool {
 	return true
 }
 
-// CreateBucket creates an empty bucket.
+// CreateBucket creates an empty bucket, creator unknown.
 func (s *Store) CreateBucket(ctx context.Context, name string) error {
+	return s.CreateBucketBy(ctx, name, "", "")
+}
+
+// CreateBucketBy creates an empty bucket, recording who created it. ownerKey,
+// when set, is the access key that gets read-write access to the bucket as
+// its creator (see BucketsOwnedBy).
+func (s *Store) CreateBucketBy(ctx context.Context, name, createdBy, ownerKey string) error {
 	if !ValidBucketName(name) {
 		return ErrInvalidBucketName
 	}
@@ -75,9 +84,28 @@ func (s *Store) CreateBucket(ctx context.Context, name string) error {
 		} else if !errors.Is(err, ErrNoSuchBucket) {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO buckets (name, created_at) VALUES (?, ?)`, name, s.nowNanos())
+		_, err := tx.ExecContext(ctx, `INSERT INTO buckets (name, created_at, created_by, owner_key) VALUES (?, ?, ?, ?)`,
+			name, s.nowNanos(), createdBy, ownerKey)
 		return err
 	})
+}
+
+// BucketsOwnedBy returns the buckets an access key created and still owns.
+func (s *Store) BucketsOwnedBy(ctx context.Context, accessKey string) ([]string, error) {
+	rows, err := s.read.QueryContext(ctx, `SELECT name FROM buckets WHERE owner_key = ? ORDER BY name`, accessKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
 }
 
 // GetBucket returns a bucket's settings.

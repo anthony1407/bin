@@ -128,6 +128,12 @@ func (h *Handler) copyObjects(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = bucket
 	}
+	// The route lets users through with read access to the source: a copy
+	// also writes the target, and a move takes the originals away.
+	if !may(r, target, true) || (in.Move && !may(r, bucket, true)) {
+		denyUser(w)
+		return
+	}
 	dst := in.TargetPrefix
 	if dst != "" && !strings.HasSuffix(dst, "/") {
 		dst += "/"

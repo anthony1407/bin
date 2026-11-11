@@ -216,7 +216,7 @@ func (h *Handler) loginLDAP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.limiter.reset(ip)
-	sess, err := h.startSession(w, r, "ldap:"+in.Username)
+	sess, err := h.startSession(w, r, "ldap:"+in.Username, "")
 	if err != nil {
 		h.storageError(w, r, err)
 		return

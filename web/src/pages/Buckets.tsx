@@ -14,6 +14,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { api, type Bucket } from "../api";
+import { useAuth, useIsAdmin } from "../auth";
 import { bytes, count } from "../lib/format";
 import { Button, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 
@@ -51,10 +52,13 @@ function CreateBucketModal({
   open,
   onClose,
   onCreated,
+  admin,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: (b: Bucket) => void;
+  /** Users only name the bucket: access, versioning and quota are admin settings. */
+  admin: boolean;
 }) {
   const [name, setName] = useState("");
   const [showRules, setShowRules] = useState(false);
@@ -98,7 +102,12 @@ function CreateBucketModal({
     setBusy(true);
 
     try {
-      const b = await api.createBucket(name.trim(), isPublic ? { mode: "public" } : undefined);
+      const b = await api.createBucket(name.trim(), admin && isPublic ? { mode: "public" } : undefined);
+      if (!admin) {
+        onCreated(b);
+        return;
+      }
+      if (versioning) await api.setVersioning(b.name, "Enabled");
       // If quota was set, apply it
       if (quota) {
         const factor = quotaUnit === "TiB" ? 1024 * 1024 * 1024 * 1024 : 1024 * 1024 * 1024;
@@ -166,6 +175,15 @@ function CreateBucketModal({
             )}
           </div>
 
+          {!admin && (
+            <p className="rounded-md bg-sunken p-3 text-xs text-muted">
+              The bucket will be private and yours: you can read and write it. An administrator sets its access rules,
+              versioning and quota.
+            </p>
+          )}
+
+          {admin && (
+          <>
           {/* Access Section */}
           <div className="space-y-3 border-t border-line pt-4">
             <div className="text-sm font-bold text-ink">Access</div>
@@ -342,6 +360,8 @@ function CreateBucketModal({
               )}
             </div>
           </div>
+          </>
+          )}
 
           {/* Action buttons */}
           <div className="flex justify-end gap-3 pt-3">
@@ -406,6 +426,9 @@ export function BucketsPage() {
   const [loading, setLoading] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
+  const { session } = useAuth();
+  const isAdmin = useIsAdmin();
+  const canCreate = !!session?.canCreateBuckets;
 
   const load = () => {
     setLoading(true);
@@ -431,13 +454,11 @@ export function BucketsPage() {
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold tracking-tight text-ink">Object Browser</h1>
-        <Button
-          variant="primary"
-          icon={<Plus className="size-4" />}
-          onClick={() => setCreating(true)}
-        >
-          Create Bucket
-        </Button>
+        {canCreate && (
+          <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setCreating(true)}>
+            Create Bucket
+          </Button>
+        )}
       </div>
 
       {/* Filter and Refresh Bar */}
@@ -464,7 +485,11 @@ export function BucketsPage() {
           </div>
         ) : shown.length === 0 ? (
           <div className="py-12 text-center text-sm text-faint">
-            {filter ? `No bucket matches "${filter}".` : "No buckets yet."}
+            {filter
+              ? `No bucket matches "${filter}".`
+              : isAdmin
+                ? "No buckets yet."
+                : "Your account has no buckets yet. Ask an administrator for access" + (canCreate ? ", or create one." : ".")}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -474,6 +499,7 @@ export function BucketsPage() {
                 <th className="py-2.5 pr-3 font-semibold text-ink">Objects</th>
                 <th className="py-2.5 pr-3 font-semibold text-ink">Size</th>
                 <th className="py-2.5 pr-4 font-semibold text-ink">Access</th>
+                {isAdmin && <th className="hidden py-2.5 pr-4 font-semibold text-ink md:table-cell">Created by</th>}
                 <th className="py-2.5 pr-4 text-right font-semibold text-ink">Actions</th>
               </tr>
             </thead>
@@ -495,8 +521,14 @@ export function BucketsPage() {
                   <td className="py-3 pr-3 font-mono text-xs text-muted">{count(b.objects)}</td>
                   <td className="py-3 pr-3 font-mono text-xs text-muted">{bytes(b.size)}</td>
                   <td className="py-3 pr-4 font-mono text-xs font-semibold text-ink">
-                    {bucketAccessLabel(b)}
+                    {/* Admins see the bucket's anonymous access; users what they may do with it. */}
+                    {isAdmin ? bucketAccessLabel(b) : b.access === "write" ? "READ & WRITE" : "READ ONLY"}
                   </td>
+                  {isAdmin && (
+                    <td className="hidden py-3 pr-4 font-mono text-xs text-muted md:table-cell" title="Who created the bucket">
+                      {b.createdBy || "—"}
+                    </td>
+                  )}
                   <td className="py-3 pr-4 text-right">
                     <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                       <button
@@ -507,14 +539,16 @@ export function BucketsPage() {
                       >
                         <Code2 className="size-3.5" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/buckets/${encodeURIComponent(b.name)}/settings`)}
-                        title="Bucket settings"
-                        className="flex size-7 items-center justify-center rounded text-muted hover:bg-sunken hover:text-ink transition-colors"
-                      >
-                        <Settings2 className="size-3.5" />
-                      </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/buckets/${encodeURIComponent(b.name)}/settings`)}
+                          title="Bucket settings"
+                          className="flex size-7 items-center justify-center rounded text-muted hover:bg-sunken hover:text-ink transition-colors"
+                        >
+                          <Settings2 className="size-3.5" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -525,6 +559,7 @@ export function BucketsPage() {
       </div>
 
       <CreateBucketModal
+        admin={isAdmin}
         open={creating}
         onClose={() => setCreating(false)}
         onCreated={(b) => {
