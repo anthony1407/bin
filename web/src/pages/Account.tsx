@@ -3,9 +3,9 @@ import { KeyRound, LogOut, ShieldCheck, Smartphone } from "lucide-react";
 import { useAuth } from "../auth";
 import { api, type SessionInfo } from "../api";
 import { dateTime } from "../lib/format";
-import { Button, Card, Field, Input, PageHeader, errorText, useToast } from "../components/ui";
-
-const MIN_PASSWORD = 10;
+import { Button, Card, Field, Input, PageHeader, PasswordInput, errorText, useToast } from "../components/ui";
+import { PasswordRules } from "../components/PasswordRules";
+import { passwordProblem } from "../lib/password";
 
 /** A user's own account: their console password, second factor and sessions. */
 export function AccountPage() {
@@ -38,8 +38,8 @@ function PasswordCard() {
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if ([...next].length < MIN_PASSWORD) {
-      setError(`Choose a password of at least ${MIN_PASSWORD} characters.`);
+    if (passwordProblem(next)) {
+      setError(passwordProblem(next));
       return;
     }
     if (next !== repeat) {
@@ -68,13 +68,14 @@ function PasswordCard() {
           <KeyRound className="size-4 text-accent" /> Change password
         </h2>
         <Field label="Current password">
-          <Input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
+          <PasswordInput autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
         </Field>
-        <Field label="New password" hint={`At least ${MIN_PASSWORD} characters.`}>
-          <Input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} required />
+        <Field label="New password">
+          <PasswordInput autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} required />
+          <PasswordRules password={next} />
         </Field>
         <Field label="Repeat the new password">
-          <Input type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} required />
+          <PasswordInput autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} required />
         </Field>
         {error && <div className="rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         <Button type="submit" variant="primary" busy={busy}>

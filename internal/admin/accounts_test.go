@@ -11,13 +11,13 @@ import (
 // newUser creates a key with a console password and returns it signed in.
 func newUser(t *testing.T, e *env, body map[string]any) (keyJSON, *env) {
 	t.Helper()
-	body["password"] = "user-password-1"
+	body["password"] = "User-pass5"
 	var key keyJSON
 	if code := e.call("POST", "/api/v1/access-keys", body, &key); code != 201 {
 		t.Fatalf("create key: %d", code)
 	}
 	u := e.asUser()
-	if code := u.signIn(key.AccessKey, "user-password-1"); code != 200 {
+	if code := u.signIn(key.AccessKey, "User-pass5"); code != 200 {
 		t.Fatalf("sign-in: %d", code)
 	}
 	return key, u
@@ -87,7 +87,7 @@ func TestAccountLockout(t *testing.T) {
 	for range maxLoginFailures {
 		e.asUser().signIn(key.AccessKey, "wrong-password")
 	}
-	if code := e.asUser().signIn(key.AccessKey, "user-password-1"); code != 429 {
+	if code := e.asUser().signIn(key.AccessKey, "User-pass5"); code != 429 {
 		t.Errorf("right password on a locked account: %d", code)
 	}
 }
@@ -97,7 +97,7 @@ func TestSessionsListAndEnd(t *testing.T) {
 	e.login()
 	key, u := newUser(t, e, map[string]any{"name": "ana"})
 	other := e.asUser()
-	other.signIn(key.AccessKey, "user-password-1")
+	other.signIn(key.AccessKey, "User-pass5")
 
 	type list struct {
 		Sessions []sessionInfoJSON
@@ -155,7 +155,7 @@ func TestSecondFactor(t *testing.T) {
 	login := func(totp string) (int, string) {
 		var out map[string]any
 		c := e.asUser().call("POST", "/api/v1/login", map[string]string{
-			"accessKey": key.AccessKey, "secretKey": "user-password-1", "totp": totp}, &out)
+			"accessKey": key.AccessKey, "secretKey": "User-pass5", "totp": totp}, &out)
 		errCode, _ := out["error"].(string)
 		return c, errCode
 	}
@@ -173,7 +173,7 @@ func TestSecondFactor(t *testing.T) {
 	var keyFull keyJSON
 	e.call("POST", "/api/v1/access-keys", map[string]any{"name": "x"}, &keyFull) // unrelated, keeps ids distinct
 	if c := e.asUser().call("POST", "/api/v1/login/activate", map[string]string{
-		"accessKey": key.AccessKey, "secretKey": key.SecretKey, "password": "brand-new-password"}, nil); c != 401 {
+		"accessKey": key.AccessKey, "secretKey": key.SecretKey, "password": "Brand-new6"}, nil); c != 401 {
 		t.Errorf("activation without a code: %d", c)
 	}
 	// An admin removes it (lost phone): password alone works again.

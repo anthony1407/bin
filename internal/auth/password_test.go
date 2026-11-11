@@ -6,17 +6,18 @@ import (
 )
 
 func TestPasswordHash(t *testing.T) {
-	h, err := HashPassword("correct horse battery")
+	const pw = "Correct horse 8!"
+	h, err := HashPassword(pw)
 	if err != nil || !strings.HasPrefix(h, "$argon2id$v=19$") {
 		t.Fatalf("hash: %q %v", h, err)
 	}
-	if h2, _ := HashPassword("correct horse battery"); h2 == h {
+	if h2, _ := HashPassword(pw); h2 == h {
 		t.Error("two hashes of one password are equal: no salt")
 	}
-	if !CheckPassword(h, "correct horse battery") {
+	if !CheckPassword(h, pw) {
 		t.Error("the right password is refused")
 	}
-	for _, wrong := range []string{"", "correct horse batter", "Correct horse battery"} {
+	for _, wrong := range []string{"", "Correct horse 8", "correct horse 8!"} {
 		if CheckPassword(h, wrong) {
 			t.Errorf("%q accepted", wrong)
 		}
@@ -26,10 +27,28 @@ func TestPasswordHash(t *testing.T) {
 			t.Errorf("stored %q matched", bad)
 		}
 	}
-	if _, err := HashPassword("short"); err == nil {
-		t.Error("a short password was accepted")
-	}
-	if _, err := HashPassword(strings.Repeat("x", MaxPasswordLength+1)); err == nil {
-		t.Error("a huge password was accepted")
+}
+
+// At least 6 characters, with an uppercase and a lowercase letter, a digit
+// and a special character.
+func TestPasswordPolicy(t *testing.T) {
+	for pw, ok := range map[string]bool{
+		"Ab1!xy":   true,  // exactly 6, every class
+		"Ñandú-9z": true,  // letters of any script count
+		"Ab1 xy":   true,  // a space is a special character
+		"Ab1!x":    false, // 5 characters
+		"ab1!xy":   false, // no uppercase
+		"AB1!XY":   false, // no lowercase
+		"Abc!xy":   false, // no digit
+		"Ab12xy":   false, // no special character
+		"":         false,
+		strings.Repeat("Ab1!", MaxPasswordLength/4+1): false, // too long
+	} {
+		if err := CheckPasswordPolicy(pw); (err == nil) != ok {
+			t.Errorf("%q: %v, want ok=%v", pw, err, ok)
+		}
+		if _, err := HashPassword(pw); (err == nil) != ok {
+			t.Errorf("hash %q: %v, want ok=%v", pw, err, ok)
+		}
 	}
 }

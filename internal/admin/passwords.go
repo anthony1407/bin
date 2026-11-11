@@ -16,7 +16,7 @@ import (
 // never changes with it. Every change ends the key's other console sessions.
 
 func writePasswordError(w http.ResponseWriter, err error) {
-	writeFieldError(w, "invalid_password", "password", "The password is too short or too long: "+err.Error()+".")
+	writeFieldError(w, "invalid_password", "password", "The password does not meet the rules: "+err.Error()+".")
 }
 
 // setPassword stores a new console password for a key and ends its console

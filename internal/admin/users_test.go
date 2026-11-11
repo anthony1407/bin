@@ -46,13 +46,13 @@ func TestUserConsoleAccess(t *testing.T) {
 		u.csrf = s.CSRFToken
 		return code
 	}
-	if code := activate("wrong-secret", "a-good-password"); code != 401 {
+	if code := activate("wrong-secret", "Good-pass1"); code != 401 {
 		t.Errorf("activation with a wrong secret: %d", code)
 	}
 	if code := activate(key.SecretKey, "short"); code != 400 {
 		t.Errorf("activation with a short password: %d", code)
 	}
-	if code := activate(key.SecretKey, "a-good-password"); code != 200 {
+	if code := activate(key.SecretKey, "Good-pass1"); code != 200 {
 		t.Fatalf("activation: %d", code)
 	}
 	var sess sessionResponse
@@ -128,13 +128,13 @@ func TestUserConsoleAccess(t *testing.T) {
 
 	// Changing their own password keeps this session and ends the others.
 	other := e.asUser()
-	if code := other.signIn(key.AccessKey, "a-good-password"); code != 200 {
+	if code := other.signIn(key.AccessKey, "Good-pass1"); code != 200 {
 		t.Fatalf("second sign-in: %d", code)
 	}
-	if code := u.call("POST", "/api/v1/account/password", map[string]string{"currentPassword": "wrong", "password": "another-password"}, nil); code != 400 {
+	if code := u.call("POST", "/api/v1/account/password", map[string]string{"currentPassword": "wrong", "password": "Other-pass2"}, nil); code != 400 {
 		t.Errorf("change with a wrong current password: %d", code)
 	}
-	if code := u.call("POST", "/api/v1/account/password", map[string]string{"currentPassword": "a-good-password", "password": "another-password"}, nil); code != 204 {
+	if code := u.call("POST", "/api/v1/account/password", map[string]string{"currentPassword": "Good-pass1", "password": "Other-pass2"}, nil); code != 204 {
 		t.Fatalf("change own password: %d", code)
 	}
 	if code := u.call("GET", "/api/v1/buckets", nil, nil); code != 200 {
@@ -143,7 +143,7 @@ func TestUserConsoleAccess(t *testing.T) {
 	if code := other.call("GET", "/api/v1/buckets", nil, nil); code != 401 {
 		t.Errorf("other session after the change: %d", code)
 	}
-	if code := e.asUser().signIn(key.AccessKey, "a-good-password"); code != 401 {
+	if code := e.asUser().signIn(key.AccessKey, "Good-pass1"); code != 401 {
 		t.Errorf("old password still works: %d", code)
 	}
 
@@ -162,11 +162,11 @@ func TestUserConsoleAccess(t *testing.T) {
 		}
 	}
 	// And sets a new one.
-	if code := e.call("PUT", "/api/v1/access-keys/"+key.AccessKey+"/password", map[string]string{"password": "set-by-the-admin"}, nil); code != 204 {
+	if code := e.call("PUT", "/api/v1/access-keys/"+key.AccessKey+"/password", map[string]string{"password": "Admin-set3"}, nil); code != 204 {
 		t.Fatalf("admin sets a password: %d", code)
 	}
 	u = e.asUser()
-	if code := u.signIn(key.AccessKey, "set-by-the-admin"); code != 200 {
+	if code := u.signIn(key.AccessKey, "Admin-set3"); code != 200 {
 		t.Fatalf("sign-in with the admin's password: %d", code)
 	}
 	// Disabling the key ends the session at once.
@@ -174,7 +174,7 @@ func TestUserConsoleAccess(t *testing.T) {
 	if code := u.call("GET", "/api/v1/buckets", nil, nil); code != 401 {
 		t.Errorf("session of a disabled key: %d", code)
 	}
-	if code := e.asUser().signIn(key.AccessKey, "set-by-the-admin"); code != 401 {
+	if code := e.asUser().signIn(key.AccessKey, "Admin-set3"); code != 401 {
 		t.Errorf("sign-in of a disabled key: %d", code)
 	}
 }
@@ -186,13 +186,13 @@ func TestReadOnlyUser(t *testing.T) {
 	e.call("PUT", "/api/v1/buckets/docs/upload?key=a.txt", "alpha", nil)
 	var key keyJSON
 	e.call("POST", "/api/v1/access-keys", map[string]any{
-		"name": "reader", "buckets": []string{"docs"}, "readOnly": true, "password": "reader-password",
+		"name": "reader", "buckets": []string{"docs"}, "readOnly": true, "password": "Reader-pass4",
 	}, &key)
 	if !key.ConsolePassword {
 		t.Fatalf("password given at creation not set: %+v", key)
 	}
 	u := e.asUser()
-	if code := u.signIn(key.AccessKey, "reader-password"); code != 200 {
+	if code := u.signIn(key.AccessKey, "Reader-pass4"); code != 200 {
 		t.Fatalf("sign-in: %d", code)
 	}
 	var b bucketJSON
@@ -220,7 +220,7 @@ func TestReadOnlyUser(t *testing.T) {
 	// Root is not a user: it cannot use activation to take a password.
 	var s map[string]string
 	if code := e.asUser().call("POST", "/api/v1/login/activate", map[string]string{
-		"accessKey": rootAK, "secretKey": rootSK, "password": "whatever-long"}, &s); code != 401 || strings.Contains(s["message"], "root") {
+		"accessKey": rootAK, "secretKey": rootSK, "password": "Whatever-7"}, &s); code != 401 || strings.Contains(s["message"], "root") {
 		t.Errorf("root activation: %d %v", code, s)
 	}
 }

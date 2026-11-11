@@ -3,13 +3,14 @@ import { useLocation } from "react-router";
 import { ArrowRight, Eye, EyeOff, KeyRound } from "lucide-react";
 import { useAuth } from "../auth";
 import { api, ApiError, type LoginProviders } from "../api";
-import { BinLogo, BinMark, Button, Field, Input, cx } from "../components/ui";
+import { BinLogo, BinMark, Button, Field, Input, PasswordInput, cx } from "../components/ui";
+import { PasswordRules } from "../components/PasswordRules";
+import { passwordProblem } from "../lib/password";
 
 // "key": root or an access key's user with their console password.
 // "activate": a user proves access key + secret key once and picks a password.
 type Mode = "key" | "ldap" | "activate";
 
-const MIN_PASSWORD = 10;
 
 export function LoginPage() {
   const { signIn, signInLDAP, activate } = useAuth();
@@ -39,8 +40,8 @@ export function LoginPage() {
     e.preventDefault();
     if (busy) return;
     if (mode === "activate") {
-      if ([...newPassword].length < MIN_PASSWORD) {
-        setError(`Choose a password of at least ${MIN_PASSWORD} characters.`);
+      if (passwordProblem(newPassword)) {
+        setError(passwordProblem(newPassword));
         return;
       }
       if (newPassword !== confirmPassword) {
@@ -168,19 +169,21 @@ export function LoginPage() {
             </Field>
             {activating && (
               <>
-                <Field label="New console password" hint={`At least ${MIN_PASSWORD} characters.`}>
-                  <Input
-                    type={show ? "text" : "password"}
+                <Field label="New console password">
+                  <PasswordInput
                     autoComplete="new-password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     readOnly={busy}
                     required
                   />
+                  <PasswordRules password={newPassword} />
                 </Field>
-                <Field label="Repeat the new password">
-                  <Input
-                    type={show ? "text" : "password"}
+                <Field
+                  label="Confirm the new password"
+                  error={confirmPassword && confirmPassword !== newPassword ? "The passwords do not match." : undefined}
+                >
+                  <PasswordInput
                     autoComplete="new-password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}

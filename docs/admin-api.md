@@ -17,7 +17,7 @@ access, existing or not.
 | Step | Request | Notes |
 |---|---|---|
 | Sign in | `POST /api/v1/login` `{"accessKey","secretKey"}` | Root's credentials, or an access key and its user's **console password** in `secretKey` (never the S3 secret key). Sets the `bin_session` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS) and returns `{"user","csrfToken","expiresAt","role","canCreateBuckets"}`; `role` is `admin` or `user`. |
-| Activate console access | `POST /api/v1/login/activate` `{"accessKey","secretKey","password"}` | A user proves the key with its S3 secret key and chooses a console password (10–256 characters); signs them in. Replaces an existing password (self-service reset). Ends the key's other console sessions. Not for root or internal keys. |
+| Activate console access | `POST /api/v1/login/activate` `{"accessKey","secretKey","password"}` | A user proves the key with its S3 secret key and chooses a console password (6–256 characters, with an uppercase letter, a lowercase letter, a number and a special character; else `400 invalid_password`); signs them in. Replaces an existing password (self-service reset). Ends the key's other console sessions. Not for root or internal keys. |
 | Change own password | `POST /api/v1/account/password` `{"currentPassword","password"}` | User sessions only. `204`; the key's other sessions end, this one stays. |
 | Current session | `GET /api/v1/session` | Returns the same body; use it to recover the CSRF token after a page reload. |
 | Sign out | `POST /api/v1/logout` | Ends the session. |

@@ -19,7 +19,9 @@ import {
 import { api, type AccessKey, type Bucket, type Group } from "../api";
 import { SessionsList } from "./Account";
 import { UserActivityModal } from "./UserActivity";
-import { Button, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
+import { PasswordRules } from "../components/PasswordRules";
+import { passwordProblem } from "../lib/password";
+import { Button, Field, IconButton, Input, Modal, PasswordInput, Spinner, cx, errorText, useToast } from "../components/ui";
 
 function downloadFile(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -58,9 +60,6 @@ function fallbackCopy(text: string): boolean {
     return false;
   }
 }
-
-/** Console passwords: the server refuses shorter ones. */
-const MIN_PASSWORD = 10;
 
 function CopyButton({ text, label = "Copy to clipboard" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -173,6 +172,7 @@ export function UsersPage() {
   const [editEnabled, setEditEnabled] = useState(true);
   const [editCanCreate, setEditCanCreate] = useState(false);
   const [editPassword, setEditPassword] = useState("");
+  const [editPasswordConfirm, setEditPasswordConfirm] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [updatingUser, setUpdatingUser] = useState(false);
 
@@ -180,6 +180,7 @@ export function UsersPage() {
   const [username, setUsername] = useState("");
   const [usernameError, setUsernameError] = useState("");
   const [consolePassword, setConsolePassword] = useState("");
+  const [consolePasswordConfirm, setConsolePasswordConfirm] = useState("");
   const [canCreateBuckets, setCanCreateBuckets] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
   const [assignedBuckets, setAssignedBuckets] = useState<string[]>([]);
@@ -218,6 +219,7 @@ export function UsersPage() {
     setAssignedBuckets([]);
     setAssignedGroups([]);
     setConsolePassword("");
+    setConsolePasswordConfirm("");
     setCanCreateBuckets(false);
   }
 
@@ -227,8 +229,12 @@ export function UsersPage() {
       setUsernameError("User name is required.");
       return;
     }
-    if (consolePassword && [...consolePassword].length < MIN_PASSWORD) {
-      toast("error", `The console password needs at least ${MIN_PASSWORD} characters.`);
+    if (consolePassword && passwordProblem(consolePassword)) {
+      toast("error", passwordProblem(consolePassword));
+      return;
+    }
+    if (consolePassword !== consolePasswordConfirm) {
+      toast("error", "The two console passwords do not match.");
       return;
     }
     setUsernameError("");
@@ -302,20 +308,26 @@ export function UsersPage() {
     setEditEnabled(u.enabled);
     setEditCanCreate(u.canCreateBuckets);
     setEditPassword("");
+    setEditPasswordConfirm("");
   }
 
   // Console passwords change at once, apart from "Save Changes": they end the
   // user's sessions, which should not wait for the rest of the form.
   async function setUserPassword() {
     if (!editingUser) return;
-    if ([...editPassword].length < MIN_PASSWORD) {
-      toast("error", `Use at least ${MIN_PASSWORD} characters.`);
+    if (passwordProblem(editPassword)) {
+      toast("error", passwordProblem(editPassword));
+      return;
+    }
+    if (editPassword !== editPasswordConfirm) {
+      toast("error", "The two passwords do not match.");
       return;
     }
     setPasswordBusy(true);
     try {
       await api.setKeyPassword(editingUser.accessKey, editPassword);
       setEditPassword("");
+      setEditPasswordConfirm("");
       setEditingUser({ ...editingUser, consolePassword: true });
       toast("ok", "Console password set. The user's open sessions were signed out.");
       load();
@@ -492,15 +504,27 @@ export function UsersPage() {
                 <span className="block text-sm font-medium text-ink">Console sign-in</span>
                 <Field
                   label="Console password (optional)"
-                  hint={`At least ${MIN_PASSWORD} characters. Leave empty and the user sets it on the sign-in page with their secret key.`}
+                  hint="Leave empty and the user sets it on the sign-in page with their secret key."
                 >
-                  <Input
-                    type="password"
+                  <PasswordInput
                     autoComplete="new-password"
                     value={consolePassword}
                     onChange={(e) => setConsolePassword(e.target.value)}
                   />
+                  {consolePassword && <PasswordRules password={consolePassword} />}
                 </Field>
+                {consolePassword && (
+                  <Field
+                    label="Confirm password"
+                    error={consolePasswordConfirm && consolePasswordConfirm !== consolePassword ? "The passwords do not match." : undefined}
+                  >
+                    <PasswordInput
+                      autoComplete="new-password"
+                      value={consolePasswordConfirm}
+                      onChange={(e) => setConsolePasswordConfirm(e.target.value)}
+                    />
+                  </Field>
+                )}
                 <label className="flex cursor-pointer items-center gap-2 text-sm">
                   <input
                     type="checkbox"
@@ -882,18 +906,33 @@ export function UsersPage() {
                   </Button>
                 )}
               </div>
-              <div className="flex gap-2">
-                <Input
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder={editingUser.consolePassword ? "New password" : "Password"}
-                  value={editPassword}
-                  onChange={(e) => setEditPassword(e.target.value)}
-                />
-                <Button busy={passwordBusy} disabled={!editPassword} onClick={setUserPassword}>
+              <div className="flex flex-wrap gap-2">
+                <div className="min-w-40 flex-1">
+                  <PasswordInput
+                    autoComplete="new-password"
+                    placeholder={editingUser.consolePassword ? "New password" : "Password"}
+                    value={editPassword}
+                    onChange={(e) => setEditPassword(e.target.value)}
+                  />
+                </div>
+                <div className="min-w-40 flex-1">
+                  <PasswordInput
+                    autoComplete="new-password"
+                    placeholder="Confirm password"
+                    aria-invalid={!!editPasswordConfirm && editPasswordConfirm !== editPassword}
+                    value={editPasswordConfirm}
+                    onChange={(e) => setEditPasswordConfirm(e.target.value)}
+                  />
+                </div>
+                <Button
+                  busy={passwordBusy}
+                  disabled={!editPassword || editPassword !== editPasswordConfirm || !!passwordProblem(editPassword)}
+                  onClick={setUserPassword}
+                >
                   {editingUser.consolePassword ? "Change" : "Set"}
                 </Button>
               </div>
+              {editPassword && <PasswordRules password={editPassword} />}
               <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs">
                 <input
                   type="checkbox"

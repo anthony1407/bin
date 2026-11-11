@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -28,16 +29,39 @@ const (
 
 // MinPasswordLength and MaxPasswordLength bound console passwords, in characters.
 const (
-	MinPasswordLength = 10
+	MinPasswordLength = 6
 	MaxPasswordLength = 256
 )
 
-// ErrWeakPassword is returned for passwords outside the length bounds.
-var ErrWeakPassword = fmt.Errorf("use %d to %d characters", MinPasswordLength, MaxPasswordLength)
+// ErrWeakPassword is returned for passwords that break the policy.
+var ErrWeakPassword = fmt.Errorf("use %d to %d characters, with at least one uppercase letter, one lowercase letter, "+
+	"one number and one special character", MinPasswordLength, MaxPasswordLength)
 
-// CheckPasswordPolicy reports whether a new password is acceptable.
+// CheckPasswordPolicy reports whether a new password is acceptable: 6 to 256
+// characters with an uppercase and a lowercase letter, a digit and a special
+// character (anything that is neither a letter nor a digit, spaces included).
+// Letters and digits of any script count.
 func CheckPasswordPolicy(password string) error {
-	if n := utf8.RuneCountInString(password); n < MinPasswordLength || n > MaxPasswordLength || !utf8.ValidString(password) {
+	if !utf8.ValidString(password) {
+		return ErrWeakPassword
+	}
+	if n := utf8.RuneCountInString(password); n < MinPasswordLength || n > MaxPasswordLength {
+		return ErrWeakPassword
+	}
+	var upper, lower, digit, special bool
+	for _, c := range password {
+		switch {
+		case unicode.IsUpper(c):
+			upper = true
+		case unicode.IsLower(c):
+			lower = true
+		case unicode.IsDigit(c):
+			digit = true
+		case !unicode.IsLetter(c):
+			special = true
+		}
+	}
+	if !upper || !lower || !digit || !special {
 		return ErrWeakPassword
 	}
 	return nil
