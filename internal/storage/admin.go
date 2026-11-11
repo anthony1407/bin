@@ -32,6 +32,10 @@ type AccessKey struct {
 	// string, opaque to storage); "": no console sign-in.
 	PasswordHash     string
 	CanCreateBuckets bool // its user may create buckets from the console
+	// TOTPSecretEnc is the user's second factor (encrypted by the caller); "":
+	// none. TOTPLastStep is the time step of the last code accepted.
+	TOTPSecretEnc string
+	TOTPLastStep  int64
 }
 
 func timeOrZero(n int64) time.Time {
@@ -49,13 +53,13 @@ func nanosOrZero(t time.Time) int64 {
 }
 
 const accessKeyColumns = `access_key, secret_enc, name, enabled, internal, created_at, expires_at, last_used_at, scope,
-	password_hash, can_create_buckets`
+	password_hash, can_create_buckets, totp_secret_enc, totp_last_step`
 
 func scanAccessKey(scan func(...any) error) (AccessKey, error) {
 	var k AccessKey
 	var created, expires, used int64
 	err := scan(&k.AccessKey, &k.SecretEnc, &k.Name, &k.Enabled, &k.Internal, &created, &expires, &used, &k.Scope,
-		&k.PasswordHash, &k.CanCreateBuckets)
+		&k.PasswordHash, &k.CanCreateBuckets, &k.TOTPSecretEnc, &k.TOTPLastStep)
 	k.Created, k.Expires, k.LastUsed = fromNanos(created), timeOrZero(expires), timeOrZero(used)
 	return k, err
 }
@@ -67,9 +71,9 @@ func (s *Store) CreateAccessKey(ctx context.Context, k AccessKey) error {
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM access_keys WHERE access_key = ?`, k.AccessKey).Scan(&one); err == nil {
 			return ErrAccessKeyExists
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO access_keys (`+accessKeyColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO access_keys (`+accessKeyColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			k.AccessKey, k.SecretEnc, k.Name, k.Enabled, k.Internal, s.nowNanos(), nanosOrZero(k.Expires), 0, k.Scope,
-			k.PasswordHash, k.CanCreateBuckets)
+			k.PasswordHash, k.CanCreateBuckets, k.TOTPSecretEnc, k.TOTPLastStep)
 		return err
 	})
 }
@@ -121,8 +125,9 @@ func (s *Store) UpdateAccessKey(ctx context.Context, accessKey string, fn func(*
 		// A changed password should end the key's other console sessions:
 		// callers do it with DeleteKeySessions, keeping their own if they wish.
 		_, err = tx.ExecContext(ctx, `UPDATE access_keys SET secret_enc = ?, name = ?, enabled = ?, expires_at = ?, scope = ?,
-			password_hash = ?, can_create_buckets = ? WHERE access_key = ?`,
-			k.SecretEnc, k.Name, k.Enabled, nanosOrZero(k.Expires), k.Scope, k.PasswordHash, k.CanCreateBuckets, accessKey)
+			password_hash = ?, can_create_buckets = ?, totp_secret_enc = ?, totp_last_step = ? WHERE access_key = ?`,
+			k.SecretEnc, k.Name, k.Enabled, nanosOrZero(k.Expires), k.Scope, k.PasswordHash, k.CanCreateBuckets,
+			k.TOTPSecretEnc, k.TOTPLastStep, accessKey)
 		return err
 	})
 	return k, err
@@ -167,13 +172,39 @@ type Session struct {
 	AccessKey string
 	Created   time.Time
 	Expires   time.Time
+	Remote    string // client IP at sign-in
+	UserAgent string // browser at sign-in, as sent
 }
 
 // CreateSession stores a session.
 func (s *Store) CreateSession(ctx context.Context, sess Session) error {
-	_, err := s.exec(ctx, `INSERT INTO sessions (token_hash, csrf, user, access_key, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, sess.TokenHash, sess.CSRF, sess.User, sess.AccessKey, s.nowNanos(), sess.Expires.UnixNano())
+	_, err := s.exec(ctx, `INSERT INTO sessions (token_hash, csrf, user, access_key, created_at, expires_at, remote, user_agent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, sess.TokenHash, sess.CSRF, sess.User, sess.AccessKey, s.nowNanos(),
+		sess.Expires.UnixNano(), sess.Remote, sess.UserAgent)
 	return err
+}
+
+// ListSessions returns the live sessions, newest first: every one, or with
+// onlyKey set, those of that access key's user.
+func (s *Store) ListSessions(ctx context.Context, onlyKey string) ([]Session, error) {
+	rows, err := s.read.QueryContext(ctx, `SELECT token_hash, user, access_key, created_at, expires_at, remote, user_agent
+		FROM sessions WHERE expires_at > ? AND (? = '' OR access_key = ?) ORDER BY created_at DESC`,
+		s.nowNanos(), onlyKey, onlyKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		var sess Session
+		var created, expires int64
+		if err := rows.Scan(&sess.TokenHash, &sess.User, &sess.AccessKey, &created, &expires, &sess.Remote, &sess.UserAgent); err != nil {
+			return nil, err
+		}
+		sess.Created, sess.Expires = fromNanos(created), fromNanos(expires)
+		out = append(out, sess)
+	}
+	return out, rows.Err()
 }
 
 // DeleteKeySessions ends the console sessions of an access key's user,
@@ -188,8 +219,9 @@ func (s *Store) DeleteKeySessions(ctx context.Context, accessKey, keepTokenHash 
 func (s *Store) GetSession(ctx context.Context, tokenHash string) (Session, error) {
 	var sess Session
 	var created, expires int64
-	err := s.read.QueryRowContext(ctx, `SELECT token_hash, csrf, user, access_key, created_at, expires_at FROM sessions
-		WHERE token_hash = ?`, tokenHash).Scan(&sess.TokenHash, &sess.CSRF, &sess.User, &sess.AccessKey, &created, &expires)
+	err := s.read.QueryRowContext(ctx, `SELECT token_hash, csrf, user, access_key, created_at, expires_at, remote, user_agent
+		FROM sessions WHERE token_hash = ?`, tokenHash).Scan(&sess.TokenHash, &sess.CSRF, &sess.User, &sess.AccessKey,
+		&created, &expires, &sess.Remote, &sess.UserAgent)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && expires <= s.nowNanos()) {
 		return Session{}, ErrNoSession
 	}

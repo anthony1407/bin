@@ -26,6 +26,7 @@ type keyJSON struct {
 	// (the password itself is never sent back).
 	ConsolePassword  bool `json:"consolePassword"`
 	CanCreateBuckets bool `json:"canCreateBuckets"`
+	TOTP             bool `json:"totp"` // its user signs in with a second factor
 }
 
 // keyGroups maps each access key to the groups it belongs to.
@@ -71,6 +72,7 @@ func toKeyJSON(k storage.AccessKey) keyJSON {
 		ExpiresAt: optionalTime(k.Expires), LastUsed: optionalTime(k.LastUsed),
 		Expired: !k.Expires.IsZero() && time.Now().After(k.Expires), Buckets: buckets, ReadOnly: scope.ReadOnly,
 		Groups: []string{}, ConsolePassword: k.PasswordHash != "", CanCreateBuckets: k.CanCreateBuckets,
+		TOTP: k.TOTPSecretEnc != "",
 	}
 }
 

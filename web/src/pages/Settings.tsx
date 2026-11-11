@@ -470,6 +470,57 @@ function AuditSection({ info, settings, onSaved }: { info: Info; settings: Setti
   );
 }
 
+/** Bounds on the buckets users create, so an account allowed to create them cannot fill the disk. */
+function UserBucketsSection({ settings, onSaved }: { settings: Settings; onSaved: (s: Settings) => void }) {
+  const GiB = 1024 * 1024 * 1024;
+  const [limit, setLimit] = useState(String(settings.userBucketLimit));
+  const [quotaGiB, setQuotaGiB] = useState(String(Math.round(settings.userBucketQuotaBytes / GiB)));
+  const [saving, setSaving] = useState(false);
+  const toast = useToast();
+  const changed = limit !== String(settings.userBucketLimit) || Number(quotaGiB) * GiB !== settings.userBucketQuotaBytes;
+
+  async function save() {
+    const l = Number(limit);
+    const q = Number(quotaGiB);
+    if (!Number.isInteger(l) || l < 0 || !Number.isFinite(q) || q < 0) {
+      toast("error", "Use whole numbers of 0 or more (0: no limit).");
+      return;
+    }
+    setSaving(true);
+    try {
+      onSaved(await api.saveUserBucketLimits(l, Math.round(q * GiB)));
+      toast("ok", "Limits for user buckets saved.");
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="p-6 space-y-4">
+      <div>
+        <h3 className="font-semibold text-base">Buckets Created by Users</h3>
+        <p className="text-xs text-muted mt-0.5">
+          Users allowed to create buckets (Identity → Users) are bounded by these, so they cannot fill the disk. Admins are not.
+          The quota applies when a bucket is created; change it later in the bucket's settings.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <Field label="Buckets per user" hint="0: no limit">
+          <Input type="number" min="0" value={limit} onChange={(e) => setLimit(e.target.value)} className="w-32 font-mono" />
+        </Field>
+        <Field label="Quota per bucket (GiB)" hint="0: no quota">
+          <Input type="number" min="0" value={quotaGiB} onChange={(e) => setQuotaGiB(e.target.value)} className="w-32 font-mono" />
+        </Field>
+        <Button variant="primary" busy={saving} disabled={!changed} icon={<Save className="size-3.5" />} onClick={save}>
+          Save Limits
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 // --- Main Settings Page -----------------------------------------------------------------
 
 type ConfigTab = "general" | "storage" | "tls" | "audit" | "share";
@@ -575,6 +626,7 @@ export function SettingsPage() {
         <div className="space-y-6">
           <ServerCard info={info} />
           <LimitsAndSpecs />
+          <UserBucketsSection settings={settings} onSaved={setSettings} />
           <Card className="p-5">
             <h3 className="font-semibold text-base mb-1">Environment Variables Reference</h3>
             <p className="text-xs text-muted mb-4">

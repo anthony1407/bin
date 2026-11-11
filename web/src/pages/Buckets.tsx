@@ -12,6 +12,7 @@ import {
   Search,
   Settings2,
   SlidersHorizontal,
+  Trash2,
 } from "lucide-react";
 import { api, type Bucket } from "../api";
 import { useAuth, useIsAdmin } from "../auth";
@@ -63,12 +64,9 @@ function CreateBucketModal({
   const [name, setName] = useState("");
   const [showRules, setShowRules] = useState(false);
   const [versioning, setVersioning] = useState(false);
-  const [locking, setLocking] = useState(false);
   const [quota, setQuota] = useState(false);
   const [quotaAmount, setQuotaAmount] = useState("1");
   const [quotaUnit, setQuotaUnit] = useState<"GiB" | "TiB">("TiB");
-  const [retention, setRetention] = useState(false);
-  const [retentionDays, setRetentionDays] = useState("180");
   const [isPublic, setIsPublic] = useState(false);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -79,9 +77,7 @@ function CreateBucketModal({
     if (open) {
       setName("");
       setVersioning(false);
-      setLocking(false);
       setQuota(false);
-      setRetention(false);
       setIsPublic(false);
       setShowRules(false);
     }
@@ -90,9 +86,7 @@ function CreateBucketModal({
   function handleClear() {
     setName("");
     setVersioning(false);
-    setLocking(false);
     setQuota(false);
-    setRetention(false);
     setIsPublic(false);
   }
 
@@ -246,33 +240,6 @@ function CreateBucketModal({
               </label>
             </div>
 
-            {/* Object Locking Toggle */}
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-ink">Object Locking</span>
-              <label className="flex cursor-pointer items-center gap-2 select-none text-xs">
-                <span className={cx(!locking ? "font-bold text-ink" : "text-muted")}>OFF</span>
-                <div
-                  onClick={() => {
-                    const next = !locking;
-                    setLocking(next);
-                    if (next) setVersioning(true);
-                  }}
-                  className={cx(
-                    "relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
-                    locking ? "bg-accent" : "bg-line-strong",
-                  )}
-                >
-                  <span
-                    className={cx(
-                      "absolute size-3.5 rounded-full bg-white shadow transition-transform",
-                      locking ? "translate-x-4" : "translate-x-0.5",
-                    )}
-                  />
-                </div>
-                <span className={cx(locking ? "font-bold text-ink" : "text-muted")}>ON</span>
-              </label>
-            </div>
-
             {/* Quota Toggle */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -319,46 +286,7 @@ function CreateBucketModal({
               )}
             </div>
 
-            {/* Retention Toggle */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-ink">Retention</span>
-                <label className="flex cursor-pointer items-center gap-2 select-none text-xs">
-                  <span className={cx(!retention ? "font-bold text-ink" : "text-muted")}>OFF</span>
-                  <div
-                    onClick={() => {
-                      const next = !retention;
-                      setRetention(next);
-                      if (next) setVersioning(true);
-                    }}
-                    className={cx(
-                      "relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
-                      retention ? "bg-accent" : "bg-line-strong",
-                    )}
-                  >
-                    <span
-                      className={cx(
-                        "absolute size-3.5 rounded-full bg-white shadow transition-transform",
-                        retention ? "translate-x-4" : "translate-x-0.5",
-                      )}
-                    />
-                  </div>
-                  <span className={cx(retention ? "font-bold text-ink" : "text-muted")}>ON</span>
-                </label>
-              </div>
-              {retention && (
-                <div className="flex items-center gap-2 pt-1 text-xs">
-                  <Input
-                    type="number"
-                    min="1"
-                    value={retentionDays}
-                    onChange={(e) => setRetentionDays(e.target.value)}
-                    className="w-24 h-8 text-xs font-mono"
-                  />
-                  <span className="text-muted">days</span>
-                </div>
-              )}
-            </div>
+            {/* Object locking and retention are not offered: bin does not enforce them yet. */}
           </div>
           </>
           )}
@@ -395,22 +323,8 @@ function CreateBucketModal({
               <span>allows to keep multiple versions of the same object under the same key.</span>
             </div>
             <div>
-              <strong className="block text-ink font-semibold">Object Locking</strong>
-              <span>
-                prevents objects from being deleted. Required to support retention and legal hold.
-                Can only be enabled at bucket creation.
-              </span>
-            </div>
-            <div>
               <strong className="block text-ink font-semibold">Quota</strong>
               <span>limits the amount of data in the bucket.</span>
-            </div>
-            <div>
-              <strong className="block text-ink font-semibold">Retention</strong>
-              <span>
-                imposes rules to prevent object deletion for a period of time. Versioning must be
-                enabled in order to set bucket retention policies.
-              </span>
             </div>
           </div>
         </div>
@@ -429,6 +343,23 @@ export function BucketsPage() {
   const { session } = useAuth();
   const isAdmin = useIsAdmin();
   const canCreate = !!session?.canCreateBuckets;
+  const [deleting, setDeleting] = useState<Bucket | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  async function deleteOwn() {
+    if (!deleting) return;
+    setDeleteBusy(true);
+    try {
+      await api.deleteBucket(deleting.name, false);
+      toast("ok", `Bucket ${deleting.name} deleted.`);
+      setDeleting(null);
+      load();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
 
   const load = () => {
     setLoading(true);
@@ -539,6 +470,16 @@ export function BucketsPage() {
                       >
                         <Code2 className="size-3.5" />
                       </button>
+                      {!isAdmin && b.owned && (
+                        <button
+                          type="button"
+                          onClick={() => setDeleting(b)}
+                          title="Delete this bucket (it must be empty)"
+                          className="flex size-7 items-center justify-center rounded text-muted hover:bg-danger-soft hover:text-danger transition-colors"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      )}
                       {isAdmin && (
                         <button
                           type="button"
@@ -557,6 +498,27 @@ export function BucketsPage() {
           </table>
         )}
       </div>
+
+      {/* Users delete their own buckets, once empty (the server refuses otherwise). */}
+      <Modal
+        open={!!deleting}
+        onClose={() => !deleteBusy && setDeleting(null)}
+        title="Delete bucket"
+        footer={
+          <>
+            <Button disabled={deleteBusy} onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="danger" icon={<Trash2 className="size-4" />} busy={deleteBusy} onClick={deleteOwn}>
+              Delete
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm">
+          Delete <span className="font-mono">{deleting?.name}</span>? It must be empty, its trash too.
+        </p>
+      </Modal>
 
       <CreateBucketModal
         admin={isAdmin}

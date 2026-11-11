@@ -3,6 +3,7 @@ package admin
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ type bucketJSON struct {
 	// Access is what the session may do with the bucket's files: "write"
 	// (admins, read-write users) or "read".
 	Access string `json:"access"`
+	// Owned is set for a user's own bucket (one they created): they may delete it once empty.
+	Owned bool `json:"owned"`
 }
 
 func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage) bucketJSON {
@@ -47,6 +50,7 @@ func (h *Handler) bucketJSON(r *http.Request, b storage.Bucket, u storage.Usage)
 		Name: b.Name, CreatedAt: b.CreatedAt, Objects: u.Objects, Size: u.Bytes,
 		QuotaBytes: b.QuotaBytes, Policy: policy, Tags: tags, Versioning: b.Versioning, CORS: rules,
 		TrashDays: b.TrashDays, CreatedBy: b.CreatedBy, Access: access,
+		Owned: b.OwnerKey != "" && b.OwnerKey == sessionOf(r).AccessKey,
 	}
 }
 
@@ -95,6 +99,21 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "access_denied", "Only an administrator can make a bucket public.")
 			return
 		}
+		limit, err := h.intSetting(r, settingUserBucketLimit, defaultUserBucketLimit)
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		owned, err := h.opts.Store.BucketsOwnedBy(r.Context(), sess.AccessKey)
+		if err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		if limit > 0 && int64(len(owned)) >= limit {
+			writeError(w, http.StatusForbidden, "bucket_limit_reached",
+				"Your account owns "+strconv.Itoa(len(owned))+" buckets, the most a user may create. Ask an administrator.")
+			return
+		}
 		owner = sess.AccessKey
 	}
 	if in.Policy != nil {
@@ -108,6 +127,18 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.opts.Log.Info("bucket created from the console", "bucket", in.Name, "by", sess.User)
+	if owner != "" {
+		// A user's bucket starts with the configured quota; an admin may change it.
+		quota, err := h.intSetting(r, settingUserBucketQuota, defaultUserBucketQuota)
+		if err == nil && quota > 0 {
+			err = h.opts.Store.SetBucketQuota(r.Context(), in.Name, quota)
+		}
+		if err != nil {
+			h.opts.Store.DeleteBucket(r.Context(), in.Name) // never leave it without its limit
+			h.storageError(w, r, err)
+			return
+		}
+	}
 	if in.Policy != nil && in.Policy.Mode != "private" {
 		if err := h.opts.Store.SetBucketPolicy(r.Context(), in.Name, in.Policy.String()); err != nil {
 			h.storageError(w, r, err)
@@ -138,7 +169,22 @@ func (h *Handler) getBucket(w http.ResponseWriter, r *http.Request) {
 // object in it, older versions and delete markers included.
 func (h *Handler) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("bucket")
-	if r.URL.Query().Get("force") == "true" {
+	force := r.URL.Query().Get("force") == "true"
+	if _, user := userGrants(r); user {
+		// Users delete only buckets they created, and only empty ones: what is
+		// in them goes through the trash first, so nothing is lost by a slip.
+		b, err := h.opts.Store.GetBucket(r.Context(), name)
+		if err != nil || b.OwnerKey != sessionOf(r).AccessKey {
+			denyUser(w)
+			return
+		}
+		if force {
+			writeError(w, http.StatusForbidden, "access_denied",
+				"Empty the bucket (and its trash) first: only administrators delete a bucket with its content.")
+			return
+		}
+	}
+	if force {
 		n, err := h.opts.Store.PurgePrefix(r.Context(), name, "")
 		if err != nil {
 			h.storageError(w, r, err)

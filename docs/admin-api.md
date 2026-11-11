@@ -22,6 +22,13 @@ access, existing or not.
 | Current session | `GET /api/v1/session` | Returns the same body; use it to recover the CSRF token after a page reload. |
 | Sign out | `POST /api/v1/logout` | Ends the session. |
 
+| Second factor | `POST /api/v1/account/totp/setup` → `{"secret","url"}`; `POST /api/v1/account/totp/enable` `{"code"}`; `POST /api/v1/account/totp/disable` `{"code"}` | User sessions only. A TOTP secret (RFC 6238, SHA-1, 6 digits, 30 s) for an authenticator app; enabling needs a code from it and ends the user's other sessions. With it on, `POST /login` and `POST /login/activate` also need `"totp"`: without it they answer `401 totp_required`, with a wrong or reused code `401 invalid_totp`. Each code works once. |
+| Sessions | `GET /api/v1/sessions` (admins: `?accessKey=` to filter); `DELETE /api/v1/sessions/{id}` | `{"sessions":[{"id","user","role","remote","userAgent","createdAt","expiresAt","current"}]}`. Users see and end only their own. |
+
+After 10 failed attempts within 15 minutes on one account (password, code or
+secret key), that account answers `429` with `Retry-After` whatever IP the
+attempts come from, on top of the per-IP limit.
+
 A user session ends at once when its key is disabled, expires, is deleted or
 loses its console password. Console passwords are stored as argon2id hashes,
 apart from the S3 secret key: changing one never touches the other.
@@ -29,7 +36,10 @@ apart from the S3 secret key: changing one never touches the other.
 Open to users (*users*): session, logout, own password, `GET /info` (only
 `version`, `region`, `s3Endpoint`, `shareMaxExpirySeconds`), `GET /buckets`
 (only their buckets; each with `access`: `read` or `write`), `POST /buckets`
-(only if `canCreateBuckets`; never public; the creator owns the bucket),
+(only if `canCreateBuckets`; never public; the creator owns the bucket; at
+most `userBucketLimit` per user, each starting with the `userBucketQuotaBytes`
+quota, both in `GET/PUT /settings`, defaults 10 and 50 GiB),
+`DELETE /buckets/{bucket}` (only their own buckets, only when empty),
 `GET /buckets/{bucket}`, and the object, version, trash, copy (write access to
 the target, and to the source for a move), ZIP, share, folder and multipart
 endpoints of their buckets. Bucket settings (policy, quota, versioning, CORS,
@@ -156,9 +166,10 @@ over a week ago are forgotten.
 | `DELETE /api/v1/access-keys/{key}` | | `204`; its console sessions end, and it stops owning the buckets it created |
 | `PUT /api/v1/access-keys/{key}/password` | `{"password"}` | `204`: sets the user's console password; their sessions end |
 | `DELETE /api/v1/access-keys/{key}/password` | | `204`: the user can no longer sign in to the console; S3 access unchanged |
+| `DELETE /api/v1/access-keys/{key}/totp` | | `204`: removes the user's second factor (lost phone) |
 
 A key is
-`{"accessKey","name","enabled","createdAt","expiresAt","lastUsedAt","expired","buckets","readOnly","groups","consolePassword","canCreateBuckets"}`
+`{"accessKey","name","enabled","createdAt","expiresAt","lastUsedAt","expired","buckets","readOnly","groups","consolePassword","canCreateBuckets","totp"}`
 (`consolePassword` says whether one is set; it is never sent back).
 Buckets record who created them (`createdBy` in bucket bodies); a key that
 creates a bucket (console or S3, root excepted) owns it: read-write access to

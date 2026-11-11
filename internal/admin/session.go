@@ -41,6 +41,13 @@ type loginRequest struct {
 	SecretKey string `json:"secretKey"`
 }
 
+// loginBody is what POST /login reads: the credentials, and the
+// authenticator code of a user who turned on a second factor.
+type loginBody struct {
+	loginRequest
+	TOTP string `json:"totp"`
+}
+
 type sessionResponse struct {
 	User      string    `json:"user"`
 	CSRFToken string    `json:"csrfToken"`
@@ -50,6 +57,8 @@ type sessionResponse struct {
 	Role string `json:"role"`
 	// CanCreateBuckets says whether a user may create buckets; admins may.
 	CanCreateBuckets bool `json:"canCreateBuckets"`
+	// TOTP says whether a user signs in with a second factor.
+	TOTP bool `json:"totp"`
 }
 
 // login checks root's credentials, or an access key and its user's console
@@ -65,13 +74,13 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "Too many failed sign-in attempts. Try again later.")
 		return
 	}
-	var in loginRequest
+	var in loginBody
 	if !readJSON(w, r, &in) {
 		return
 	}
 	akOK := subtle.ConstantTimeCompare([]byte(in.AccessKey), []byte(h.opts.Keys.RootAccessKey)) == 1
 	if !akOK {
-		h.userLogin(w, r, ip, in.AccessKey, in.SecretKey)
+		h.userLogin(w, r, ip, in)
 		return
 	}
 	skOK := subtle.ConstantTimeCompare([]byte(in.SecretKey), []byte(h.opts.Keys.RootSecretKey)) == 1
@@ -108,23 +117,51 @@ func (h *Handler) consoleKey(ctx context.Context, accessKey string) (storage.Acc
 	return k, true
 }
 
-// userLogin signs in an access key's user with its console password.
-func (h *Handler) userLogin(w http.ResponseWriter, r *http.Request, ip, accessKey, password string) {
-	k, ok := h.consoleKey(r.Context(), accessKey)
+// accountLimit is the limiter entry of one account: failures against it count
+// whatever IP they come from, so spreading guesses over many addresses does
+// not help. (It also means someone can lock an account for a while by
+// failing on purpose; the window is short and an admin can still help.)
+func accountLimit(accessKey string) string { return "key:" + accessKey }
+
+// accountBlocked answers 429 when an account had too many recent failures.
+func (h *Handler) accountBlocked(w http.ResponseWriter, accessKey string) bool {
+	wait := h.limiter.blocked(accountLimit(accessKey))
+	if wait <= 0 {
+		return false
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+	writeError(w, http.StatusTooManyRequests, "too_many_attempts", "Too many failed attempts on this account. Try again later.")
+	return true
+}
+
+// userLogin signs in an access key's user with its console password, and its
+// authenticator code when the user turned on a second factor.
+func (h *Handler) userLogin(w http.ResponseWriter, r *http.Request, ip string, in loginBody) {
+	password := in.SecretKey
+	k, ok := h.consoleKey(r.Context(), in.AccessKey)
 	if !ok || k.PasswordHash == "" {
 		// An unknown key is not recorded: people paste secrets into the wrong
 		// field. The wait matches a real check, so keys are not told apart.
+		// Only real accounts are tracked: random names must not fill the limiter.
 		auth.DummyPasswordCheck(password)
 		setAuditActor(r, "(unknown)")
 		h.loginFailed(w, r, ip)
 		return
 	}
 	setAuditActor(r, k.AccessKey)
+	if h.accountBlocked(w, k.AccessKey) {
+		return
+	}
 	if !auth.CheckPassword(k.PasswordHash, password) {
+		h.limiter.fail(accountLimit(k.AccessKey))
 		h.loginFailed(w, r, ip)
 		return
 	}
+	if !h.checkSecondFactor(w, r, ip, k, in.TOTP) {
+		return
+	}
 	h.limiter.reset(ip)
+	h.limiter.reset(accountLimit(k.AccessKey))
 	sess, err := h.startSession(w, r, k.AccessKey, k.AccessKey)
 	if err != nil {
 		h.storageError(w, r, err)
@@ -141,6 +178,7 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user, acc
 	expires := time.Now().Add(h.opts.SessionTTL)
 	if err := h.opts.Store.CreateSession(r.Context(), storage.Session{
 		TokenHash: hashToken(token), CSRF: csrf, User: user, AccessKey: accessKey, Expires: expires,
+		Remote: clientIP(r), UserAgent: truncate(r.UserAgent(), maxUserAgent),
 	}); err != nil {
 		return sessionResponse{}, err
 	}
@@ -163,7 +201,7 @@ func (h *Handler) sessionJSON(ctx context.Context, s storage.Session) sessionRes
 	if s.AccessKey != "" {
 		out.Role, out.CanCreateBuckets = "user", false
 		if k, err := h.opts.Store.GetAccessKey(ctx, s.AccessKey); err == nil {
-			out.CanCreateBuckets = k.CanCreateBuckets
+			out.CanCreateBuckets, out.TOTP = k.CanCreateBuckets, k.TOTPSecretEnc != ""
 		}
 	}
 	return out

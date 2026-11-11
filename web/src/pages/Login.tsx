@@ -23,6 +23,9 @@ export function LoginPage() {
   const [secretKey, setSecretKey] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  // Set once the server answers that this account needs its authenticator code.
+  const [needCode, setNeedCode] = useState(false);
+  const [code, setCode] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   // An OpenID sign-in that failed comes back here with the reason.
@@ -47,12 +50,18 @@ export function LoginPage() {
     }
     setBusy(true);
     setError("");
+    const totp = needCode ? code : undefined;
     try {
       if (mode === "ldap") await signInLDAP(accessKey, secretKey, next);
-      else if (mode === "activate") await activate(accessKey, secretKey, newPassword, next);
-      else await signIn(accessKey, secretKey, next);
+      else if (mode === "activate") await activate(accessKey, secretKey, newPassword, next, totp);
+      else await signIn(accessKey, secretKey, next, totp);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Cannot reach the server.");
+      if (err instanceof ApiError && err.code === "totp_required") {
+        setNeedCode(true); // the password was right: the code comes next
+        setError("");
+      } else {
+        setError(err instanceof ApiError ? err.message : "Cannot reach the server.");
+      }
       setBusy(false);
     }
   }
@@ -63,6 +72,8 @@ export function LoginPage() {
     setSecretKey("");
     setNewPassword("");
     setConfirmPassword("");
+    setNeedCode(false);
+    setCode("");
   }
 
   const ldap = mode === "ldap";
@@ -178,6 +189,21 @@ export function LoginPage() {
                   />
                 </Field>
               </>
+            )}
+            {needCode && (
+              <Field label="Authenticator code" hint="The six digits your authenticator app shows for bin.">
+                <Input
+                  mono
+                  autoFocus
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                  readOnly={busy}
+                  required
+                />
+              </Field>
             )}
             {error && <div className="rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
             <Button type="submit" variant="primary" busy={busy} className="w-full disabled:opacity-90" icon={<ArrowRight className="size-4" />}>

@@ -49,6 +49,8 @@ export interface Session {
   role: "admin" | "user";
   /** Users may create buckets only when an admin allowed it; admins always may. */
   canCreateBuckets: boolean;
+  /** Whether a user signs in with a second factor. */
+  totp: boolean;
 }
 
 export type Access = "readonly" | "writeonly" | "readwrite";
@@ -91,6 +93,8 @@ export interface Bucket {
   createdBy: string;
   /** What this session may do with its files. */
   access: "read" | "write";
+  /** A user's own bucket (one they created): they may delete it once empty. */
+  owned: boolean;
 }
 
 export interface ObjectInfo {
@@ -184,6 +188,8 @@ export interface AccessKey {
   consolePassword: boolean;
   /** Whether the key's user may create buckets from the console. */
   canCreateBuckets: boolean;
+  /** Whether the key's user signs in with a second factor. */
+  totp: boolean;
 }
 
 export interface Group {
@@ -223,6 +229,23 @@ export interface Settings {
   auditRetentionDays: number;
   publicUrl: string;
   region: string;
+  /** Buckets each user may create (0: no limit). */
+  userBucketLimit: number;
+  /** Quota each user-created bucket gets at creation (0: none). */
+  userBucketQuotaBytes: number;
+}
+
+/** A live console session. */
+export interface SessionInfo {
+  id: string;
+  user: string;
+  role: "admin" | "user";
+  remote?: string;
+  userAgent?: string;
+  createdAt: string;
+  expiresAt: string;
+  /** The session making this request. */
+  current: boolean;
 }
 
 export interface ScrubStatus {
@@ -241,14 +264,15 @@ export interface ScrubStatus {
 const enc = encodeURIComponent;
 
 export const api = {
-  async login(accessKey: string, secretKey: string) {
-    const s = await request<Session>("POST", "/login", { accessKey, secretKey });
+  /** `totp`: the authenticator code, once the server answered `totp_required`. */
+  async login(accessKey: string, secretKey: string, totp?: string) {
+    const s = await request<Session>("POST", "/login", { accessKey, secretKey, totp });
     csrfToken = s.csrfToken;
     return s;
   },
   /** A user proves their access key and secret key once, chooses a console password, and is signed in. */
-  async activateConsole(accessKey: string, secretKey: string, password: string) {
-    const s = await request<Session>("POST", "/login/activate", { accessKey, secretKey, password });
+  async activateConsole(accessKey: string, secretKey: string, password: string, totp?: string) {
+    const s = await request<Session>("POST", "/login/activate", { accessKey, secretKey, password, totp });
     csrfToken = s.csrfToken;
     return s;
   },
@@ -405,6 +429,20 @@ export const api = {
   settings: () => request<Settings>("GET", "/settings"),
   saveSettings: (shareMaxExpirySeconds: number) => request<Settings>("PUT", "/settings", { shareMaxExpirySeconds }),
   saveAuditRetention: (auditRetentionDays: number) => request<Settings>("PUT", "/settings", { auditRetentionDays }),
+  saveUserBucketLimits: (userBucketLimit: number, userBucketQuotaBytes: number) =>
+    request<Settings>("PUT", "/settings", { userBucketLimit, userBucketQuotaBytes }),
+  /** A user's own sessions; an admin's: everyone's, or one key's. */
+  sessions: (accessKey?: string) =>
+    request<{ sessions: SessionInfo[] }>("GET", `/sessions${accessKey ? `?accessKey=${enc(accessKey)}` : ""}`).then(
+      (r) => r.sessions,
+    ),
+  endSession: (id: string) => request<void>("DELETE", `/sessions/${enc(id)}`),
+  /** Starts turning on a second factor: a secret for the authenticator app. */
+  setupTOTP: () => request<{ secret: string; url: string }>("POST", "/account/totp/setup"),
+  enableTOTP: (code: string) => request<void>("POST", "/account/totp/enable", { code }),
+  disableTOTP: (code: string) => request<void>("POST", "/account/totp/disable", { code }),
+  /** Removes a user's second factor (admins), e.g. after a lost phone. */
+  clearKeyTOTP: (key: string) => request<void>("DELETE", `/access-keys/${enc(key)}/totp`),
   revokeShareLinks: () => request<void>("POST", "/settings/revoke-share-links"),
   scrub: () => request<ScrubStatus>("GET", "/scrub"),
   /** Scans the given buckets, or all of them when the list is empty. */

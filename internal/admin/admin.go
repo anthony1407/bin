@@ -68,6 +68,7 @@ type Handler struct {
 	oidcStates *oidcStates
 	repl       *replicator
 	zips       *zipTickets
+	totp       *totpSetups
 }
 
 // NewHandler returns the console HTTP handler.
@@ -76,7 +77,7 @@ func NewHandler(opts Options) http.Handler {
 		opts.SessionTTL = 12 * time.Hour
 	}
 	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs(),
-		oidcStates: newOIDCStates(), repl: newReplicator(), zips: newZipTickets()}
+		oidcStates: newOIDCStates(), repl: newReplicator(), zips: newZipTickets(), totp: newTOTPSetups()}
 	if opts.RunReplication {
 		go h.runReplicationScheduler()
 		go h.runTrashPurge()
@@ -103,12 +104,17 @@ func NewHandler(opts Options) http.Handler {
 	user("POST /api/v1/logout", needSession, h.logout)
 	user("GET /api/v1/session", needSession, h.session)
 	user("POST /api/v1/account/password", needSession, h.changeOwnPassword)
-	user("GET /api/v1/info", needSession, h.info) // users get the S3 endpoint only
+	user("POST /api/v1/account/totp/setup", needSession, h.setupTOTP)
+	user("POST /api/v1/account/totp/enable", needSession, h.enableTOTP)
+	user("POST /api/v1/account/totp/disable", needSession, h.disableTOTP)
+	user("GET /api/v1/sessions", needSession, h.listSessions)          // users: their own
+	user("DELETE /api/v1/sessions/{id}", needSession, h.deleteSession) // users: their own
+	user("GET /api/v1/info", needSession, h.info)                      // users get the S3 endpoint only
 
 	user("GET /api/v1/buckets", needSession, h.listBuckets)   // users: their buckets
 	user("POST /api/v1/buckets", needSession, h.createBucket) // users: if allowed to
 	user("GET /api/v1/buckets/{bucket}", needRead, h.getBucket)
-	private("DELETE /api/v1/buckets/{bucket}", h.deleteBucket)
+	user("DELETE /api/v1/buckets/{bucket}", needSession, h.deleteBucket) // users: their own empty buckets
 	private("PUT /api/v1/buckets/{bucket}/tags", h.putTags)
 	private("PUT /api/v1/buckets/{bucket}/quota", h.putQuota)
 	private("PUT /api/v1/buckets/{bucket}/policy", h.putPolicy)
@@ -145,6 +151,7 @@ func NewHandler(opts Options) http.Handler {
 	private("DELETE /api/v1/access-keys/{key}", h.deleteKey)
 	private("PUT /api/v1/access-keys/{key}/password", h.putKeyPassword)
 	private("DELETE /api/v1/access-keys/{key}/password", h.deleteKeyPassword)
+	private("DELETE /api/v1/access-keys/{key}/totp", h.deleteKeyTOTP)
 
 	private("GET /api/v1/groups", h.listGroups)
 	private("POST /api/v1/groups", h.createGroup)

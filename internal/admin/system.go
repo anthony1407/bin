@@ -89,11 +89,39 @@ func (h *Handler) shareMaxExpiry(r *http.Request) (time.Duration, error) {
 	return time.Duration(secs) * time.Second, nil
 }
 
+// Buckets created by users (not admins) are bounded, so an account allowed
+// to create them cannot fill the disk: how many each user may own, and the
+// quota each gets at creation (an admin may change it afterwards).
+const (
+	settingUserBucketLimit       = "user_bucket_limit"
+	settingUserBucketQuota       = "user_bucket_quota_bytes"
+	defaultUserBucketLimit       = 10
+	defaultUserBucketQuota int64 = 50 << 30
+	maxUserBucketLimit           = 1000
+)
+
+// intSetting reads a numeric setting, def when unset or unreadable.
+func (h *Handler) intSetting(r *http.Request, key string, def int64) (int64, error) {
+	v, ok, err := h.opts.Store.Setting(r.Context(), key)
+	if err != nil || !ok {
+		return def, err
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return def, nil
+	}
+	return n, nil
+}
+
 type settingsJSON struct {
 	ShareMaxExpiry     int64  `json:"shareMaxExpirySeconds"`
 	AuditRetentionDays int    `json:"auditRetentionDays"` // 0: keep forever
 	PublicURL          string `json:"publicUrl"`          // read-only: BIN_PUBLIC_URL
 	Region             string `json:"region"`             // read-only: BIN_REGION
+	// Buckets created by users: how many each may own (0: no limit) and the
+	// quota each gets at creation (0: none).
+	UserBucketLimit      int64 `json:"userBucketLimit"`
+	UserBucketQuotaBytes int64 `json:"userBucketQuotaBytes"`
 }
 
 // maxAuditRetentionDays bounds the audit retention setting (ten years).
@@ -110,20 +138,51 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
+	limit, err := h.intSetting(r, settingUserBucketLimit, defaultUserBucketLimit)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
+	quota, err := h.intSetting(r, settingUserBucketQuota, defaultUserBucketQuota)
+	if err != nil {
+		h.storageError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, settingsJSON{
 		ShareMaxExpiry: int64(max / time.Second), AuditRetentionDays: days,
 		PublicURL: h.opts.PublicURL, Region: h.opts.Region,
+		UserBucketLimit: limit, UserBucketQuotaBytes: quota,
 	})
 }
 
 // putSettings changes the settings present in the body.
 func (h *Handler) putSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		ShareMaxExpiry     *int64 `json:"shareMaxExpirySeconds"`
-		AuditRetentionDays *int   `json:"auditRetentionDays"`
+		ShareMaxExpiry       *int64 `json:"shareMaxExpirySeconds"`
+		AuditRetentionDays   *int   `json:"auditRetentionDays"`
+		UserBucketLimit      *int64 `json:"userBucketLimit"`
+		UserBucketQuotaBytes *int64 `json:"userBucketQuotaBytes"`
 	}
 	if !readJSON(w, r, &in) {
 		return
+	}
+	if v := in.UserBucketLimit; v != nil && (*v < 0 || *v > maxUserBucketLimit) {
+		writeError(w, http.StatusBadRequest, "invalid_user_bucket_limit", "Each user may own 0 (no limit) to 1000 buckets.")
+		return
+	}
+	if v := in.UserBucketQuotaBytes; v != nil && *v < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_user_bucket_quota", "The quota of user buckets cannot be negative (0: none).")
+		return
+	}
+	for key, v := range map[string]*int64{settingUserBucketLimit: in.UserBucketLimit, settingUserBucketQuota: in.UserBucketQuotaBytes} {
+		if v == nil {
+			continue
+		}
+		if err := h.opts.Store.SetSetting(r.Context(), key, strconv.FormatInt(*v, 10)); err != nil {
+			h.storageError(w, r, err)
+			return
+		}
+		h.opts.Log.Info("settings updated", key, *v)
 	}
 	if v := in.ShareMaxExpiry; v != nil && (*v < 60 || time.Duration(*v)*time.Second > defaultShareMaxExpiry) {
 		writeError(w, http.StatusBadRequest, "invalid_share_expiry", "The maximum share link expiry must be between 1 minute and 7 days.")

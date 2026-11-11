@@ -311,6 +311,15 @@ var migrations = []string{
 	ALTER TABLE buckets ADD COLUMN created_by TEXT NOT NULL DEFAULT '';            -- for the record; '' = unknown
 	ALTER TABLE buckets ADD COLUMN owner_key TEXT NOT NULL DEFAULT '';             -- '' = no owner key
 	CREATE INDEX buckets_owner_key ON buckets (owner_key) WHERE owner_key != '';`,
+
+	// 17: where each console session was opened from, so people can see and
+	// end their sessions; and an optional second factor (TOTP) for users, its
+	// secret encrypted with the master key. totp_last_step makes each code
+	// work once.
+	`ALTER TABLE sessions ADD COLUMN remote TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sessions ADD COLUMN user_agent TEXT NOT NULL DEFAULT '';
+	ALTER TABLE access_keys ADD COLUMN totp_secret_enc TEXT NOT NULL DEFAULT '';   -- '' = no second factor
+	ALTER TABLE access_keys ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

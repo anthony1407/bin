@@ -60,11 +60,17 @@ func (h *Handler) activateConsole(w http.ResponseWriter, r *http.Request) {
 		AccessKey string `json:"accessKey"`
 		SecretKey string `json:"secretKey"`
 		Password  string `json:"password"`
+		// With a second factor on, resetting the password needs its code too:
+		// the secret key alone must not get around it.
+		TOTP string `json:"totp"`
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
 	k, ok := h.consoleKey(r.Context(), in.AccessKey)
+	if ok && h.accountBlocked(w, k.AccessKey) {
+		return
+	}
 	secret := ""
 	if ok {
 		secret, ok = h.opts.Keys.Secret(k.AccessKey)
@@ -72,12 +78,18 @@ func (h *Handler) activateConsole(w http.ResponseWriter, r *http.Request) {
 	if !ok || subtle.ConstantTimeCompare([]byte(secret), []byte(in.SecretKey)) != 1 {
 		setAuditActor(r, "(unknown)")
 		h.limiter.fail(ip)
+		if k.AccessKey != "" {
+			h.limiter.fail(accountLimit(k.AccessKey))
+		}
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Wrong access key or secret key.")
 		return
 	}
 	setAuditActor(r, k.AccessKey)
 	if err := auth.CheckPasswordPolicy(in.Password); err != nil {
 		writePasswordError(w, err)
+		return
+	}
+	if !h.checkSecondFactor(w, r, ip, k, in.TOTP) {
 		return
 	}
 	h.limiter.reset(ip)
@@ -122,12 +134,17 @@ func (h *Handler) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
+	if h.accountBlocked(w, k.AccessKey) {
+		return
+	}
 	if !auth.CheckPassword(k.PasswordHash, in.CurrentPassword) {
 		h.limiter.fail(ip)
+		h.limiter.fail(accountLimit(k.AccessKey))
 		writeFieldError(w, "invalid_credentials", "currentPassword", "The current password is wrong.")
 		return
 	}
 	h.limiter.reset(ip)
+	h.limiter.reset(accountLimit(k.AccessKey))
 	if err := auth.CheckPasswordPolicy(in.Password); err != nil {
 		writePasswordError(w, err)
 		return

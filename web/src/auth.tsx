@@ -5,12 +5,12 @@ import { api, setUnauthorizedHandler, type Session } from "./api";
 interface AuthState {
   session: Session | null;
   loading: boolean;
-  /** Signs in and then shows the panel at `to`. */
-  signIn: (accessKey: string, secretKey: string, to: string) => Promise<void>;
+  /** Signs in and then shows the panel at `to`; `totp` once the server asks for a code. */
+  signIn: (accessKey: string, secretKey: string, to: string, totp?: string) => Promise<void>;
   /** Signs in with directory credentials and then shows the panel at `to`. */
   signInLDAP: (username: string, password: string, to: string) => Promise<void>;
   /** Turns on a user's console access (access key + secret key once), signs in, shows `to`. */
-  activate: (accessKey: string, secretKey: string, password: string, to: string) => Promise<void>;
+  activate: (accessKey: string, secretKey: string, password: string, to: string, totp?: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [navigate],
   );
   const signIn = useCallback(
-    (accessKey: string, secretKey: string, to: string) => finish(api.login(accessKey, secretKey), to),
+    (accessKey: string, secretKey: string, to: string, totp?: string) => finish(api.login(accessKey, secretKey, totp), to),
     [finish],
   );
   const signInLDAP = useCallback(
@@ -66,8 +66,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [finish],
   );
   const activate = useCallback(
-    (accessKey: string, secretKey: string, password: string, to: string) =>
-      finish(api.activateConsole(accessKey, secretKey, password), to),
+    (accessKey: string, secretKey: string, password: string, to: string, totp?: string) =>
+      finish(api.activateConsole(accessKey, secretKey, password, totp), to),
     [finish],
   );
   const signOut = useCallback(async () => {

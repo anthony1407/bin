@@ -16,6 +16,7 @@ import {
   Users as UsersIcon,
 } from "lucide-react";
 import { api, type AccessKey, type Bucket, type Group } from "../api";
+import { SessionsList } from "./Account";
 import { Button, Field, IconButton, Input, Modal, Spinner, cx, errorText, useToast } from "../components/ui";
 
 function downloadFile(filename: string, content: string) {
@@ -312,6 +313,22 @@ export function UsersPage() {
       setEditPassword("");
       setEditingUser({ ...editingUser, consolePassword: true });
       toast("ok", "Console password set. The user's open sessions were signed out.");
+      load();
+    } catch (e) {
+      toast("error", errorText(e));
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
+  // For a lost phone: the user then signs in with the password alone and may set it up again.
+  async function clearUserTOTP() {
+    if (!editingUser) return;
+    setPasswordBusy(true);
+    try {
+      await api.clearKeyTOTP(editingUser.accessKey);
+      setEditingUser({ ...editingUser, totp: false });
+      toast("ok", "Second factor removed.");
       load();
     } catch (e) {
       toast("error", errorText(e));
@@ -876,6 +893,22 @@ export function UsersPage() {
                 />
                 May create buckets (saved with the changes)
               </label>
+              {editingUser.totp && (
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] text-muted">Signs in with a second factor (authenticator app).</span>
+                  <Button variant="ghost" busy={passwordBusy} onClick={clearUserTOTP}>
+                    Remove second factor
+                  </Button>
+                </div>
+              )}
+              {editingUser.consolePassword && (
+                <details className="pt-1">
+                  <summary className="cursor-pointer text-[11px] text-muted">Open console sessions</summary>
+                  <div className="pt-2">
+                    <SessionsList accessKey={editingUser.accessKey} />
+                  </div>
+                </details>
+              )}
             </div>
 
             <div className="flex items-center justify-between border-t border-line pt-3">
