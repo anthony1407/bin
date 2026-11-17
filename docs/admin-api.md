@@ -304,8 +304,16 @@ time, keeping content types and user metadata. Buckets that already exist
 locally are skipped. A job that copies nothing removes the bucket it
 created. A job is
 `{"jobId","bucket","endpoint","state","copied","failed","bytes","error"?,"startedAt","finishedAt"?}`
-with `state` one of `queued`, `running`, `done`, `failed`, `canceled`. Jobs
-are kept in memory and forgotten on restart.
+with `state` one of `queued`, `running`, `done`, `failed`, `canceled`.
+
+Jobs are kept in the database, so the history outlives a restart: the newest
+500 import jobs and 500 export jobs, plus any still running. A running job's
+progress is saved every few seconds. A job that was queued or running when
+bin stopped is listed as `failed`, with an error saying it was interrupted
+and the counts it had reached. Running it again continues: what was already
+copied is found unchanged and skipped. A saved import or export lists its
+newest 50 jobs. Cancelling a job that has already finished answers
+`409 job_finished`.
 
 `size` and `objects` from the test count at most 10,000 objects per bucket;
 `partial` marks a bucket that has more.

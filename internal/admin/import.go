@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -90,18 +91,137 @@ type importJob struct {
 	cancel context.CancelFunc
 }
 
-// importJobs holds the jobs of this process; they are not kept across restarts.
+// importJobs holds the import (or export) jobs. The ones queued or running
+// live in memory, where they are updated; every job is also saved in the
+// database when it starts, every few seconds while it runs and when it ends,
+// so the history outlives a restart. A finished job then leaves memory.
 type importJobs struct {
-	mu   sync.Mutex
+	kind  string // "import" or "export", as stored
+	store *storage.Store
+	log   *slog.Logger
+
+	// saveMu orders the saves of a job, so progress saved late never
+	// overwrites its outcome.
+	saveMu sync.Mutex
+	mu     sync.Mutex
 	jobs map[string]*importJob
 	sem  chan struct{}
 }
 
-func newImportJobs() *importJobs {
-	return &importJobs{jobs: map[string]*importJob{}, sem: make(chan struct{}, maxImportJobs)}
+// jobSaveInterval is how often a running job's progress is saved, so a job
+// cut short by a restart still shows what it had copied.
+var jobSaveInterval = 5 * time.Second
+
+func newTransferJobs(kind string, max int, store *storage.Store, log *slog.Logger) *importJobs {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &importJobs{kind: kind, store: store, log: log, jobs: map[string]*importJob{}, sem: make(chan struct{}, max)}
 }
 
-// update runs fn on the job under the lock.
+func newImportJobs(store *storage.Store, log *slog.Logger) *importJobs {
+	return newTransferJobs("import", maxImportJobs, store, log)
+}
+
+// interrupt marks the jobs a previous run of bin left unfinished.
+func (j *importJobs) interrupt() {
+	if j.store == nil {
+		return
+	}
+	n, err := j.store.InterruptTransferJobs(context.Background())
+	if err != nil {
+		j.log.Warn("marking interrupted transfer jobs", "err", err)
+	} else if n > 0 {
+		j.log.Info("transfer jobs interrupted by the last stop", "jobs", n)
+	}
+}
+
+// add registers a new job, saves it and returns a copy of it.
+func (j *importJobs) add(job *importJob) importJob {
+	j.saveMu.Lock()
+	j.mu.Lock()
+	j.jobs[job.ID] = job
+	snapshot := *job
+	j.mu.Unlock()
+	j.save(snapshot)
+	j.saveMu.Unlock()
+	go j.autosave(job.ID)
+	return snapshot
+}
+
+// autosave saves a job's progress until it finishes.
+func (j *importJobs) autosave(id string) {
+	t := time.NewTicker(jobSaveInterval)
+	defer t.Stop()
+	var last importJob
+	for range t.C {
+		done := false
+		j.saveMu.Lock()
+		job, ok := j.snapshot(id)
+		switch {
+		case !ok || job.FinishedAt != nil:
+			done = true // finish saves the outcome
+		case job.State != last.State || job.Copied != last.Copied || job.Failed != last.Failed ||
+			job.Unchanged != last.Unchanged || len(job.Notes) != len(last.Notes):
+			j.save(job)
+			last = job
+		}
+		j.saveMu.Unlock()
+		if done {
+			return
+		}
+	}
+}
+
+// finish saves a finished job and lets it leave memory: from then on it is
+// listed from the database. A job that could not be saved stays in memory,
+// so it is still listed until bin stops.
+func (j *importJobs) finish(id string) {
+	j.saveMu.Lock()
+	job, ok := j.snapshot(id)
+	saved := ok && j.save(job)
+	if saved {
+		j.mu.Lock()
+		delete(j.jobs, id)
+		j.mu.Unlock()
+	}
+	j.saveMu.Unlock()
+	if saved {
+		if err := j.store.PruneTransferJobs(context.Background(), j.kind); err != nil {
+			j.log.Warn("pruning transfer jobs", "err", err)
+		}
+	}
+}
+
+func (j *importJobs) snapshot(id string) (importJob, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if job, ok := j.jobs[id]; ok {
+		return *job, true
+	}
+	return importJob{}, false
+}
+
+func (j *importJobs) save(job importJob) bool {
+	if j.store == nil {
+		return false
+	}
+	t := storage.TransferJob{
+		ID: job.ID, Kind: j.kind, Bucket: job.Bucket, Endpoint: job.Endpoint, Source: job.Source, State: job.State,
+		Copied: job.Copied, Failed: job.Failed, Unchanged: job.Unchanged, Bytes: job.Bytes, Update: job.Update,
+		Error: job.Error, Settings: job.Settings, Notes: job.Notes, Started: job.StartedAt,
+	}
+	if job.FinishedAt != nil {
+		t.Finished = *job.FinishedAt
+	}
+	if err := j.store.SaveTransferJob(context.Background(), t); err != nil {
+		j.log.Warn("saving transfer job", "job", job.ID, "err", err)
+		return false
+	}
+	return true
+}
+
+// update runs fn on a job in memory (queued or running) under the lock.
 func (j *importJobs) update(id string, fn func(*importJob)) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -110,15 +230,73 @@ func (j *importJobs) update(id string, fn func(*importJob)) {
 	}
 }
 
+// list returns the jobs in memory and the saved history, newest first.
 func (j *importJobs) list() []importJob {
 	j.mu.Lock()
-	defer j.mu.Unlock()
 	out := make([]importJob, 0, len(j.jobs))
+	seen := make(map[string]bool, len(j.jobs))
 	for _, job := range j.jobs {
 		out = append(out, *job)
+		seen[job.ID] = true
 	}
-	sort.Slice(out, func(a, b int) bool { return out[a].StartedAt.After(out[b].StartedAt) })
+	j.mu.Unlock()
+	// Read after memory: a job leaves memory only once it is saved, so none
+	// can be missed in between.
+	if j.store != nil {
+		saved, err := j.store.ListTransferJobs(context.Background(), j.kind)
+		if err != nil {
+			j.log.Warn("listing transfer jobs", "err", err)
+		}
+		for _, t := range saved {
+			if seen[t.ID] {
+				continue
+			}
+			job := importJob{
+				ID: t.ID, Bucket: t.Bucket, Endpoint: t.Endpoint, Source: t.Source, State: t.State, Copied: t.Copied,
+				Failed: t.Failed, Update: t.Update, Unchanged: t.Unchanged, Bytes: t.Bytes, Error: t.Error,
+				Settings: t.Settings, Notes: t.Notes, StartedAt: t.Started,
+			}
+			if !t.Finished.IsZero() {
+				f := t.Finished
+				job.FinishedAt = &f
+			}
+			out = append(out, job)
+		}
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].StartedAt.After(out[b].StartedAt) })
 	return out
+}
+
+// bySource returns the newest jobs run from one saved import or export.
+func bySource(jobs []importJob, source string) []importJob {
+	const maxPerSource = 50
+	out := []importJob{}
+	for _, j := range jobs {
+		if j.Source == source && len(out) < maxPerSource {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// cancel stops a queued or running job. found reports whether the job
+// exists at all, active whether it was still going.
+func (j *importJobs) cancel(id string) (bucket string, found, active bool) {
+	j.update(id, func(job *importJob) {
+		found, bucket = true, job.Bucket
+		if job.State == "queued" || job.State == "running" {
+			active = true
+			job.cancel()
+		}
+	})
+	if !found {
+		for _, job := range j.list() {
+			if job.ID == id {
+				return job.Bucket, true, false
+			}
+		}
+	}
+	return bucket, found, active
 }
 
 // --- remote connections --------------------------------------------------------------
@@ -457,10 +635,7 @@ func (h *Handler) startImportJob(client *minio.Client, spec importJob) importJob
 	job.State = "queued"
 	job.StartedAt = time.Now().UTC()
 	job.cancel = cancel
-	h.imports.mu.Lock()
-	h.imports.jobs[job.ID] = job
-	snapshot := *job
-	h.imports.mu.Unlock()
+	snapshot := h.imports.add(job)
 
 	go h.runImportJob(ctx, client, job.ID, job.Bucket, job.Update)
 	return snapshot
@@ -616,6 +791,7 @@ func (h *Handler) finishImportJob(id, bucket string, err error) {
 		j.cancel()
 		job = *j
 	})
+	h.imports.finish(id)
 	// A job that failed or was canceled before copying anything leaves no
 	// trace; an empty bucket that imported fine stays, empty like the remote.
 	// A bucket that existed before the import is never removed.
@@ -635,15 +811,10 @@ func (h *Handler) listImportJobs(w http.ResponseWriter, r *http.Request) {
 // cancelImportJob stops a queued or running job. Objects already copied stay.
 func (h *Handler) cancelImportJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	found, active := false, false
-	h.imports.update(id, func(j *importJob) {
-		found = true
-		setAuditBucket(r, j.Bucket)
-		if j.State == "queued" || j.State == "running" {
-			active = true
-			j.cancel()
-		}
-	})
+	bucket, found, active := h.imports.cancel(id)
+	if found {
+		setAuditBucket(r, bucket)
+	}
 	setAuditResource(r, id)
 	switch {
 	case !found:

@@ -77,8 +77,12 @@ func NewHandler(opts Options) http.Handler {
 	if opts.SessionTTL == 0 {
 		opts.SessionTTL = 12 * time.Hour
 	}
-	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs(),
-		oidcStates: newOIDCStates(), repl: newReplicator(), zips: newZipTickets(), totp: newTOTPSetups(), exports: newExportJobs()}
+	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs(opts.Store, opts.Log),
+		oidcStates: newOIDCStates(), repl: newReplicator(), zips: newZipTickets(), totp: newTOTPSetups(),
+		exports: newExportJobs(opts.Store, opts.Log)}
+	// Jobs a previous run of bin left unfinished are recorded as interrupted
+	// (one call covers imports and exports: they share the table).
+	h.imports.interrupt()
 	if opts.RunReplication {
 		go h.runReplicationScheduler()
 		go h.runTrashPurge()

@@ -24,17 +24,13 @@ type importSourceJSON struct {
 	IAM          bool       `json:"iam"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	LastRunAt    *time.Time `json:"lastRunAt"`
-	// Jobs are this import's copies started since bin last restarted.
+	// Jobs are this import's newest copies, kept across restarts.
 	Jobs []importJob `json:"jobs"`
 }
 
-func (h *Handler) toImportSourceJSON(s storage.ImportSource) importSourceJSON {
-	jobs := []importJob{}
-	for _, j := range h.imports.list() {
-		if j.Source == s.ID {
-			jobs = append(jobs, j)
-		}
-	}
+// toImportSourceJSON describes a saved import; all is h.imports.list().
+func (h *Handler) toImportSourceJSON(s storage.ImportSource, all []importJob) importSourceJSON {
+	jobs := bySource(all, s.ID)
 	buckets := s.Buckets
 	if buckets == nil {
 		buckets = []string{}
@@ -112,8 +108,9 @@ func (h *Handler) listImportSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]importSourceJSON, 0, len(sources))
+	jobs := h.imports.list()
 	for _, s := range sources {
-		out = append(out, h.toImportSourceJSON(s))
+		out = append(out, h.toImportSourceJSON(s, jobs))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"imports": out})
 }
@@ -135,7 +132,7 @@ func (h *Handler) createImportSource(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, h.toImportSourceJSON(created))
+	writeJSON(w, http.StatusCreated, h.toImportSourceJSON(created, nil))
 }
 
 func (h *Handler) updateImportSource(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +156,7 @@ func (h *Handler) updateImportSource(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.toImportSourceJSON(updated))
+	writeJSON(w, http.StatusOK, h.toImportSourceJSON(updated, h.imports.list()))
 }
 
 func (h *Handler) deleteImportSource(w http.ResponseWriter, r *http.Request) {

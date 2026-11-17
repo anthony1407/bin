@@ -26,6 +26,7 @@ import {
 import { PageHeader, Button, Card, Input, Modal, PasswordInput, Spinner, cx, errorText, useToast } from "../components/ui";
 import { ReplicationRules } from "./ReplicationRules";
 import { SavedExports } from "./Export";
+import { TransferHistory } from "./TransferHistory";
 import { bytes, count, dateTime, relative } from "../lib/format";
 
 export function ReplicationPage() {
@@ -421,6 +422,8 @@ export function ReplicationPage() {
       </section>
 
       <SavedExports />
+
+      <TransferHistory />
 
       <ReplicationRules buckets={buckets} />
 

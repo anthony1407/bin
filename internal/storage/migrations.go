@@ -341,6 +341,29 @@ var migrations = []string{
 		created_at  INTEGER NOT NULL,
 		last_run_at INTEGER NOT NULL DEFAULT 0
 	) WITHOUT ROWID;`,
+
+	// 20: the history of import and export jobs, so it outlives a restart.
+	// A job still queued or running when bin stops is marked interrupted at
+	// the next start.
+	`CREATE TABLE transfer_jobs (
+		id          TEXT    PRIMARY KEY,
+		kind        TEXT    NOT NULL,              -- import or export
+		bucket      TEXT    NOT NULL,
+		endpoint    TEXT    NOT NULL,
+		source      TEXT    NOT NULL DEFAULT '',   -- saved import or export it ran from
+		state       TEXT    NOT NULL,
+		copied      INTEGER NOT NULL DEFAULT 0,
+		failed      INTEGER NOT NULL DEFAULT 0,
+		unchanged   INTEGER NOT NULL DEFAULT 0,
+		bytes       INTEGER NOT NULL DEFAULT 0,
+		is_update   INTEGER NOT NULL DEFAULT 0,
+		error       TEXT    NOT NULL DEFAULT '',
+		settings    TEXT    NOT NULL DEFAULT '[]',  -- JSON list of bucket settings copied
+		notes       TEXT    NOT NULL DEFAULT '[]',  -- JSON list
+		started_at  INTEGER NOT NULL,
+		finished_at INTEGER NOT NULL DEFAULT 0
+	) WITHOUT ROWID;
+	CREATE INDEX transfer_jobs_kind ON transfer_jobs (kind, started_at);`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

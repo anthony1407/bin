@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,8 +30,8 @@ import (
 // maxExportJobs bounds how many buckets are sent at the same time.
 const maxExportJobs = 2
 
-func newExportJobs() *importJobs {
-	return &importJobs{jobs: map[string]*importJob{}, sem: make(chan struct{}, maxExportJobs)}
+func newExportJobs(store *storage.Store, log *slog.Logger) *importJobs {
+	return newTransferJobs("export", maxExportJobs, store, log)
 }
 
 type exportTargetJSON struct {
@@ -45,17 +46,13 @@ type exportTargetJSON struct {
 	Settings     bool       `json:"settings"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	LastRunAt    *time.Time `json:"lastRunAt"`
-	// Jobs are this export's runs since bin last restarted.
+	// Jobs are this export's newest jobs, kept across restarts.
 	Jobs []importJob `json:"jobs"`
 }
 
-func (h *Handler) toExportTargetJSON(t storage.ExportTarget) exportTargetJSON {
-	jobs := []importJob{}
-	for _, j := range h.exports.list() {
-		if j.Source == t.ID {
-			jobs = append(jobs, j)
-		}
-	}
+// toExportTargetJSON describes a saved export; all is h.exports.list().
+func (h *Handler) toExportTargetJSON(t storage.ExportTarget, all []importJob) exportTargetJSON {
+	jobs := bySource(all, t.ID)
 	buckets := t.Buckets
 	if buckets == nil {
 		buckets = []string{}
@@ -200,8 +197,9 @@ func (h *Handler) listExportTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]exportTargetJSON, 0, len(list))
+	jobs := h.exports.list()
 	for _, t := range list {
-		out = append(out, h.toExportTargetJSON(t))
+		out = append(out, h.toExportTargetJSON(t, jobs))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"exports": out})
 }
@@ -223,7 +221,7 @@ func (h *Handler) createExportTarget(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, h.toExportTargetJSON(created))
+	writeJSON(w, http.StatusCreated, h.toExportTargetJSON(created, nil))
 }
 
 func (h *Handler) updateExportTarget(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +244,7 @@ func (h *Handler) updateExportTarget(w http.ResponseWriter, r *http.Request) {
 		h.storageError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.toExportTargetJSON(updated))
+	writeJSON(w, http.StatusOK, h.toExportTargetJSON(updated, h.exports.list()))
 }
 
 func (h *Handler) deleteExportTarget(w http.ResponseWriter, r *http.Request) {
@@ -315,15 +313,10 @@ func (h *Handler) listExportJobs(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) cancelExportJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	found, active := false, false
-	h.exports.update(id, func(j *importJob) {
-		found = true
-		setAuditBucket(r, j.Bucket)
-		if j.State == "queued" || j.State == "running" {
-			active = true
-			j.cancel()
-		}
-	})
+	bucket, found, active := h.exports.cancel(id)
+	if found {
+		setAuditBucket(r, bucket)
+	}
 	setAuditResource(r, id)
 	switch {
 	case !found:
@@ -343,10 +336,7 @@ func (h *Handler) startExportJob(client *minio.Client, t storage.ExportTarget, b
 		ID: "export-" + randomToken()[:12], Bucket: bucket, Endpoint: t.Endpoint, Source: t.ID,
 		State: "queued", StartedAt: time.Now().UTC(), cancel: cancel,
 	}
-	h.exports.mu.Lock()
-	h.exports.jobs[job.ID] = job
-	snapshot := *job
-	h.exports.mu.Unlock()
+	snapshot := h.exports.add(job)
 	go h.runExportJob(ctx, client, job.ID, bucket, t.Settings, t.Region)
 	return snapshot
 }
@@ -506,6 +496,7 @@ func (h *Handler) finishExportJob(id, bucket string, err error) {
 		j.cancel()
 		job = *j
 	})
+	h.exports.finish(id)
 	h.opts.Log.Info("export job finished", "job", id, "bucket", bucket, "state", job.State,
 		"sent", job.Copied, "unchanged", job.Unchanged, "failed", job.Failed, "err", err)
 }
