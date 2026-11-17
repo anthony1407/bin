@@ -310,6 +310,40 @@ are kept in memory and forgotten on restart.
 `size` and `objects` from the test count at most 10,000 objects per bucket;
 `partial` marks a bucket that has more.
 
+### Export to another S3 server
+
+The mirror of import: bin sends its buckets to MinIO, AWS S3, Cloudflare R2
+or any S3-compatible server. A saved export names the server and the buckets
+(or all of them) and can be run again at any time.
+
+| Method and path | Body | Response |
+|---|---|---|
+| `POST /api/v1/export/test` | `{"endpoint", "accessKey", "secretKey", "region"?}`, or `"target"` (a saved export's id) with no `secretKey` to use its stored one | `{"buckets": [{"name","objects","size","exists"}]}`: the local buckets, `exists` when the remote already has one of that name |
+| `GET /api/v1/export/targets` | | `{"exports": [export]}` |
+| `POST /api/v1/export/targets` | `{"name", "endpoint", "accessKey", "secretKey", "region"?, "buckets": [...] \| "allBuckets": true, "settings"?}` | `201` export |
+| `PUT /api/v1/export/targets/{id}` | same; an empty `secretKey` keeps the stored one | export |
+| `DELETE /api/v1/export/targets/{id}` | | `204`; what was sent stays on the remote |
+| `POST /api/v1/export/targets/{id}/run` | | `{"jobs": [job]}`, one per bucket; `409 export_running` while a run of it is going |
+| `GET /api/v1/export/jobs` | | `{"jobs": [job]}` newest first |
+| `DELETE /api/v1/export/jobs/{id}` | | `204`; objects already sent stay |
+
+An export is
+`{"id","name","endpoint","accessKey","secretKeySet","region","buckets","allBuckets","settings","createdAt","lastRunAt","jobs"}`;
+the secret key is stored encrypted with the master key and never returned.
+Jobs are the same shape as import jobs. The endpoint rules and error
+messages are those of import. `allBuckets` takes the buckets that exist when
+the export runs, so buckets created later are included.
+
+Each run creates the buckets the remote is missing and, per bucket, sends
+only what is new or changed: an object is skipped when the remote has it
+with the same size and either the same ETag or a newer modification time.
+Every object is checked against its SHA-256 while it is read, so corrupt
+data is never sent. The trash (`.trash/`) is never exported. With
+`"settings": true` a run also sends the bucket's versioning, tags and
+anonymous access policy. Deletions are not mirrored: an object deleted in
+bin stays on the remote. On AWS bucket names are global, so a name taken by
+another account fails with a message saying so.
+
 ### Dropzones
 
 Upload links for people without an account.

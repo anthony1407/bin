@@ -69,6 +69,7 @@ type Handler struct {
 	repl       *replicator
 	zips       *zipTickets
 	totp       *totpSetups
+	exports    *importJobs // export runs, one job per bucket (see export.go)
 }
 
 // NewHandler returns the console HTTP handler.
@@ -77,7 +78,7 @@ func NewHandler(opts Options) http.Handler {
 		opts.SessionTTL = 12 * time.Hour
 	}
 	h := &Handler{opts: opts, started: time.Now(), limiter: newLoginLimiter(), imports: newImportJobs(),
-		oidcStates: newOIDCStates(), repl: newReplicator(), zips: newZipTickets(), totp: newTOTPSetups()}
+		oidcStates: newOIDCStates(), repl: newReplicator(), zips: newZipTickets(), totp: newTOTPSetups(), exports: newExportJobs()}
 	if opts.RunReplication {
 		go h.runReplicationScheduler()
 		go h.runTrashPurge()
@@ -181,6 +182,15 @@ func NewHandler(opts Options) http.Handler {
 	private("PUT /api/v1/import/sources/{id}", h.updateImportSource)
 	private("DELETE /api/v1/import/sources/{id}", h.deleteImportSource)
 	private("POST /api/v1/import/sources/{id}/run", h.runImportSource)
+
+	private("POST /api/v1/export/test", h.testExport)
+	private("GET /api/v1/export/targets", h.listExportTargets)
+	private("POST /api/v1/export/targets", h.createExportTarget)
+	private("PUT /api/v1/export/targets/{id}", h.updateExportTarget)
+	private("DELETE /api/v1/export/targets/{id}", h.deleteExportTarget)
+	private("POST /api/v1/export/targets/{id}/run", h.runExportTarget)
+	private("GET /api/v1/export/jobs", h.listExportJobs)
+	private("DELETE /api/v1/export/jobs/{id}", h.cancelExportJob)
 
 	private("GET /api/v1/identity/openid", h.getOpenID)
 	private("PUT /api/v1/identity/openid", h.putOpenID)
@@ -311,6 +321,7 @@ func (h *Handler) storageError(w http.ResponseWriter, r *http.Request, err error
 		{storage.ErrNoSuchShareLink, 404, "no_such_share_link", "The share link does not exist."},
 		{storage.ErrNoSuchReplicationRule, 404, "no_such_replication_rule", "The replication rule does not exist."},
 		{storage.ErrNoSuchImportSource, 404, "no_such_import", "The saved import does not exist."},
+		{storage.ErrNoSuchExportTarget, 404, "no_such_export", "The saved export does not exist."},
 	} {
 		if errors.Is(err, m.err) {
 			writeError(w, m.status, m.code, m.message)

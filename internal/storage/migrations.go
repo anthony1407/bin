@@ -325,6 +325,22 @@ var migrations = []string{
 	// to show one user's activity without scanning the whole log.
 	`ALTER TABLE audit_log ADD COLUMN size INTEGER NOT NULL DEFAULT 0;   -- bytes; 0 when not a transfer
 	CREATE INDEX audit_log_actor ON audit_log (actor, id);`,
+
+	// 19: saved exports: a remote S3 server and which buckets of bin to send
+	// there, run again on demand to send what is new or changed.
+	`CREATE TABLE export_targets (
+		id          TEXT    PRIMARY KEY,
+		name        TEXT    NOT NULL,
+		endpoint    TEXT    NOT NULL,
+		access_key  TEXT    NOT NULL,
+		secret_enc  TEXT    NOT NULL,
+		region      TEXT    NOT NULL DEFAULT '',
+		buckets     TEXT    NOT NULL DEFAULT '[]',  -- JSON list of local bucket names
+		all_buckets INTEGER NOT NULL DEFAULT 0,     -- every bucket at the time of each run
+		settings    INTEGER NOT NULL DEFAULT 1,     -- also send versioning, tags, anonymous access
+		created_at  INTEGER NOT NULL,
+		last_run_at INTEGER NOT NULL DEFAULT 0
+	) WITHOUT ROWID;`,
 }
 
 // migrate brings the schema to the latest version, tracked in user_version.

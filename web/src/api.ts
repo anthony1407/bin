@@ -507,6 +507,19 @@ export const api = {
       region,
       source,
     }),
+  /** Connects to a remote server; for each local bucket, whether it is already there. */
+  exportTest: (endpoint: string, accessKey: string, secretKey: string, region: string, target?: string) =>
+    request<{ buckets: ExportBucket[] }>("POST", "/export/test", { endpoint, accessKey, secretKey, region, target }).then(
+      (r) => r.buckets,
+    ),
+  exportTargets: () => request<{ exports: ExportTarget[] }>("GET", "/export/targets").then((r) => r.exports),
+  createExportTarget: (input: ExportTargetInput) => request<ExportTarget>("POST", "/export/targets", input),
+  /** An empty secretKey keeps the stored one. */
+  updateExportTarget: (id: string, input: ExportTargetInput) => request<ExportTarget>("PUT", `/export/targets/${enc(id)}`, input),
+  deleteExportTarget: (id: string) => request<void>("DELETE", `/export/targets/${enc(id)}`),
+  runExportTarget: (id: string) => request<{ jobs: ImportJob[] }>("POST", `/export/targets/${enc(id)}/run`),
+  exportJobs: () => request<{ jobs: ImportJob[] }>("GET", "/export/jobs").then((r) => r.jobs),
+  cancelExport: (jobId: string) => request<void>("DELETE", `/export/jobs/${enc(jobId)}`),
   importSources: () => request<{ imports: ImportSource[] }>("GET", "/import/sources").then((r) => r.imports),
   createImportSource: (input: ImportSourceInput) => request<ImportSource>("POST", "/import/sources", input),
   /** An empty secretKey keeps the stored one. */
@@ -717,6 +730,44 @@ export interface ImportSkipped {
 }
 
 /** A saved import: a remote server and what to import from it, run again on demand. */
+/** A local bucket, as the export dialog lists it. */
+export interface ExportBucket {
+  name: string;
+  objects: number;
+  size: number;
+  /** Already on the remote: only new and changed files are sent. */
+  exists: boolean;
+}
+
+/** A saved export: a remote server and which buckets of bin go there. */
+export interface ExportTarget {
+  id: string;
+  name: string;
+  endpoint: string;
+  accessKey: string;
+  secretKeySet: boolean;
+  region: string;
+  buckets: string[];
+  /** Every bucket, as they are at each run. */
+  allBuckets: boolean;
+  settings: boolean;
+  createdAt: string;
+  lastRunAt: string | null;
+  /** Runs since bin last restarted, one job per bucket. */
+  jobs: ImportJob[];
+}
+
+export interface ExportTargetInput {
+  name: string;
+  endpoint: string;
+  accessKey: string;
+  secretKey: string;
+  region: string;
+  buckets: string[];
+  allBuckets: boolean;
+  settings: boolean;
+}
+
 export interface ImportSource {
   id: string;
   name: string;

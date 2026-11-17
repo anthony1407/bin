@@ -25,6 +25,7 @@ import {
 } from "../api";
 import { PageHeader, Button, Card, Input, Modal, PasswordInput, Spinner, cx, errorText, useToast } from "../components/ui";
 import { ReplicationRules } from "./ReplicationRules";
+import { SavedExports } from "./Export";
 import { bytes, count, dateTime, relative } from "../lib/format";
 
 export function ReplicationPage() {
@@ -419,6 +420,8 @@ export function ReplicationPage() {
         </Card>
       </section>
 
+      <SavedExports />
+
       <ReplicationRules buckets={buckets} />
 
       <Modal
@@ -457,6 +460,31 @@ export function ReplicationPage() {
               Enter the connection details for the remote S3-compatible server (MinIO, AWS S3,
               Cloudflare R2, Wasabi, Backblaze B2, etc.) to list available buckets.
             </p>
+
+            <div>
+              <label htmlFor="import-name" className="label-strip mb-1.5 block">
+                Name
+              </label>
+              <Input
+                id="import-name"
+                autoComplete="off"
+                value={importName}
+                onChange={(e) => {
+                  setImportName(e.target.value);
+                  clearImportError("importName");
+                }}
+                placeholder="e.g. Old MinIO (default: the server's address)"
+                aria-invalid={!!importErrors.importName}
+              />
+              {importErrors.importName ? (
+                <p className="mt-1 flex items-center gap-1 text-xs font-medium text-danger">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  <span>{importErrors.importName}</span>
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted">The import is saved under this name, to sync it again later.</p>
+              )}
+            </div>
 
             <div>
               <label htmlFor="import-endpoint" className="label-strip mb-1.5 block">
@@ -550,31 +578,6 @@ export function ReplicationPage() {
 
         {importStep === 2 && (
           <div className="space-y-4">
-            <div>
-              <label htmlFor="import-name" className="label-strip mb-1.5 block">
-                Name <span className="text-danger">*</span>
-              </label>
-              <Input
-                id="import-name"
-                autoComplete="off"
-                value={importName}
-                onChange={(e) => {
-                  setImportName(e.target.value);
-                  clearImportError("importName");
-                }}
-                placeholder="e.g. Old MinIO"
-                aria-invalid={!!importErrors.importName}
-              />
-              {importErrors.importName ? (
-                <p className="mt-1 flex items-center gap-1 text-xs font-medium text-danger">
-                  <AlertCircle className="size-3.5 shrink-0" />
-                  <span>{importErrors.importName}</span>
-                </p>
-              ) : (
-                <p className="mt-1 text-xs text-muted">The import is saved under this name, to sync it again later.</p>
-              )}
-            </div>
-
             <p className="text-sm text-muted">
               Select the buckets to import. Each bucket is created here and its objects are copied from the
               remote server. Importing a bucket again copies only the files that are new or changed there.

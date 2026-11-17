@@ -76,11 +76,19 @@ func readXMLBody(r *http.Request, v any) (empty bool, err error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return true, nil
 	}
-	if err := xml.Unmarshal(data, v); err != nil {
+	// Many clients (minio-go, so mc, and older SDKs) send bodies without the
+	// S3 namespace, which AWS accepts: unadorned elements are read as if they
+	// declared it, so the namespaced request types match either form.
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec.DefaultSpace = s3Namespace
+	if err := dec.Decode(v); err != nil {
 		return false, s3err.ErrMalformedXML
 	}
 	return false, nil
 }
+
+// s3Namespace is the XML namespace of S3 bodies.
+const s3Namespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 // bodyError maps a request-body read failure to an S3 error. Integrity errors
 // raised by the SigV4 body reader are already S3 errors.
